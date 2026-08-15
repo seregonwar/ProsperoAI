@@ -347,6 +347,47 @@ pai_gc_shutdown(pai_gpu_device_t *device) {
   return PAI_OK;
 }
 
+static pai_status_t
+pai_gc_reset(pai_gpu_device_t *device) {
+  pai_ps5_gc_state_t *st = (pai_ps5_gc_state_t *)device->state;
+  uint32_t query = 0;
+
+  if (!st) {
+    return PAI_ERR_INVALID_ARG;
+  }
+
+  PAI_LOG_INFO_(PAI_SUB_GPU, "gc reset: reopening device\n");
+
+  if (st->mmio) {
+    munmap(st->mmio, AGC_GC_MMIO_SIZE);
+    st->mmio = NULL;
+  }
+  if (st->fd >= 0) {
+    close(st->fd);
+  }
+
+  st->fd = open(GC_DEVICE_PATH, O_RDWR);
+  if (st->fd < 0) {
+    PAI_LOG_ERROR_(PAI_SUB_GPU, "gc reset: open failed (errno %d)\n", errno);
+    return PAI_ERR_IO;
+  }
+
+  if (ioctl(st->fd, AGC_GC_IOCTL_CONTEXT_QUERY, &query) == 0) {
+    st->ctx_caps = query;
+  }
+
+  if ((st->ctx_caps & 0xFFFFu) == 0) {
+    void *mmio = mmap((void *)AGC_GC_MMIO_BASE, AGC_GC_MMIO_SIZE,
+                      AGC_GC_MMIO_PROT, MAP_SHARED, st->fd, 0);
+    if (mmio != MAP_FAILED) {
+      st->mmio = mmio;
+      sceKernelSetVirtualRangeName(mmio, AGC_GC_MMIO_SIZE, "SceGnmDingDong");
+    }
+  }
+
+  return PAI_OK;
+}
+
 const pai_gpu_backend_ops_t pai_gpu_ops_ps5_gc = {
     .name = "ps5-gc (/dev/gc PM4)",
     .init = pai_gc_init,
@@ -355,6 +396,7 @@ const pai_gpu_backend_ops_t pai_gpu_ops_ps5_gc = {
     .buffer_free = pai_gc_buffer_free,
     .submit = pai_gc_submit_stream,
     .wait_label = pai_gc_wait_label,
+    .reset = pai_gc_reset,
 };
 
 #endif /* PAI_PS5 */

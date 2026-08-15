@@ -27,6 +27,17 @@
 #define PAI_LOADSTORE_RSRC2 0x00000008u
 #define PAI_LOADSTORE_CODE_WORDS 20u
 
+/*
+ * FLAT word0 indices used by the ACO bit-15 experiment patch (payload
+ * stage E1b/E2b). Each FLAT instruction is two words: word0 carries the
+ * 0xDC prefix in the top byte (bit 15 clear in the llvm-mc encoding),
+ * word1 carries ADDR/DATA. Patching word1 would corrupt a register
+ * field or an immediate — keep these pointed at word0.
+ */
+#define PAI_STORE_CONST_FLAT_WORD 10u
+#define PAI_LOADSTORE_FLAT_LOAD_WORD 10u
+#define PAI_LOADSTORE_FLAT_STORE_WORD 17u
+
 extern const uint32_t pai_store_const_code[PAI_STORE_CONST_CODE_WORDS];
 extern const uint32_t pai_loadstore_code[PAI_LOADSTORE_CODE_WORDS];
 

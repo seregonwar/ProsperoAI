@@ -102,6 +102,11 @@ pai_gpu_wait_label(pai_gpu_device_t *device, uint64_t label_addr,
 }
 
 pai_status_t
+pai_gpu_reset(pai_gpu_device_t *device) {
+  return device->ops->reset(device);
+}
+
+pai_status_t
 pai_gpu_submit_wait(pai_gpu_device_t *device, const uint32_t *pm4,
                     uint32_t dwords, uint64_t label_addr, uint32_t label_value,
                     uint64_t timeout_ns) {

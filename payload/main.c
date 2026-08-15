@@ -319,212 +319,214 @@ m0_exp_report(const char *name, int ok) {
 
 /*
  * The OpenAGC (ACO-compiled, hardware-qualified) memset kernel sets bit 15
- * of every FLAT instruction word0; llvm-mc 14 for gfx1013 does not. Patch
- * the flag into uploaded experiment kernels to test whether gfx1013
- * requires it.
+ * of every FLAT instruction word0 (e.g. 0xDC788000 for its global store);
+ * llvm-mc 14 for gfx1013 does not (0xDC700000). Patch the flag into
+ * uploaded experiment kernels to test whether gfx1013 requires it.
+ *
+ * A FLAT word0 is the first of the two instruction words: it carries the
+ * 0xDC prefix in the top byte, the sub-opcode in bits 23:16 and zero low
+ * bits (bit 15 clear); word1 carries ADDR/DATA. The patch targets
+ * (PAI_*_FLAT_WORD, m0_experiments.h) index word0 of each FLAT
+ * instruction in the checked-in encodings.
+ *
+ * Returns -1 if the target word is not a FLAT word0 (guard against
+ * silently corrupting an immediate or a register field).
  */
-static void
+static int
 m0_patch_flat_bit15(uint32_t *code, uint32_t word_index) {
+  if ((code[word_index] & 0xFF000000u) != 0xDC000000u) {
+    PAI_LOG_ERROR_(PAI_SUB_GPU,
+                   "flat patch target word %u = 0x%08x is not a FLAT word0\n",
+                   word_index, code[word_index]);
+    return -1;
+  }
   code[word_index] |= 0x8000u;
+  return 0;
 }
 
-#define M0_STORE_CONST_FLAT_WORD 9u
-#define M0_LOADSTORE_LOAD_WORD 11u
-#define M0_LOADSTORE_STORE_WORD 18u
+static int
+m0_check_store_const(const uint32_t *dst, const char *name) {
+  int ok = 1;
+  for (uint32_t i = 0; i < PAI_EXP_THREADS_X; i++) {
+    if (dst[i] != PAI_STORE_CONST_VALUE) {
+      ok = 0;
+      break;
+    }
+  }
+  m0_exp_report(name, ok);
+  if (!ok) {
+    PAI_LOG_ERROR_(PAI_SUB_GPU,
+                   "[M0-%s] dst[0..7] = %08x %08x %08x %08x "
+                   "%08x %08x %08x %08x\n",
+                   name, dst[0], dst[1], dst[2], dst[3], dst[4], dst[5],
+                   dst[6], dst[7]);
+  }
+  return ok;
+}
+
+static int
+m0_check_loadstore(const uint32_t *a, const uint32_t *c, const char *name) {
+  int ok = 1;
+  for (uint32_t i = 0; i < PAI_EXP_THREADS_X; i++) {
+    if (c[i] != a[i]) {
+      ok = 0;
+      break;
+    }
+  }
+  m0_exp_report(name, ok);
+  if (!ok) {
+    PAI_LOG_ERROR_(PAI_SUB_GPU,
+                   "[M0-%s] c[0..7] = %08x %08x %08x %08x "
+                   "%08x %08x %08x %08x\n",
+                   name, c[0], c[1], c[2], c[3], c[4], c[5], c[6], c[7]);
+  }
+  return ok;
+}
+
+static int
+m0_check_memset(const uint32_t *dst, uint32_t blocks,
+                const uint32_t pattern[4], const char *name) {
+  uint32_t ref[1024 * 4];
+  int ok;
+  pai_ref_memset16(ref, pattern, blocks);
+  ok = memcmp(dst, ref, blocks * 16) == 0;
+  m0_exp_report(name, ok);
+  if (!ok) {
+    PAI_LOG_ERROR_(PAI_SUB_GPU,
+                   "[M0-%s] dst[0..15] = %08x %08x %08x %08x %08x %08x "
+                   "%08x %08x %08x %08x %08x %08x %08x %08x %08x %08x\n",
+                   name, dst[0], dst[1], dst[2], dst[3], dst[4], dst[5],
+                   dst[6], dst[7], dst[8], dst[9], dst[10], dst[11], dst[12],
+                   dst[13], dst[14], dst[15]);
+  }
+  return ok;
+}
+
+static int
+m0_exp_store_const(m0_ctx_t *ctx, const char *name, int patched) {
+  uint32_t stream[M0_PM4_CAP];
+  uint32_t stream_len;
+  uint32_t ud[2];
+  uint32_t *dst32 = (uint32_t *)ctx->dst.cpu_addr;
+
+  memcpy(ctx->code.cpu_addr, pai_store_const_code,
+         PAI_STORE_CONST_CODE_WORDS * sizeof(uint32_t));
+  if (pai_gpu_device_backend(ctx->gpu) == PAI_GPU_BACKEND_HOST_REF) {
+    pai_gpu_host_register_shader(ctx->gpu, ctx->code.gpu_addr,
+                                 pai_host_kernel_store_const, NULL);
+  }
+  if (patched &&
+      m0_patch_flat_bit15((uint32_t *)ctx->code.cpu_addr,
+                          PAI_STORE_CONST_FLAT_WORD) != 0) {
+    m0_exp_report(name, 0);
+    return 0;
+  }
+  ud[0] = (uint32_t)(ctx->dst.gpu_addr & 0xFFFFFFFFu);
+  ud[1] = (uint32_t)(ctx->dst.gpu_addr >> 32);
+  m0_build_dispatch_stream(ctx, stream, M0_PM4_CAP, PAI_STORE_CONST_RSRC2,
+                           PAI_EXP_THREADS_X, 1, ud, 2, &stream_len);
+  m0_run_gpu(ctx, stream, stream_len, dst32, 128, 0x00, name);
+  m0_check_store_const(dst32, name);
+  return 0;
+}
+
+static int
+m0_exp_loadstore(m0_ctx_t *ctx, const char *name, int patched) {
+  uint32_t stream[M0_PM4_CAP];
+  uint32_t stream_len;
+  uint32_t ud[4];
+  uint32_t *a32 = (uint32_t *)ctx->a.cpu_addr;
+  uint32_t *c32 = (uint32_t *)ctx->c.cpu_addr;
+
+  memcpy(ctx->code.cpu_addr, pai_loadstore_code,
+         PAI_LOADSTORE_CODE_WORDS * sizeof(uint32_t));
+  if (pai_gpu_device_backend(ctx->gpu) == PAI_GPU_BACKEND_HOST_REF) {
+    pai_gpu_host_register_shader(ctx->gpu, ctx->code.gpu_addr,
+                                 pai_host_kernel_loadstore, NULL);
+  }
+  if (patched &&
+      (m0_patch_flat_bit15((uint32_t *)ctx->code.cpu_addr,
+                           PAI_LOADSTORE_FLAT_LOAD_WORD) != 0 ||
+       m0_patch_flat_bit15((uint32_t *)ctx->code.cpu_addr,
+                           PAI_LOADSTORE_FLAT_STORE_WORD) != 0)) {
+    m0_exp_report(name, 0);
+    return 0;
+  }
+  for (uint32_t i = 0; i < PAI_EXP_THREADS_X; i++) {
+    a32[i] = 0x11111111u + i;
+  }
+  ud[0] = (uint32_t)(ctx->a.gpu_addr & 0xFFFFFFFFu);
+  ud[1] = (uint32_t)(ctx->a.gpu_addr >> 32);
+  ud[2] = (uint32_t)(ctx->c.gpu_addr & 0xFFFFFFFFu);
+  ud[3] = (uint32_t)(ctx->c.gpu_addr >> 32);
+  m0_build_dispatch_stream(ctx, stream, M0_PM4_CAP, PAI_LOADSTORE_RSRC2,
+                           PAI_EXP_THREADS_X, 1, ud, 4, &stream_len);
+  m0_run_gpu(ctx, stream, stream_len, c32, 128, 0xCC, name);
+  m0_check_loadstore(a32, c32, name);
+  return 0;
+}
+
+static int
+m0_exp_memset(m0_ctx_t *ctx, uint32_t blocks, const char *name) {
+  uint32_t stream[M0_PM4_CAP];
+  uint32_t stream_len;
+  uint32_t *dst32 = (uint32_t *)ctx->dst.cpu_addr;
+  uint32_t pattern[4] = {0xDEADBEEFu, 0x11223344u, 0x55667788u, 0x99AABBCCu};
+
+  memcpy(ctx->code.cpu_addr, pai_memset16_code,
+         PAI_MEMSET16_CODE_WORDS * sizeof(uint32_t));
+  if (pai_gpu_device_backend(ctx->gpu) == PAI_GPU_BACKEND_HOST_REF) {
+    pai_gpu_host_register_shader(ctx->gpu, ctx->code.gpu_addr,
+                                 pai_host_kernel_memset16, NULL);
+  }
+  m0_build_memset16_stream(ctx, stream, M0_PM4_CAP, ctx->dst.gpu_addr, blocks,
+                           pattern, &stream_len);
+  m0_run_gpu(ctx, stream, stream_len, dst32, blocks * 16, 0x00, name);
+  m0_check_memset(dst32, blocks, pattern, name);
+  return 0;
+}
 
 static int
 m0_stage_e(m0_ctx_t *ctx) {
-  uint32_t stream[M0_PM4_CAP];
-  uint32_t stream_len;
-  uint32_t ud[9];
-  uint32_t *dst32 = (uint32_t *)ctx->dst.cpu_addr;
-  uint32_t *a32 = (uint32_t *)ctx->a.cpu_addr;
-  uint32_t *c32 = (uint32_t *)ctx->c.cpu_addr;
   pai_gpu_device_t *gpu = ctx->gpu;
-  uint32_t pattern[4] = {0xDEADBEEFu, 0x11223344u, 0x55667788u, 0x99AABBCCu};
+  int host = pai_gpu_device_backend(gpu) == PAI_GPU_BACKEND_HOST_REF;
 
   PAI_LOG_INFO_(PAI_SUB_GPU, "[M0-E] compute experiment matrix\n");
+  PAI_LOG_INFO_(PAI_SUB_GPU,
+                "[M0-E] order: safe (patched/proven) first, controls last; "
+                "gc reset between experiments\n");
 
-  /* E1: store_const — no loads, validated encoding (control). */
-  {
-    memcpy(ctx->code.cpu_addr, pai_store_const_code,
-           PAI_STORE_CONST_CODE_WORDS * sizeof(uint32_t));
-    if (pai_gpu_device_backend(gpu) == PAI_GPU_BACKEND_HOST_REF) {
-      pai_gpu_host_register_shader(gpu, ctx->code.gpu_addr,
-                                   pai_host_kernel_store_const, NULL);
-    }
-    ud[0] = (uint32_t)(ctx->dst.gpu_addr & 0xFFFFFFFFu);
-    ud[1] = (uint32_t)(ctx->dst.gpu_addr >> 32);
-    m0_build_dispatch_stream(ctx, stream, M0_PM4_CAP, PAI_STORE_CONST_RSRC2,
-                             PAI_EXP_THREADS_X, 1, ud, 2, &stream_len);
-    m0_run_gpu(ctx, stream, stream_len, dst32, 128, 0x00, "E1");
-    {
-      int ok = 1;
-      for (uint32_t i = 0; i < PAI_EXP_THREADS_X; i++) {
-        if (dst32[i] != PAI_STORE_CONST_VALUE) {
-          ok = 0;
-          break;
-        }
-      }
-      m0_exp_report("E1", ok);
-      if (!ok) {
-        PAI_LOG_ERROR_(PAI_SUB_GPU, "[M0-E1] dst[0..7] = %08x %08x %08x %08x "
-                       "%08x %08x %08x %08x\n",
-                       dst32[0], dst32[1], dst32[2], dst32[3], dst32[4],
-                       dst32[5], dst32[6], dst32[7]);
-      }
-    }
+  /* Safe experiments first: a hanging kernel can wedge the ring, so the
+   * controls (unpatched llvm-mc encodings) run last. */
+  if (!host) {
+    pai_gpu_reset(gpu);
   }
+  m0_exp_store_const(ctx, "E1b", 1);
 
-  /* E1b: store_const with the ACO-style bit 15 on the FLAT store. */
-  {
-    memcpy(ctx->code.cpu_addr, pai_store_const_code,
-           PAI_STORE_CONST_CODE_WORDS * sizeof(uint32_t));
-    m0_patch_flat_bit15((uint32_t *)ctx->code.cpu_addr,
-                        M0_STORE_CONST_FLAT_WORD);
-    ud[0] = (uint32_t)(ctx->dst.gpu_addr & 0xFFFFFFFFu);
-    ud[1] = (uint32_t)(ctx->dst.gpu_addr >> 32);
-    m0_build_dispatch_stream(ctx, stream, M0_PM4_CAP, PAI_STORE_CONST_RSRC2,
-                             PAI_EXP_THREADS_X, 1, ud, 2, &stream_len);
-    m0_run_gpu(ctx, stream, stream_len, dst32, 128, 0x00, "E1b");
-    {
-      int ok = 1;
-      for (uint32_t i = 0; i < PAI_EXP_THREADS_X; i++) {
-        if (dst32[i] != PAI_STORE_CONST_VALUE) {
-          ok = 0;
-          break;
-        }
-      }
-      m0_exp_report("E1b", ok);
-      if (!ok) {
-        PAI_LOG_ERROR_(PAI_SUB_GPU, "[M0-E1b] dst[0..7] = %08x %08x %08x "
-                       "%08x %08x %08x %08x %08x\n",
-                       dst32[0], dst32[1], dst32[2], dst32[3], dst32[4],
-                       dst32[5], dst32[6], dst32[7]);
-      }
-    }
+  if (!host) {
+    pai_gpu_reset(gpu);
   }
+  m0_exp_loadstore(ctx, "E2b", 1);
 
-  /* E2: loadstore — flat_load + flat_store (control). */
-  {
-    memcpy(ctx->code.cpu_addr, pai_loadstore_code,
-           PAI_LOADSTORE_CODE_WORDS * sizeof(uint32_t));
-    if (pai_gpu_device_backend(gpu) == PAI_GPU_BACKEND_HOST_REF) {
-      pai_gpu_host_register_shader(gpu, ctx->code.gpu_addr,
-                                   pai_host_kernel_loadstore, NULL);
-    }
-    for (uint32_t i = 0; i < PAI_EXP_THREADS_X; i++) {
-      a32[i] = 0x11111111u + i;
-    }
-    ud[0] = (uint32_t)(ctx->a.gpu_addr & 0xFFFFFFFFu);
-    ud[1] = (uint32_t)(ctx->a.gpu_addr >> 32);
-    ud[2] = (uint32_t)(ctx->c.gpu_addr & 0xFFFFFFFFu);
-    ud[3] = (uint32_t)(ctx->c.gpu_addr >> 32);
-    m0_build_dispatch_stream(ctx, stream, M0_PM4_CAP, PAI_LOADSTORE_RSRC2,
-                             PAI_EXP_THREADS_X, 1, ud, 4, &stream_len);
-    m0_run_gpu(ctx, stream, stream_len, c32, 128, 0xCC, "E2");
-    {
-      int ok = 1;
-      for (uint32_t i = 0; i < PAI_EXP_THREADS_X; i++) {
-        if (c32[i] != a32[i]) {
-          ok = 0;
-          break;
-        }
-      }
-      m0_exp_report("E2", ok);
-      if (!ok) {
-        PAI_LOG_ERROR_(PAI_SUB_GPU, "[M0-E2] c[0..7] = %08x %08x %08x %08x "
-                       "%08x %08x %08x %08x\n",
-                       c32[0], c32[1], c32[2], c32[3], c32[4], c32[5], c32[6],
-                       c32[7]);
-      }
-    }
+  if (!host) {
+    pai_gpu_reset(gpu);
   }
+  m0_exp_memset(ctx, 64, "E3");
 
-  /* E2b: loadstore with the ACO-style bit 15 on both FLAT ops. */
-  {
-    memcpy(ctx->code.cpu_addr, pai_loadstore_code,
-           PAI_LOADSTORE_CODE_WORDS * sizeof(uint32_t));
-    m0_patch_flat_bit15((uint32_t *)ctx->code.cpu_addr,
-                        M0_LOADSTORE_LOAD_WORD);
-    m0_patch_flat_bit15((uint32_t *)ctx->code.cpu_addr,
-                        M0_LOADSTORE_STORE_WORD);
-    for (uint32_t i = 0; i < PAI_EXP_THREADS_X; i++) {
-      a32[i] = 0x11111111u + i;
-    }
-    ud[0] = (uint32_t)(ctx->a.gpu_addr & 0xFFFFFFFFu);
-    ud[1] = (uint32_t)(ctx->a.gpu_addr >> 32);
-    ud[2] = (uint32_t)(ctx->c.gpu_addr & 0xFFFFFFFFu);
-    ud[3] = (uint32_t)(ctx->c.gpu_addr >> 32);
-    m0_build_dispatch_stream(ctx, stream, M0_PM4_CAP, PAI_LOADSTORE_RSRC2,
-                             PAI_EXP_THREADS_X, 1, ud, 4, &stream_len);
-    m0_run_gpu(ctx, stream, stream_len, c32, 128, 0xCC, "E2b");
-    {
-      int ok = 1;
-      for (uint32_t i = 0; i < PAI_EXP_THREADS_X; i++) {
-        if (c32[i] != a32[i]) {
-          ok = 0;
-          break;
-        }
-      }
-      m0_exp_report("E2b", ok);
-      if (!ok) {
-        PAI_LOG_ERROR_(PAI_SUB_GPU, "[M0-E2b] c[0..7] = %08x %08x %08x %08x "
-                       "%08x %08x %08x %08x\n",
-                       c32[0], c32[1], c32[2], c32[3], c32[4], c32[5], c32[6],
-                       c32[7]);
-      }
-    }
+  if (!host) {
+    pai_gpu_reset(gpu);
   }
+  m0_exp_memset(ctx, 1024, "E4");
 
-  /* E3: memset golden, single group (blocks=64). */
-  {
-    memcpy(ctx->code.cpu_addr, pai_memset16_code,
-           PAI_MEMSET16_CODE_WORDS * sizeof(uint32_t));
-    if (pai_gpu_device_backend(gpu) == PAI_GPU_BACKEND_HOST_REF) {
-      pai_gpu_host_register_shader(gpu, ctx->code.gpu_addr,
-                                   pai_host_kernel_memset16, NULL);
-    }
-    m0_build_memset16_stream(ctx, stream, M0_PM4_CAP, ctx->dst.gpu_addr, 64,
-                             pattern, &stream_len);
-    m0_run_gpu(ctx, stream, stream_len, dst32, 64 * 16, 0x00, "E3");
-    {
-      uint32_t ref[64 * 16 / 4];
-      int ok;
-      pai_ref_memset16(ref, pattern, 64);
-      ok = memcmp(dst32, ref, 64 * 16) == 0;
-      m0_exp_report("E3", ok);
-      if (!ok) {
-        PAI_LOG_ERROR_(PAI_SUB_GPU, "[M0-E3] dst[0..7] = %08x %08x %08x %08x "
-                       "%08x %08x %08x %08x\n",
-                       dst32[0], dst32[1], dst32[2], dst32[3], dst32[4],
-                       dst32[5], dst32[6], dst32[7]);
-      }
-    }
+  if (!host) {
+    pai_gpu_reset(gpu);
   }
+  m0_exp_store_const(ctx, "E1", 0);
 
-  /* E4: memset golden, 16 groups (control — the original failing case). */
-  {
-    m0_build_memset16_stream(ctx, stream, M0_PM4_CAP, ctx->dst.gpu_addr, 1024,
-                             pattern, &stream_len);
-    m0_run_gpu(ctx, stream, stream_len, dst32, 1024 * 16, 0x00, "E4");
-    {
-      uint32_t ref[1024 * 16 / 4];
-      int ok;
-      pai_ref_memset16(ref, pattern, 1024);
-      ok = memcmp(dst32, ref, 1024 * 16) == 0;
-      m0_exp_report("E4", ok);
-      if (!ok) {
-        PAI_LOG_ERROR_(PAI_SUB_GPU, "[M0-E4] dst[0..15] = %08x %08x %08x %08x "
-                       "%08x %08x %08x %08x %08x %08x %08x %08x %08x %08x "
-                       "%08x %08x\n",
-                       dst32[0], dst32[1], dst32[2], dst32[3], dst32[4],
-                       dst32[5], dst32[6], dst32[7], dst32[8], dst32[9],
-                       dst32[10], dst32[11], dst32[12], dst32[13], dst32[14],
-                       dst32[15]);
-      }
-    }
+  if (!host) {
+    pai_gpu_reset(gpu);
   }
+  m0_exp_loadstore(ctx, "E2", 0);
 
   return 0;
 }

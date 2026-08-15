@@ -2,6 +2,7 @@
 
 #include <hal/hal.h>
 #include <host_kernels.h>
+#include <m0_experiments.h>
 #include <pm4/pm4.h>
 #include <ref_ops.h>
 #include <vecadd.h>
@@ -117,6 +118,107 @@ TEST_MAIN_BEGIN()
     CHECK(pai_gpu_submit_wait(dev, dma, db.len, label.gpu_addr, 0x99,
                               UINT64_C(1000000000)) == PAI_OK);
     CHECK(memcmp(a.cpu_addr, c.cpu_addr, 1024) == 0);
+  }
+
+  /* M0 experiment kernels: store_const / loadstore, dispatched through
+   * the same code buffer (exercises shader re-registration), plus
+   * encoding checks for the FLAT bit-15 patch targets. */
+  {
+    pai_pm4_builder_t pb;
+    uint32_t pm4[64];
+    uint32_t vals[4];
+
+    /* The bit-15 patch must hit FLAT word0 (DC prefix, bit 15 clear).
+     * word1 carries ADDR/DATA — patching it corrupts a register field
+     * or an immediate. */
+    CHECK((pai_store_const_code[PAI_STORE_CONST_FLAT_WORD] &
+           0xFF000000u) == 0xDC000000u);
+    CHECK(!(pai_store_const_code[PAI_STORE_CONST_FLAT_WORD] & 0x8000u));
+    CHECK((pai_loadstore_code[PAI_LOADSTORE_FLAT_LOAD_WORD] &
+           0xFF000000u) == 0xDC000000u);
+    CHECK(!(pai_loadstore_code[PAI_LOADSTORE_FLAT_LOAD_WORD] & 0x8000u));
+    CHECK((pai_loadstore_code[PAI_LOADSTORE_FLAT_STORE_WORD] &
+           0xFF000000u) == 0xDC000000u);
+    CHECK(!(pai_loadstore_code[PAI_LOADSTORE_FLAT_STORE_WORD] & 0x8000u));
+    CHECK_EQ_UINT(pai_store_const_code[PAI_STORE_CONST_FLAT_WORD],
+                  0xDC700000u);
+    CHECK_EQ_UINT(pai_loadstore_code[PAI_LOADSTORE_FLAT_LOAD_WORD],
+                  0xDC300000u);
+    CHECK_EQ_UINT(pai_loadstore_code[PAI_LOADSTORE_FLAT_STORE_WORD],
+                  0xDC700000u);
+
+    /* store_const (replaces the vecadd registration at the same addr) */
+    memcpy(code.cpu_addr, pai_store_const_code,
+           PAI_STORE_CONST_CODE_WORDS * sizeof(uint32_t));
+    CHECK(pai_gpu_host_register_shader(dev, code.gpu_addr,
+                                       pai_host_kernel_store_const, NULL) ==
+          PAI_OK);
+    memset(c.cpu_addr, 0, 4096);
+
+    pai_pm4_builder_init(&pb, pm4, 64);
+    vals[0] = (uint32_t)(code.gpu_addr >> 8);
+    vals[1] = (uint32_t)(code.gpu_addr >> 40);
+    pai_pm4_set_sh_reg_compute(&pb, PAI_REG_COMPUTE_PGM_LO, 2, vals);
+    vals[0] = PAI_EXP_RSRC1;
+    vals[1] = PAI_STORE_CONST_RSRC2;
+    pai_pm4_set_sh_reg_compute(&pb, PAI_REG_COMPUTE_PGM_RSRC1, 2, vals);
+    vals[0] = PAI_EXP_RSRC3;
+    pai_pm4_set_sh_reg_compute(&pb, PAI_REG_COMPUTE_PGM_RSRC3, 1, vals);
+    vals[0] = PAI_EXP_THREADS_X;
+    vals[1] = 1;
+    vals[2] = 1;
+    pai_pm4_set_sh_reg_compute(&pb, PAI_REG_COMPUTE_NUM_THREAD_X, 3, vals);
+    vals[0] = (uint32_t)(c.gpu_addr & 0xFFFFFFFFu);
+    vals[1] = (uint32_t)(c.gpu_addr >> 32);
+    pai_pm4_set_sh_reg_compute(&pb, PAI_REG_COMPUTE_USER_DATA_0, 2, vals);
+    pai_pm4_dispatch_direct(&pb, 1, 1, 1, 0);
+
+    *(volatile uint32_t *)label.cpu_addr = 0;
+    CHECK(pai_gpu_submit_wait(dev, pm4, pb.len, label.gpu_addr, 0x55,
+                              UINT64_C(1000000000)) == PAI_OK);
+    for (uint32_t i = 0; i < PAI_EXP_THREADS_X; i++) {
+      CHECK_EQ_UINT(((uint32_t *)c.cpu_addr)[i], PAI_STORE_CONST_VALUE);
+    }
+    CHECK_EQ_UINT(((uint32_t *)c.cpu_addr)[PAI_EXP_THREADS_X], 0);
+
+    /* loadstore (replaces the store_const registration at the same addr) */
+    memcpy(code.cpu_addr, pai_loadstore_code,
+           PAI_LOADSTORE_CODE_WORDS * sizeof(uint32_t));
+    CHECK(pai_gpu_host_register_shader(dev, code.gpu_addr,
+                                       pai_host_kernel_loadstore, NULL) ==
+          PAI_OK);
+    for (uint32_t i = 0; i < PAI_EXP_THREADS_X; i++) {
+      ((uint32_t *)a.cpu_addr)[i] = 0x11111111u + i;
+    }
+    memset(c.cpu_addr, 0xCC, 4096);
+
+    pai_pm4_builder_init(&pb, pm4, 64);
+    vals[0] = (uint32_t)(code.gpu_addr >> 8);
+    vals[1] = (uint32_t)(code.gpu_addr >> 40);
+    pai_pm4_set_sh_reg_compute(&pb, PAI_REG_COMPUTE_PGM_LO, 2, vals);
+    vals[0] = PAI_EXP_RSRC1;
+    vals[1] = PAI_LOADSTORE_RSRC2;
+    pai_pm4_set_sh_reg_compute(&pb, PAI_REG_COMPUTE_PGM_RSRC1, 2, vals);
+    vals[0] = PAI_EXP_RSRC3;
+    pai_pm4_set_sh_reg_compute(&pb, PAI_REG_COMPUTE_PGM_RSRC3, 1, vals);
+    vals[0] = PAI_EXP_THREADS_X;
+    vals[1] = 1;
+    vals[2] = 1;
+    pai_pm4_set_sh_reg_compute(&pb, PAI_REG_COMPUTE_NUM_THREAD_X, 3, vals);
+    vals[0] = (uint32_t)(a.gpu_addr & 0xFFFFFFFFu);
+    vals[1] = (uint32_t)(a.gpu_addr >> 32);
+    vals[2] = (uint32_t)(c.gpu_addr & 0xFFFFFFFFu);
+    vals[3] = (uint32_t)(c.gpu_addr >> 32);
+    pai_pm4_set_sh_reg_compute(&pb, PAI_REG_COMPUTE_USER_DATA_0, 4, vals);
+    pai_pm4_dispatch_direct(&pb, 1, 1, 1, 0);
+
+    *(volatile uint32_t *)label.cpu_addr = 0;
+    CHECK(pai_gpu_submit_wait(dev, pm4, pb.len, label.gpu_addr, 0x56,
+                              UINT64_C(1000000000)) == PAI_OK);
+    for (uint32_t i = 0; i < PAI_EXP_THREADS_X; i++) {
+      CHECK_EQ_UINT(((uint32_t *)c.cpu_addr)[i], 0x11111111u + i);
+    }
+    CHECK_EQ_UINT(((uint32_t *)c.cpu_addr)[PAI_EXP_THREADS_X], 0xCCCCCCCCu);
   }
 
   /* unknown opcode must fail loud, not silently */

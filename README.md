@@ -23,6 +23,10 @@ Implemented so far:
 - gfx1013 vecadd compute kernel (llvm-mc assembled)
 - `prosperoai.elf` PAI-M0 harness: GPU DMA → compute dispatch → CPU
   reference comparison → benchmark
+- **M0-E experiment matrix** (stage E, 9.40 batch diagnostics):
+  store_const (E1) / loadstore (E2) control kernels (llvm-mc verified),
+  ACO bit-15 FLAT patch variants (E1b/E2b), memset golden
+  single-group (E3) and multi-group (E4)
 - **Deploy automation**: every payload asks the previous instance to
   terminate itself before starting (TCP stop probe on port 9025, same
   pattern as MemDBG's `--replace-existing`), then binds the port for the

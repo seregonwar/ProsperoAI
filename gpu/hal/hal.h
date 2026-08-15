@@ -56,6 +56,7 @@ typedef struct pai_gpu_backend_ops {
                          uint32_t dwords, uint32_t queue_type);
   pai_status_t (*wait_label)(pai_gpu_device_t *device, uint64_t label_addr,
                              uint32_t label_value, uint64_t timeout_ns);
+  pai_status_t (*reset)(pai_gpu_device_t *device);
 } pai_gpu_backend_ops_t;
 
 struct pai_gpu_device {
@@ -95,6 +96,13 @@ pai_status_t pai_gpu_submit_q(pai_gpu_device_t *device, const uint32_t *pm4,
 /* Poll a GPU-written label; PAI_ERR_TIMEOUT if not observed in time. */
 pai_status_t pai_gpu_wait_label(pai_gpu_device_t *device, uint64_t label_addr,
                                 uint32_t label_value, uint64_t timeout_ns);
+
+/*
+ * Bring-up recovery: tear down and re-create the underlying device
+ * connection (/dev/gc + register-space mmap on PS5) so a wedged ring
+ * does not poison subsequent experiments.
+ */
+pai_status_t pai_gpu_reset(pai_gpu_device_t *device);
 
 /* Convenience: submit + wait_label. */
 pai_status_t pai_gpu_submit_wait(pai_gpu_device_t *device,
