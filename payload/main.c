@@ -835,8 +835,11 @@ m0_exp_memset_pattern_in_buf(m0_ctx_t *ctx, const char *name) {
   memcpy(ctx->code.cpu_addr, pai_memset16_code,
          PAI_MEMSET16_CODE_WORDS * sizeof(uint32_t));
   if (pai_gpu_device_backend(ctx->gpu) == PAI_GPU_BACKEND_HOST_REF) {
-    pai_gpu_host_register_shader(ctx->gpu, ctx->code.gpu_addr,
-                                 pai_host_kernel_memset16, NULL);
+    /* Host-only probe: the real kernel reads the pattern from the
+     * buffer (psbc ABI), which the host interpreter cannot emulate. */
+    PAI_LOG_INFO_(PAI_SUB_GPU, "[M0-%s] skipped on host (buffer ABI test)\n",
+                  name);
+    return 0;
   }
 
   /* Place the pattern at dst + 0x27C before dispatch. */
