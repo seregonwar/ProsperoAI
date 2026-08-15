@@ -38,6 +38,8 @@
 #define M0_DMA_BYTES   (1u << 20)
 #define M0_PM4_CAP     512
 
+#define PAI_DEPLOY_NOTIFY "ProsperoAI deployed. Credit: SeregonWar"
+
 typedef struct m0_ctx {
   pai_runtime_t *rt;
   pai_gpu_device_t *gpu;
@@ -302,6 +304,10 @@ main(void) {
 
   PAI_LOG_INFO_(PAI_SUB_CORE, "===== PAI-M0 bring-up harness =====\n");
 
+  /* Replace any previous payload instance still running (deploy
+   * automation, same pattern as MemDBG). Best effort: never fatal. */
+  pai_lifecycle_stop_previous(PAI_LIFECYCLE_PORT);
+
   st = pai_runtime_init(&rt);
   if (st != PAI_OK || !rt) {
     PAI_LOG_ERROR_(PAI_SUB_CORE, "runtime init failed: %s\n",
@@ -310,6 +316,15 @@ main(void) {
   }
   ctx.rt = rt;
   ctx.gpu = pai_runtime_gpu(rt);
+
+  /* Serve stop probes so the next deploy can replace us cleanly. */
+  if (pai_lifecycle_start(PAI_LIFECYCLE_PORT) != PAI_OK) {
+    PAI_LOG_WARN_(PAI_SUB_CORE,
+                  "lifecycle listener unavailable; next deploy may not "
+                  "replace this instance automatically\n");
+  }
+
+  pai_notify(PAI_DEPLOY_NOTIFY);
 
   if (!ctx.gpu) {
     PAI_LOG_WARN_(PAI_SUB_CORE,

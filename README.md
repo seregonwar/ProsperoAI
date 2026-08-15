@@ -23,6 +23,11 @@ Implemented so far:
 - gfx1013 vecadd compute kernel (llvm-mc assembled)
 - `prosperoai.elf` PAI-M0 harness: GPU DMA → compute dispatch → CPU
   reference comparison → benchmark
+- **Deploy automation**: every payload asks the previous instance to
+  terminate itself before starting (TCP stop probe on port 9025, same
+  pattern as MemDBG's `--replace-existing`), then binds the port for the
+  next deploy. A deployment banner ("ProsperoAI deployed. Credit:
+  SeregonWar") is shown on console via `sceKernelSendNotificationRequest`.
 
 ## Prerequisites
 

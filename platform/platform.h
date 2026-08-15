@@ -39,4 +39,34 @@ pai_platform_default_gpu_backend(const pai_platform_info_t *info);
 /* Log a human-readable capability summary. */
 void pai_platform_log(const pai_platform_info_t *info);
 
+/* ------------------------------------------------------------------ */
+/* Deployment lifecycle (whitepaper §5, §35)                           */
+/* ------------------------------------------------------------------ */
+
+/*
+ * Port the instance lifecycle listener binds. A fresh payload asks any
+ * previous instance on this port to terminate itself before starting,
+ * so consecutive deploys can be automated (same pattern as MemDBG).
+ */
+#define PAI_LIFECYCLE_PORT 9025u
+
+/*
+ * Ask a previous ProsperoAI instance (if any is listening on `port`) to
+ * terminate itself, then wait for the port to free. Returns PAI_OK when
+ * no previous instance exists or it terminated in time.
+ */
+pai_status_t pai_lifecycle_stop_previous(uint16_t port);
+
+/*
+ * Bind the lifecycle port and start the listener that terminates this
+ * instance when a newer payload asks. Returns PAI_OK on success;
+ * PAI_ERR_IO when the port cannot be bound (e.g. another instance won).
+ */
+pai_status_t pai_lifecycle_start(uint16_t port);
+
+/*
+ * Show an on-console notification (PS5) or log line (host).
+ */
+void pai_notify(const char *message);
+
 #endif /* PAI_PLATFORM_H */

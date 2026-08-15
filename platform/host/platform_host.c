@@ -42,4 +42,23 @@ pai_platform_default_gpu_backend(const pai_platform_info_t *info) {
   return PAI_GPU_BACKEND_HOST_REF;
 }
 
+/* Deployment lifecycle is a console concern; host builds no-op it. */
+
+pai_status_t
+pai_lifecycle_stop_previous(uint16_t port) {
+  (void)port;
+  return PAI_OK;
+}
+
+pai_status_t
+pai_lifecycle_start(uint16_t port) {
+  (void)port;
+  return PAI_OK;
+}
+
+void
+pai_notify(const char *message) {
+  PAI_LOG_INFO_(PAI_SUB_PLATFORM, "notify: %s\n", message);
+}
+
 #endif /* PAI_HOST */
