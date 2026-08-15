@@ -21,9 +21,23 @@ if(PAI_PLATFORM STREQUAL "ps5")
 endif()
 
 if(PAI_PLATFORM STREQUAL "ps5")
+  set(PAI_DEPLOY_ARGS "")
+  if(DEFINED ENV{PS5_HOST})
+    list(APPEND PAI_DEPLOY_ARGS -h $ENV{PS5_HOST})
+  endif()
+  if(DEFINED ENV{PS5_PORT})
+    list(APPEND PAI_DEPLOY_ARGS -p $ENV{PS5_PORT})
+  endif()
+
+  if(CMAKE_HOST_WIN32)
+    set(PAI_DEPLOY_CMD "${PS5_PAYLOAD_SDK}/win/prospero-deploy.cmd")
+  else()
+    set(PAI_DEPLOY_CMD "${PS5_DEPLOY}")
+  endif()
+
   add_custom_target(pai-deploy
     USES_TERMINAL
-    COMMAND ${PS5_DEPLOY} $<TARGET_FILE:${PAI_PAYLOAD_NAME}>
+    COMMAND ${PAI_DEPLOY_CMD} ${PAI_DEPLOY_ARGS} $<TARGET_FILE:${PAI_PAYLOAD_NAME}>
     DEPENDS ${PAI_PAYLOAD_NAME}
   )
 endif()

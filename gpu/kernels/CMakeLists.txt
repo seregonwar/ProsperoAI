@@ -26,8 +26,8 @@ if(PAI_ASSEMBLE_SHADERS)
     endif()
   endforeach()
 
-  # On Windows the llvm tools usually live inside WSL.
-  if(NOT PAI_LLVM_MC AND PAI_WSL)
+  # On Windows hosts the llvm tools usually live inside WSL.
+  if(NOT PAI_LLVM_MC AND CMAKE_HOST_WIN32 AND PAI_WSL)
     execute_process(COMMAND ${PAI_WSL} which llvm-mc
       OUTPUT_VARIABLE PAI_LLVM_MC_WSL OUTPUT_STRIP_TRAILING_WHITESPACE)
     execute_process(COMMAND ${PAI_WSL} which llvm-objcopy
