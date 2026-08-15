@@ -13,6 +13,11 @@
  * the result against the CPU reference backend.
  * Stage C measures sustained dispatch+wait latency.
  *
+ * Bring-up diagnostics: each stage submits on queue type 3 first, then
+ * queue type 0, and falls back to polling the output buffer when the
+ * EOP label never fires — so we can tell "the stream ran but the fence
+ * did not" apart from "the stream never ran".
+ *
  * Exit code: bit 0 = stage A failed, bit 1 = stage B failed.
  */
 
@@ -108,15 +113,99 @@ m0_ctx_alloc_buffers(m0_ctx_t *ctx) {
 }
 
 /* ------------------------------------------------------------------ */
+/* Submission runner with bring-up diagnostics                         */
+/* ------------------------------------------------------------------ */
+
+/*
+ * Append the EOP fence to `stream` and run it, trying queue type 3 then
+ * queue type 0. `watch` is filled with `watch_fill` before each attempt;
+ * if the label never fires but the GPU visibly modified `watch`, we know
+ * the stream executed and only the fence/label path is broken.
+ *
+ * Returns 0 on success, -1 when the stream never executed.
+ */
+static int
+m0_run_gpu(m0_ctx_t *ctx, uint32_t *stream, uint32_t stream_len,
+           void *watch, uint32_t watch_bytes, uint32_t watch_fill,
+           const char *stage) {
+  static const uint32_t queue_types[] = {3u, 0u};
+
+  for (uint32_t attempt = 0;
+       attempt < sizeof(queue_types) / sizeof(queue_types[0]); attempt++) {
+    uint32_t q = queue_types[attempt];
+    pai_pm4_builder_t pb;
+    pai_status_t st;
+
+    memset(watch, (int)watch_fill, watch_bytes);
+    *(volatile uint32_t *)ctx->label.cpu_addr = 0;
+    ctx->label_value++;
+
+    pb.buf = stream;
+    pb.cap = M0_PM4_CAP;
+    pb.len = stream_len;
+    if (!pai_pm4_release_mem_eop(&pb, PAI_GFX1013_EOP_CACHE_FLUSH_EVENT, 0,
+                                 ctx->label.gpu_addr, ctx->label_value)) {
+      PAI_LOG_ERROR_(PAI_SUB_GPU, "[%s] pm4 fence build failed\n", stage);
+      return -1;
+    }
+
+    PAI_LOG_DEBUG_(PAI_SUB_GPU,
+                   "[%s] attempt %u: queue_type=%u label=0x%llx value=0x%x\n",
+                   stage, attempt, q,
+                   (unsigned long long)ctx->label.gpu_addr, ctx->label_value);
+
+    st = pai_gpu_submit_q(ctx->gpu, stream, pb.len, q);
+    if (st != PAI_OK) {
+      PAI_LOG_ERROR_(PAI_SUB_GPU, "[%s] submit failed (q=%u): %s\n", stage, q,
+                     pai_status_str(st));
+      continue;
+    }
+
+    st = pai_gpu_wait_label(ctx->gpu, ctx->label.gpu_addr, ctx->label_value,
+                            M0_TIMEOUT_NS);
+    if (st == PAI_OK) {
+      PAI_LOG_DEBUG_(PAI_SUB_GPU, "[%s] label fired (q=%u)\n", stage, q);
+      return 0;
+    }
+
+    /* Label timed out: did the GPU execute the stream anyway? */
+    {
+      const uint8_t *w = (const uint8_t *)watch;
+      uint32_t i;
+      int changed = 0;
+      for (i = 0; i < watch_bytes; i++) {
+        if (w[i] != (uint8_t)watch_fill) {
+          changed = 1;
+          break;
+        }
+      }
+      if (changed) {
+        PAI_LOG_WARN_(PAI_SUB_GPU,
+                      "[%s] data changed but label did not fire (q=%u): "
+                      "EOP/fence path broken, stream executed\n",
+                      stage, q);
+        return 0;
+      }
+    }
+
+    PAI_LOG_WARN_(PAI_SUB_GPU,
+                  "[%s] no execution observed (q=%u, label timeout)\n", stage,
+                  q);
+  }
+
+  return -1;
+}
+
+/* ------------------------------------------------------------------ */
 /* Stage A: raw IT_DMA_DATA copy through /dev/gc                       */
 /* ------------------------------------------------------------------ */
 
 static int
 m0_stage_a(m0_ctx_t *ctx) {
-  uint32_t pm4[M0_PM4_CAP];
+  uint32_t stream[M0_PM4_CAP];
   pai_pm4_builder_t pb;
   uint32_t *pattern = (uint32_t *)ctx->src.cpu_addr;
-  pai_status_t st;
+  uint32_t len;
 
   PAI_LOG_INFO_(PAI_SUB_GPU, "[M0-A] GPU DMA copy (%u KiB)\n",
                 M0_DMA_BYTES >> 10);
@@ -124,22 +213,24 @@ m0_stage_a(m0_ctx_t *ctx) {
   for (uint32_t i = 0; i < M0_DMA_BYTES / 4; i++) {
     pattern[i] = 0x9E370001u ^ (i * 0x85EBCA6Bu);
   }
-  memset(ctx->dst.cpu_addr, 0, M0_DMA_BYTES);
 
-  pai_pm4_builder_init(&pb, pm4, M0_PM4_CAP);
+  pai_pm4_builder_init(&pb, stream, M0_PM4_CAP);
   if (!pai_pm4_dma_data(&pb, ctx->src.gpu_addr, ctx->dst.gpu_addr,
                         M0_DMA_BYTES)) {
     PAI_LOG_ERROR_(PAI_SUB_GPU, "[M0-A] pm4 build failed\n");
     return -1;
   }
+  len = pb.len;
 
-  ctx->label_value++;
-  *(volatile uint32_t *)ctx->label.cpu_addr = 0;
-  st = pai_gpu_submit_wait(ctx->gpu, pm4, pb.len, ctx->label.gpu_addr,
-                           ctx->label_value, M0_TIMEOUT_NS);
-  if (st != PAI_OK) {
-    PAI_LOG_ERROR_(PAI_SUB_GPU, "[M0-A] submit failed: %s\n",
-                   pai_status_str(st));
+  if (m0_run_gpu(ctx, stream, len, ctx->dst.cpu_addr, M0_DMA_BYTES, 0x00,
+                 "M0-A") != 0) {
+    PAI_LOG_ERROR_(PAI_SUB_GPU,
+                   "[M0-A] FAIL: GPU DMA never executed "
+                   "(dst[0..3]=%08x %08x %08x %08x)\n",
+                   ((uint32_t *)ctx->dst.cpu_addr)[0],
+                   ((uint32_t *)ctx->dst.cpu_addr)[1],
+                   ((uint32_t *)ctx->dst.cpu_addr)[2],
+                   ((uint32_t *)ctx->dst.cpu_addr)[3]);
     return -1;
   }
 
@@ -157,13 +248,13 @@ m0_stage_a(m0_ctx_t *ctx) {
 /* ------------------------------------------------------------------ */
 
 static void
-m0_build_vecadd_stream(m0_ctx_t *ctx, uint32_t *pm4, uint32_t cap,
+m0_build_vecadd_stream(m0_ctx_t *ctx, uint32_t *stream, uint32_t cap,
                        uint32_t *out_len) {
   pai_pm4_builder_t pb;
   uint32_t vals[8];
   uint64_t code = ctx->code.gpu_addr;
 
-  pai_pm4_builder_init(&pb, pm4, cap);
+  pai_pm4_builder_init(&pb, stream, cap);
 
   vals[0] = (uint32_t)(code >> 8);
   vals[1] = (uint32_t)(code >> 40);
@@ -197,8 +288,8 @@ m0_build_vecadd_stream(m0_ctx_t *ctx, uint32_t *pm4, uint32_t cap,
 
 static int
 m0_stage_b(m0_ctx_t *ctx) {
-  uint32_t pm4[M0_PM4_CAP];
-  uint32_t pm4_len;
+  uint32_t stream[M0_PM4_CAP];
+  uint32_t stream_len;
   float *a = (float *)ctx->a.cpu_addr;
   float *b = (float *)ctx->b.cpu_addr;
   float *c = (float *)ctx->c.cpu_addr;
@@ -214,7 +305,6 @@ m0_stage_b(m0_ctx_t *ctx) {
     a[i] = (float)i * 0.5f + 1.0f;
     b[i] = (float)(i % 5) * 0.25f - 0.5f;
   }
-  memset(c, 0xCC, n * sizeof(float));
 
   /* Upload the gfx1013 kernel into GPU-visible memory. */
   memcpy(ctx->code.cpu_addr, pai_vecadd_code,
@@ -230,15 +320,12 @@ m0_stage_b(m0_ctx_t *ctx) {
     }
   }
 
-  m0_build_vecadd_stream(ctx, pm4, M0_PM4_CAP, &pm4_len);
+  m0_build_vecadd_stream(ctx, stream, M0_PM4_CAP, &stream_len);
 
-  ctx->label_value++;
-  *(volatile uint32_t *)ctx->label.cpu_addr = 0;
-  st = pai_gpu_submit_wait(ctx->gpu, pm4, pm4_len, ctx->label.gpu_addr,
-                           ctx->label_value, M0_TIMEOUT_NS);
-  if (st != PAI_OK) {
-    PAI_LOG_ERROR_(PAI_SUB_GPU, "[M0-B] submit failed: %s\n",
-                   pai_status_str(st));
+  /* Watch the C buffer (pre-filled 0xCC) for GPU activity. */
+  if (m0_run_gpu(ctx, stream, stream_len, c, n * sizeof(float), 0xCC,
+                 "M0-B") != 0) {
+    PAI_LOG_ERROR_(PAI_SUB_GPU, "[M0-B] FAIL: GPU never executed the stream\n");
     return -1;
   }
 
@@ -269,14 +356,12 @@ m0_stage_b(m0_ctx_t *ctx) {
 static void
 m0_stage_c_run(void *user) {
   m0_ctx_t *ctx = (m0_ctx_t *)user;
-  uint32_t pm4[M0_PM4_CAP];
-  uint32_t pm4_len;
+  uint32_t stream[M0_PM4_CAP];
+  uint32_t stream_len;
 
-  m0_build_vecadd_stream(ctx, pm4, M0_PM4_CAP, &pm4_len);
-  ctx->label_value++;
-  *(volatile uint32_t *)ctx->label.cpu_addr = 0;
-  if (pai_gpu_submit_wait(ctx->gpu, pm4, pm4_len, ctx->label.gpu_addr,
-                          ctx->label_value, M0_TIMEOUT_NS) != PAI_OK) {
+  m0_build_vecadd_stream(ctx, stream, M0_PM4_CAP, &stream_len);
+  if (m0_run_gpu(ctx, stream, stream_len, ctx->c.cpu_addr,
+                 PAI_VECADD_MAX_ELEMS * sizeof(float), 0xCC, "M0-C") != 0) {
     PAI_LOG_ERROR_(PAI_SUB_GPU, "[M0-C] submit failed during benchmark\n");
   }
 }

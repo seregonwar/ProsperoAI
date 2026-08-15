@@ -221,21 +221,24 @@ pai_host_buffer_free(pai_gpu_device_t *device, pai_gpu_buffer_t *buffer) {
 }
 
 static pai_status_t
-pai_host_submit_wait(pai_gpu_device_t *device, const uint32_t *pm4,
-                     uint32_t dwords, uint64_t label_addr,
-                     uint32_t label_value, uint64_t timeout_ns) {
+pai_host_submit(pai_gpu_device_t *device, const uint32_t *pm4,
+                uint32_t dwords, uint32_t queue_type) {
   pai_host_ref_state_t *st = (pai_host_ref_state_t *)device->state;
-  pai_status_t r;
 
+  (void)queue_type;
+  return pai_host_run_stream(st, pm4, dwords, 0);
+}
+
+static pai_status_t
+pai_host_wait_label(pai_gpu_device_t *device, uint64_t label_addr,
+                    uint32_t label_value, uint64_t timeout_ns) {
+  /* The stream ran synchronously in submit(); the label was written by
+   * the RELEASE_MEM handler inside the stream. */
+  (void)device;
   (void)timeout_ns;
-
-  r = pai_host_run_stream(st, pm4, dwords, 0);
-  if (r != PAI_OK) {
-    return r;
+  if (label_addr != 0) {
+    *(volatile uint32_t *)(uintptr_t)label_addr = label_value;
   }
-
-  /* Emulate the EOP fence the PS5 backend appends. */
-  *(volatile uint32_t *)(uintptr_t)label_addr = label_value;
   return PAI_OK;
 }
 
@@ -273,5 +276,6 @@ const pai_gpu_backend_ops_t pai_gpu_ops_host_ref = {
     .shutdown = pai_host_shutdown,
     .buffer_alloc = pai_host_buffer_alloc,
     .buffer_free = pai_host_buffer_free,
-    .submit_wait = pai_host_submit_wait,
+    .submit = pai_host_submit,
+    .wait_label = pai_host_wait_label,
 };

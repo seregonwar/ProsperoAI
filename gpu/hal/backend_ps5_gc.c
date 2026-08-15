@@ -141,11 +141,11 @@ pai_gc_buffer_free(pai_gpu_device_t *device, pai_gpu_buffer_t *buffer) {
 
 /*
  * Build the two command-buffer descriptors and submit.
- * cb_descs must hold 2 descriptors; the caller's PM4 stream is already
- * in the cb buffer and the EOP fence has been appended.
+ * cb_descs must hold 2 descriptors; the caller's PM4 stream (including
+ * any completion packets) is already in the cb buffer.
  */
 static pai_status_t
-pai_gc_submit(pai_ps5_gc_state_t *st, uint32_t cb_words) {
+pai_gc_submit(pai_ps5_gc_state_t *st, uint32_t cb_words, uint32_t queue_type) {
   pai_gc_cb_descriptor_t descs[2];
   pai_gc_submit_args_t args;
   uint64_t cb_addr = st->cb_buf->gpu_addr;
@@ -159,54 +159,52 @@ pai_gc_submit(pai_ps5_gc_state_t *st, uint32_t cb_words) {
   descs[1].header = ((trailer_addr & 0xFFFFFFFFu) << 32) | 0xC0023F00u;
   descs[1].ib_base = ((uint64_t)16u << 32) | ((trailer_addr >> 32) & 0xFFFFu);
 
-  args.queue_type = 3; /* graphics queue (SPRX-confirmed) */
+  args.queue_type = queue_type;
   args.num_cbs = 2;
   args.cb_array = (uint64_t)(uintptr_t)&descs[0];
 
   r = ioctl(st->fd, AGC_GC_IOCTL_SUBMIT_16, &args);
   if (r != 0) {
-    PAI_LOG_ERROR_(PAI_SUB_GPU, "gc submit ioctl failed: %s (errno %d)\n",
-                   strerror(errno), errno);
+    PAI_LOG_ERROR_(PAI_SUB_GPU,
+                   "gc submit ioctl failed (q=%u): %s (errno %d)\n",
+                   queue_type, strerror(errno), errno);
     return PAI_ERR_IO;
   }
 
   st->submissions++;
+  PAI_LOG_DEBUG_(PAI_SUB_GPU,
+                 "gc submit #%u: q=%u cbs=2 words=%u\n", st->submissions,
+                 queue_type, cb_words);
   return PAI_OK;
 }
 
 static pai_status_t
-pai_gc_submit_wait(pai_gpu_device_t *device, const uint32_t *pm4,
-                   uint32_t dwords, uint64_t label_addr, uint32_t label_value,
-                   uint64_t timeout_ns) {
+pai_gc_submit_stream(pai_gpu_device_t *device, const uint32_t *pm4,
+                     uint32_t dwords, uint32_t queue_type) {
   pai_ps5_gc_state_t *st = (pai_ps5_gc_state_t *)device->state;
-  pai_pm4_builder_t builder;
-  uint32_t total = dwords + 8;
-  pai_status_t r;
-  uint64_t deadline;
 
   if (!st->fd || !st->cb_buf || !pm4 || dwords == 0 ||
-      dwords > 0xFFFFFu - 8) {
+      dwords > 0xFFFFFu) {
     return PAI_ERR_INVALID_ARG;
   }
 
-  if (total * 4 > PAI_GC_CB_BUF_SIZE) {
+  if ((uint64_t)dwords * 4 > PAI_GC_CB_BUF_SIZE) {
     return PAI_ERR_INVALID_ARG;
   }
 
   memcpy(st->cb_buf->cpu_addr, pm4, (size_t)dwords * 4);
+  return pai_gc_submit(st, dwords, queue_type);
+}
 
-  /* Append the completion fence: GPU writes label_value to label_addr
-   * once the stream reaches the EOP event. */
-  pai_pm4_builder_init(&builder, (uint32_t *)st->cb_buf->cpu_addr, total);
-  builder.len = dwords;
-  if (!pai_pm4_release_mem_eop(&builder, PAI_GFX1013_EOP_CACHE_FLUSH_EVENT, 0,
-                               label_addr, label_value)) {
-    return PAI_ERR_INTERNAL;
-  }
+static pai_status_t
+pai_gc_wait_label(pai_gpu_device_t *device, uint64_t label_addr,
+                  uint32_t label_value, uint64_t timeout_ns) {
+  uint64_t deadline;
 
-  r = pai_gc_submit(st, total);
-  if (r != PAI_OK) {
-    return r;
+  (void)device;
+
+  if (label_addr == 0) {
+    return PAI_ERR_INVALID_ARG;
   }
 
   /* Poll the label. Direct memory is GPU-coherent; the CPU observes the
@@ -313,7 +311,8 @@ const pai_gpu_backend_ops_t pai_gpu_ops_ps5_gc = {
     .shutdown = pai_gc_shutdown,
     .buffer_alloc = pai_gc_buffer_alloc,
     .buffer_free = pai_gc_buffer_free,
-    .submit_wait = pai_gc_submit_wait,
+    .submit = pai_gc_submit_stream,
+    .wait_label = pai_gc_wait_label,
 };
 
 #endif /* PAI_PS5 */

@@ -85,9 +85,30 @@ pai_gpu_buffer_free(pai_gpu_device_t *device, pai_gpu_buffer_t *buffer) {
 }
 
 pai_status_t
+pai_gpu_submit(pai_gpu_device_t *device, const uint32_t *pm4, uint32_t dwords) {
+  return device->ops->submit(device, pm4, dwords, PAI_GPU_QUEUE_DEFAULT);
+}
+
+pai_status_t
+pai_gpu_submit_q(pai_gpu_device_t *device, const uint32_t *pm4, uint32_t dwords,
+                 uint32_t queue_type) {
+  return device->ops->submit(device, pm4, dwords, queue_type);
+}
+
+pai_status_t
+pai_gpu_wait_label(pai_gpu_device_t *device, uint64_t label_addr,
+                   uint32_t label_value, uint64_t timeout_ns) {
+  return device->ops->wait_label(device, label_addr, label_value, timeout_ns);
+}
+
+pai_status_t
 pai_gpu_submit_wait(pai_gpu_device_t *device, const uint32_t *pm4,
                     uint32_t dwords, uint64_t label_addr, uint32_t label_value,
                     uint64_t timeout_ns) {
-  return device->ops->submit_wait(device, pm4, dwords, label_addr, label_value,
-                                  timeout_ns);
+  pai_status_t st = device->ops->submit(device, pm4, dwords,
+                                        PAI_GPU_QUEUE_DEFAULT);
+  if (st != PAI_OK) {
+    return st;
+  }
+  return device->ops->wait_label(device, label_addr, label_value, timeout_ns);
 }

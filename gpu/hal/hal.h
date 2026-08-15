@@ -40,6 +40,9 @@ typedef struct pai_gpu_buffer {
 /* Buffer allocation granularity (PS5 direct-memory constraints). */
 #define PAI_GPU_ALLOC_ALIGN (2u * 1024u * 1024u)
 
+/* Default /dev/gc queue type used by pai_gpu_submit(). */
+#define PAI_GPU_QUEUE_DEFAULT 3u
+
 /* Backend operations — implemented by each backend, registered in hal.c. */
 typedef struct pai_gpu_backend_ops {
   const char *name;
@@ -49,9 +52,10 @@ typedef struct pai_gpu_backend_ops {
                                pai_gpu_buffer_t *buffer, uint64_t size,
                                uint32_t flags);
   void (*buffer_free)(pai_gpu_device_t *device, pai_gpu_buffer_t *buffer);
-  pai_status_t (*submit_wait)(pai_gpu_device_t *device, const uint32_t *pm4,
-                              uint32_t dwords, uint64_t label_addr,
-                              uint32_t label_value, uint64_t timeout_ns);
+  pai_status_t (*submit)(pai_gpu_device_t *device, const uint32_t *pm4,
+                         uint32_t dwords, uint32_t queue_type);
+  pai_status_t (*wait_label)(pai_gpu_device_t *device, uint64_t label_addr,
+                             uint32_t label_value, uint64_t timeout_ns);
 } pai_gpu_backend_ops_t;
 
 struct pai_gpu_device {
@@ -77,14 +81,22 @@ pai_status_t pai_gpu_buffer_alloc(pai_gpu_device_t *device,
 void pai_gpu_buffer_free(pai_gpu_device_t *device, pai_gpu_buffer_t *buffer);
 
 /*
- * Submit a PM4 command stream and wait until the GPU signals the label:
- * the GPU writes `label_value` to `label_addr` (4-byte aligned,
- * GPU-visible) when the stream completes. The PS5 backend appends the
- * EOP fence packet internally; the host backend emulates it.
- *
- * Returns PAI_ERR_TIMEOUT if the label is not observed before
- * `timeout_ns`.
+ * Submit a PM4 command stream. Completion is signaled by the stream
+ * itself (the caller appends an EOP/RELEASE_MEM packet writing
+ * `label_value` to `label_addr`), then pai_gpu_wait_label() polls it.
  */
+pai_status_t pai_gpu_submit(pai_gpu_device_t *device, const uint32_t *pm4,
+                            uint32_t dwords);
+
+/* Submit on an explicit queue type (PS5 /dev/gc semantics). */
+pai_status_t pai_gpu_submit_q(pai_gpu_device_t *device, const uint32_t *pm4,
+                              uint32_t dwords, uint32_t queue_type);
+
+/* Poll a GPU-written label; PAI_ERR_TIMEOUT if not observed in time. */
+pai_status_t pai_gpu_wait_label(pai_gpu_device_t *device, uint64_t label_addr,
+                                uint32_t label_value, uint64_t timeout_ns);
+
+/* Convenience: submit + wait_label. */
 pai_status_t pai_gpu_submit_wait(pai_gpu_device_t *device,
                                  const uint32_t *pm4, uint32_t dwords,
                                  uint64_t label_addr, uint32_t label_value,
