@@ -1,5 +1,6 @@
 pai_define_library(pai_gpu_kernels
   vecadd_code.c
+  memset16_code.c
 )
 
 target_include_directories(pai_gpu_kernels PUBLIC

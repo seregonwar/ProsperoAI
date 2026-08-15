@@ -27,6 +27,7 @@
 #include <bench.h>
 #include <hal/hal.h>
 #include <host_kernels.h>
+#include <memset16.h>
 #include <pm4/pm4.h>
 #include <ref_ops.h>
 #include <runtime.h>
@@ -266,6 +267,100 @@ m0_stage_a(m0_ctx_t *ctx) {
 }
 
 /* ------------------------------------------------------------------ */
+/* Stage B0: OpenAGC memset16 kernel (golden dispatch reference)       */
+/* ------------------------------------------------------------------ */
+
+static void
+m0_build_memset16_stream(m0_ctx_t *ctx, uint32_t *stream, uint32_t cap,
+                         uint64_t dst_addr, uint32_t blocks,
+                         const uint32_t pattern[4], uint32_t *out_len) {
+  pai_pm4_builder_t pb;
+  uint32_t vals[9];
+  uint64_t code = ctx->code.gpu_addr;
+
+  pai_pm4_builder_init(&pb, stream, cap);
+
+  vals[0] = (uint32_t)(code >> 8);
+  vals[1] = (uint32_t)(code >> 40);
+  pai_pm4_set_sh_reg_compute(&pb, PAI_REG_COMPUTE_PGM_LO, 2, vals);
+
+  vals[0] = PAI_MEMSET16_RSRC1;
+  vals[1] = PAI_MEMSET16_RSRC2;
+  pai_pm4_set_sh_reg_compute(&pb, PAI_REG_COMPUTE_PGM_RSRC1, 2, vals);
+
+  vals[0] = PAI_MEMSET16_RSRC3;
+  pai_pm4_set_sh_reg_compute(&pb, PAI_REG_COMPUTE_PGM_RSRC3, 1, vals);
+
+  vals[0] = PAI_MEMSET16_THREADS_X;
+  vals[1] = 1;
+  vals[2] = 1;
+  pai_pm4_set_sh_reg_compute(&pb, PAI_REG_COMPUTE_NUM_THREAD_X, 3, vals);
+
+  vals[0] = 0; /* ring offsets (unused) */
+  vals[1] = 0;
+  vals[2] = (uint32_t)(dst_addr & 0xFFFFFFFFu);
+  vals[3] = (uint32_t)(dst_addr >> 32);
+  vals[4] = blocks;
+  vals[5] = pattern[0];
+  vals[6] = pattern[1];
+  vals[7] = pattern[2];
+  vals[8] = pattern[3];
+  pai_pm4_set_sh_reg_compute(&pb, PAI_REG_COMPUTE_USER_DATA_0, 9, vals);
+
+  pai_pm4_dispatch_direct(&pb, (blocks + PAI_MEMSET16_THREADS_X - 1) /
+                                   PAI_MEMSET16_THREADS_X,
+                          1, 1, 0);
+
+  *out_len = pb.len;
+}
+
+static int
+m0_stage_b0(m0_ctx_t *ctx) {
+  uint32_t stream[M0_PM4_CAP];
+  uint32_t stream_len;
+  uint32_t pattern[4] = {0xDEADBEEFu, 0x11223344u, 0x55667788u, 0x99AABBCCu};
+  const uint32_t blocks = 1024; /* 16 KiB */
+  uint8_t *dst = (uint8_t *)ctx->dst.cpu_addr;
+  uint32_t ref[1024 * 4];
+  pai_status_t st;
+
+  PAI_LOG_INFO_(PAI_SUB_GPU,
+                "[M0-B0] GPU compute dispatch (memset16 golden, blocks=%u)\n",
+                blocks);
+
+  memcpy(ctx->code.cpu_addr, pai_memset16_code,
+         PAI_MEMSET16_CODE_WORDS * sizeof(uint32_t));
+
+  if (pai_gpu_device_backend(ctx->gpu) == PAI_GPU_BACKEND_HOST_REF) {
+    st = pai_gpu_host_register_shader(ctx->gpu, ctx->code.gpu_addr,
+                                      pai_host_kernel_memset16, NULL);
+    if (st != PAI_OK) {
+      PAI_LOG_ERROR_(PAI_SUB_GPU, "[M0-B0] shader registration failed\n");
+      return -1;
+    }
+  }
+
+  m0_build_memset16_stream(ctx, stream, M0_PM4_CAP, ctx->dst.gpu_addr, blocks,
+                           pattern, &stream_len);
+
+  if (m0_run_gpu(ctx, stream, stream_len, dst, blocks * 16, 0x00, "M0-B0") !=
+      0) {
+    PAI_LOG_ERROR_(PAI_SUB_GPU,
+                   "[M0-B0] FAIL: GPU never executed the stream\n");
+    return -1;
+  }
+
+  st = pai_ref_memset16(ref, pattern, blocks);
+  if (st != PAI_OK || memcmp(dst, ref, blocks * 16) != 0) {
+    PAI_LOG_ERROR_(PAI_SUB_GPU, "[M0-B0] FAIL: pattern mismatch\n");
+    return -1;
+  }
+
+  PAI_LOG_INFO_(PAI_SUB_GPU, "[M0-B0] PASS: compute dispatch verified\n");
+  return 0;
+}
+
+/* ------------------------------------------------------------------ */
 /* Stage B: gfx1013 vecadd compute kernel vs CPU reference             */
 /* ------------------------------------------------------------------ */
 
@@ -449,6 +544,10 @@ main(void) {
 
   if (m0_stage_a(&ctx) != 0) {
     fail |= M0_STAGE_A_FAIL;
+  }
+
+  if (m0_stage_b0(&ctx) != 0) {
+    fail |= M0_STAGE_B_FAIL;
   }
 
   if (m0_stage_b(&ctx) != 0) {
