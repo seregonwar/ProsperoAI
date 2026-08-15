@@ -1,0 +1,132 @@
+{
+  "version": 6,
+  "cmakeMinimumRequired": {
+    "major": 3,
+    "minor": 20,
+    "patch": 0
+  },
+  "configurePresets": [
+    {
+      "name": "ps5-debug",
+      "displayName": "PS5 Debug",
+      "description": "Cross-compile for PS5 with debug info and verbose diagnostics",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/ps5-debug",
+      "toolchainFile": "${sourceDir}/cmake/pai_ps5_toolchain.cmake",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "CMAKE_MAKE_PROGRAM": "${sourceDir}/ps5-payload-sdk/win/ninja.exe",
+        "PAI_ASSEMBLE_SHADERS": "ON"
+      }
+    },
+    {
+      "name": "ps5-release",
+      "displayName": "PS5 Release",
+      "description": "Cross-compile for PS5, optimized",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/ps5-release",
+      "toolchainFile": "${sourceDir}/cmake/pai_ps5_toolchain.cmake",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "CMAKE_MAKE_PROGRAM": "${sourceDir}/ps5-payload-sdk/win/ninja.exe",
+        "PAI_ASSEMBLE_SHADERS": "ON"
+      }
+    },
+    {
+      "name": "ps5-safe",
+      "displayName": "PS5 Safe Mode",
+      "description": "Safe mode: CPU-only diagnostics, no GPU submission, no kernel patches",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/ps5-safe",
+      "toolchainFile": "${sourceDir}/cmake/pai_ps5_toolchain.cmake",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "CMAKE_MAKE_PROGRAM": "${sourceDir}/ps5-payload-sdk/win/ninja.exe",
+        "PAI_SAFE_MODE": "ON"
+      }
+    },
+    {
+      "name": "host-reference",
+      "displayName": "Host Reference",
+      "description": "Host build of the runtime with the reference backends (no tests)",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/host-reference",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "CMAKE_MAKE_PROGRAM": "${sourceDir}/ps5-payload-sdk/win/ninja.exe",
+        "PAI_PLATFORM": "host",
+        "PAI_BUILD_TESTS": "OFF"
+      }
+    },
+    {
+      "name": "host-tests",
+      "displayName": "Host Tests",
+      "description": "Host debug build with the unit test suite (ctest)",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/host-tests",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "CMAKE_MAKE_PROGRAM": "${sourceDir}/ps5-payload-sdk/win/ninja.exe",
+        "PAI_PLATFORM": "host",
+        "PAI_BUILD_TESTS": "ON"
+      }
+    },
+    {
+      "name": "host-sanitized",
+      "displayName": "Host Sanitized",
+      "description": "Host build with AddressSanitizer and UndefinedBehaviorSanitizer",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/host-sanitized",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "CMAKE_MAKE_PROGRAM": "${sourceDir}/ps5-payload-sdk/win/ninja.exe",
+        "CMAKE_C_FLAGS": "-fsanitize=address,undefined -fno-omit-frame-pointer",
+        "CMAKE_EXE_LINKER_FLAGS": "-fsanitize=address,undefined",
+        "PAI_PLATFORM": "host",
+        "PAI_BUILD_TESTS": "ON"
+      }
+    }
+  ],
+  "buildPresets": [
+    {
+      "name": "ps5-debug",
+      "configurePreset": "ps5-debug"
+    },
+    {
+      "name": "ps5-release",
+      "configurePreset": "ps5-release"
+    },
+    {
+      "name": "ps5-safe",
+      "configurePreset": "ps5-safe"
+    },
+    {
+      "name": "host-reference",
+      "configurePreset": "host-reference"
+    },
+    {
+      "name": "host-tests",
+      "configurePreset": "host-tests"
+    },
+    {
+      "name": "host-sanitized",
+      "configurePreset": "host-sanitized"
+    }
+  ],
+  "testPresets": [
+    {
+      "name": "host-tests",
+      "configurePreset": "host-tests",
+      "output": {
+        "outputOnFailure": true
+      }
+    },
+    {
+      "name": "host-sanitized",
+      "configurePreset": "host-sanitized",
+      "output": {
+        "outputOnFailure": true
+      }
+    }
+  ]
+}

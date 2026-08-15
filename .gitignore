@@ -1,0 +1,22 @@
+# Build outputs
+/build/
+build/
+*.o
+*.obj
+*.elf
+
+# Vendored toolchain and reference binaries (kept out of git):
+#  - ps5-payload-sdk/ : OpenOrbis PS5 payload SDK (toolchain + libs)
+#  - kernel_940.elf   : FW 9.40 kernel dump used for RE
+ps5-payload-sdk/
+kernel_940.elf
+
+# IDE
+.vs/
+.idea/
+.vscode/
+
+# Python
+__pycache__/
+*.pyc
+/ps5-payload-sdk
