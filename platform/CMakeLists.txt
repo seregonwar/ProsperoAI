@@ -1,6 +1,7 @@
 if(PAI_PLATFORM STREQUAL "ps5")
   set(PAI_PLATFORM_SOURCES
     ps5/platform_ps5.c
+    ps5/privilege.c
     ps5/lifecycle.c
     ps5/notify.c
   )

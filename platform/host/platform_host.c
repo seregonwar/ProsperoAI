@@ -42,6 +42,11 @@ pai_platform_default_gpu_backend(const pai_platform_info_t *info) {
   return PAI_GPU_BACKEND_HOST_REF;
 }
 
+pai_status_t
+pai_platform_escalate(void) {
+  return PAI_OK;
+}
+
 /* Deployment lifecycle is a console concern; host builds no-op it. */
 
 pai_status_t

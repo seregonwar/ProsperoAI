@@ -13,7 +13,6 @@
 #ifdef PAI_PS5
 #include <ps5/klog.h>
 #endif
-
 static const char *const k_level_name[PAI_LOG_COUNT] = {
     [PAI_LOG_TRACE] = "TRACE",
     [PAI_LOG_DEBUG] = "DEBUG",
@@ -35,6 +34,7 @@ static const char *const k_subsystem_name[PAI_SUB_COUNT] = {
 };
 
 static pai_log_level_t g_pai_log_level = PAI_LOG_INFO;
+static FILE *g_pai_log_file = NULL;
 
 void
 pai_log_set_level(pai_log_level_t level) {
@@ -46,6 +46,28 @@ pai_log_set_level(pai_log_level_t level) {
 pai_log_level_t
 pai_log_get_level(void) {
   return g_pai_log_level;
+}
+
+int
+pai_log_file_open(const char *path) {
+  if (!path || !path[0]) {
+    return -1;
+  }
+
+  g_pai_log_file = fopen(path, "a");
+  if (!g_pai_log_file) {
+    return -1;
+  }
+  setvbuf(g_pai_log_file, NULL, _IOLBF, 0);
+  return 0;
+}
+
+void
+pai_log_file_close(void) {
+  if (g_pai_log_file) {
+    fclose(g_pai_log_file);
+    g_pai_log_file = NULL;
+  }
 }
 
 void
@@ -72,6 +94,10 @@ pai_log(pai_log_level_t level, pai_log_subsystem_t subsystem, const char *fmt,
   va_end(ap);
 
   printf("%s", buf);
+  if (g_pai_log_file) {
+    fputs(buf, g_pai_log_file);
+    fflush(g_pai_log_file);
+  }
 #ifdef PAI_PS5
   klog_puts(buf);
 #endif

@@ -3,9 +3,16 @@
 #include <pai/log.h>
 #include <pai/version.h>
 
+#include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+
+#ifdef PAI_PS5
+#include <sys/stat.h>
+#define PAI_LOG_DIR  "/data/prosperoai"
+#define PAI_LOG_FILE "/data/prosperoai/prosperoai.log"
+#endif
 
 pai_status_t
 pai_runtime_init(pai_runtime_t **out_runtime) {
@@ -34,6 +41,25 @@ pai_runtime_init(pai_runtime_t **out_runtime) {
     return st;
   }
   pai_platform_log(&rt->platform);
+
+#ifdef PAI_PS5
+  /* Escape the sandbox, then attach the on-console log file. */
+  st = pai_platform_escalate();
+  if (st == PAI_OK) {
+    if (mkdir(PAI_LOG_DIR, 0777) != 0 && errno != EEXIST) {
+      PAI_LOG_WARN_(PAI_SUB_CORE, "cannot create %s (errno %d)\n", PAI_LOG_DIR,
+                    errno);
+    } else if (pai_log_file_open(PAI_LOG_FILE) != 0) {
+      PAI_LOG_WARN_(PAI_SUB_CORE, "cannot open log file %s (errno %d)\n",
+                    PAI_LOG_FILE, errno);
+    } else {
+      PAI_LOG_INFO_(PAI_SUB_CORE, "logging to %s\n", PAI_LOG_FILE);
+    }
+  } else {
+    PAI_LOG_WARN_(PAI_SUB_CORE,
+                  "privilege escalation failed; /data logging disabled\n");
+  }
+#endif
 
   backend = pai_platform_default_gpu_backend(&rt->platform);
   if (backend == PAI_GPU_BACKEND_NONE) {
@@ -64,6 +90,7 @@ pai_runtime_shutdown(pai_runtime_t *runtime) {
     pai_gpu_device_destroy(runtime->gpu);
     runtime->gpu = NULL;
   }
+  pai_log_file_close();
   runtime->initialized = 0;
   free(runtime);
 }

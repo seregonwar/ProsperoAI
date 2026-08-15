@@ -28,6 +28,10 @@ Implemented so far:
   pattern as MemDBG's `--replace-existing`), then binds the port for the
   next deploy. A deployment banner ("ProsperoAI deployed. Credit:
   SeregonWar") is shown on console via `sceKernelSendNotificationRequest`.
+- **On-console logging**: the payload escapes the process jail (MemDBG
+  pattern: system auth id + full caps + root vnode retarget) and appends
+  every log line to `/data/prosperoai/prosperoai.log`, in addition to
+  stdout and the kernel log.
 
 ## Prerequisites
 

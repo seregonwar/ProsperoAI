@@ -36,6 +36,14 @@ typedef enum pai_log_subsystem {
 void pai_log_set_level(pai_log_level_t level);
 pai_log_level_t pai_log_get_level(void);
 
+/*
+ * Attach a file sink: every subsequent log line is appended there too.
+ * Returns 0 on success. `path` must already be creatable (parent dirs
+ * must exist).
+ */
+int pai_log_file_open(const char *path);
+void pai_log_file_close(void);
+
 void pai_log(pai_log_level_t level, pai_log_subsystem_t subsystem,
              const char *fmt, ...);
 

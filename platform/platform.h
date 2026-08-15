@@ -32,6 +32,13 @@ typedef struct pai_platform_info {
 /* Probe the environment. Safe to call once at runtime init. */
 pai_status_t pai_platform_detect(pai_platform_info_t *info);
 
+/*
+ * Escalate this payload to system credentials and escape the process
+ * jail (PS5 only; host builds are no-ops). Required before the runtime
+ * can write logs/models under /data. Mirrors MemDBG's jailbreak_self.
+ */
+pai_status_t pai_platform_escalate(void);
+
 /* Default GPU backend for this platform. */
 pai_gpu_backend_t
 pai_platform_default_gpu_backend(const pai_platform_info_t *info);
