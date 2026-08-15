@@ -19,4 +19,12 @@ pai_status_t pai_host_kernel_vecadd(void *ctx, const uint32_t user_data[16],
 pai_status_t pai_host_kernel_memset16(void *ctx, const uint32_t user_data[16],
                                       uint32_t threads_x, uint32_t group_x);
 
+/* store_const (E1): user_data 0-1 = dst; each thread writes a constant. */
+pai_status_t pai_host_kernel_store_const(void *ctx, const uint32_t user_data[16],
+                                         uint32_t threads_x, uint32_t group_x);
+
+/* loadstore (E2): user_data 0-1 = A, 2-3 = C; c[i] = a[i]. */
+pai_status_t pai_host_kernel_loadstore(void *ctx, const uint32_t user_data[16],
+                                       uint32_t threads_x, uint32_t group_x);
+
 #endif /* PAI_GPU_HOST_KERNELS_H */

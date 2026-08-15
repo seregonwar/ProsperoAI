@@ -39,12 +39,26 @@ pai_gpu_host_register_shader(pai_gpu_device_t *device, uint64_t code_addr,
                              pai_host_kernel_fn fn, void *ctx) {
   pai_host_ref_state_t *st;
   pai_host_shader_entry_t *entry;
+  pai_host_shader_entry_t **link;
 
   if (!device || device->backend != PAI_GPU_BACKEND_HOST_REF || !fn) {
     return PAI_ERR_INVALID_ARG;
   }
 
   st = (pai_host_ref_state_t *)device->state;
+
+  /* Re-registering the same code address replaces the previous entry
+   * (the harness reuses one code buffer across experiments). */
+  link = &st->shaders;
+  while (*link) {
+    if ((*link)->code_addr == code_addr) {
+      pai_host_shader_entry_t *old = *link;
+      *link = old->next;
+      free(old);
+      break;
+    }
+    link = &(*link)->next;
+  }
 
   entry = (pai_host_shader_entry_t *)calloc(1, sizeof(*entry));
   if (!entry) {

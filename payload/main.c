@@ -27,6 +27,7 @@
 #include <bench.h>
 #include <hal/hal.h>
 #include <host_kernels.h>
+#include <m0_experiments.h>
 #include <memset16.h>
 #include <pm4/pm4.h>
 #include <ref_ops.h>
@@ -263,6 +264,188 @@ m0_stage_a(m0_ctx_t *ctx) {
   }
 
   PAI_LOG_INFO_(PAI_SUB_GPU, "[M0-A] PASS: GPU DMA verified\n");
+  return 0;
+}
+
+/* ------------------------------------------------------------------ */
+/* Stage E: compute bring-up experiment matrix (batch diagnostics)     */
+/* ------------------------------------------------------------------ */
+
+static void
+m0_build_dispatch_stream(m0_ctx_t *ctx, uint32_t *stream, uint32_t cap,
+                         uint32_t rsrc2, uint32_t threads_x, uint32_t groups_x,
+                         const uint32_t *user_data, uint32_t ud_count,
+                         uint32_t *out_len) {
+  pai_pm4_builder_t pb;
+  uint32_t vals[9];
+  uint64_t code = ctx->code.gpu_addr;
+
+  pai_pm4_builder_init(&pb, stream, cap);
+
+  vals[0] = (uint32_t)(code >> 8);
+  vals[1] = (uint32_t)(code >> 40);
+  pai_pm4_set_sh_reg_compute(&pb, PAI_REG_COMPUTE_PGM_LO, 2, vals);
+
+  vals[0] = PAI_EXP_RSRC1;
+  vals[1] = rsrc2;
+  pai_pm4_set_sh_reg_compute(&pb, PAI_REG_COMPUTE_PGM_RSRC1, 2, vals);
+
+  vals[0] = PAI_EXP_RSRC3;
+  pai_pm4_set_sh_reg_compute(&pb, PAI_REG_COMPUTE_PGM_RSRC3, 1, vals);
+
+  vals[0] = threads_x;
+  vals[1] = 1;
+  vals[2] = 1;
+  pai_pm4_set_sh_reg_compute(&pb, PAI_REG_COMPUTE_NUM_THREAD_X, 3, vals);
+
+  pai_pm4_set_sh_reg_compute(&pb, PAI_REG_COMPUTE_USER_DATA_0, ud_count,
+                             user_data);
+
+  pai_pm4_dispatch_direct(&pb, groups_x, 1, 1, 0);
+
+  *out_len = pb.len;
+}
+
+/* Defined with stage B0 below. */
+static void m0_build_memset16_stream(m0_ctx_t *ctx, uint32_t *stream,
+                                     uint32_t cap, uint64_t dst_addr,
+                                     uint32_t blocks, const uint32_t pattern[4],
+                                     uint32_t *out_len);
+
+static void
+m0_exp_report(const char *name, int ok) {
+  PAI_LOG_INFO_(PAI_SUB_GPU, "[M0-%s] %s\n", name, ok ? "PASS" : "FAIL");
+}
+
+static int
+m0_stage_e(m0_ctx_t *ctx) {
+  uint32_t stream[M0_PM4_CAP];
+  uint32_t stream_len;
+  uint32_t ud[9];
+  uint32_t *dst32 = (uint32_t *)ctx->dst.cpu_addr;
+  uint32_t *a32 = (uint32_t *)ctx->a.cpu_addr;
+  uint32_t *c32 = (uint32_t *)ctx->c.cpu_addr;
+  pai_gpu_device_t *gpu = ctx->gpu;
+  uint32_t pattern[4] = {0xDEADBEEFu, 0x11223344u, 0x55667788u, 0x99AABBCCu};
+
+  PAI_LOG_INFO_(PAI_SUB_GPU, "[M0-E] compute experiment matrix\n");
+
+  /* E1: store_const — no loads, validated encoding. */
+  {
+    memcpy(ctx->code.cpu_addr, pai_store_const_code,
+           PAI_STORE_CONST_CODE_WORDS * sizeof(uint32_t));
+    if (pai_gpu_device_backend(gpu) == PAI_GPU_BACKEND_HOST_REF) {
+      pai_gpu_host_register_shader(gpu, ctx->code.gpu_addr,
+                                   pai_host_kernel_store_const, NULL);
+    }
+    ud[0] = (uint32_t)(ctx->dst.gpu_addr & 0xFFFFFFFFu);
+    ud[1] = (uint32_t)(ctx->dst.gpu_addr >> 32);
+    m0_build_dispatch_stream(ctx, stream, M0_PM4_CAP, PAI_STORE_CONST_RSRC2,
+                             PAI_EXP_THREADS_X, 1, ud, 2, &stream_len);
+    m0_run_gpu(ctx, stream, stream_len, dst32, 128, 0x00, "E1");
+    {
+      int ok = 1;
+      for (uint32_t i = 0; i < PAI_EXP_THREADS_X; i++) {
+        if (dst32[i] != PAI_STORE_CONST_VALUE) {
+          ok = 0;
+          break;
+        }
+      }
+      m0_exp_report("E1", ok);
+      if (!ok) {
+        PAI_LOG_ERROR_(PAI_SUB_GPU, "[M0-E1] dst[0..7] = %08x %08x %08x %08x "
+                       "%08x %08x %08x %08x\n",
+                       dst32[0], dst32[1], dst32[2], dst32[3], dst32[4],
+                       dst32[5], dst32[6], dst32[7]);
+      }
+    }
+  }
+
+  /* E2: loadstore — flat_load + flat_store. */
+  {
+    memcpy(ctx->code.cpu_addr, pai_loadstore_code,
+           PAI_LOADSTORE_CODE_WORDS * sizeof(uint32_t));
+    if (pai_gpu_device_backend(gpu) == PAI_GPU_BACKEND_HOST_REF) {
+      pai_gpu_host_register_shader(gpu, ctx->code.gpu_addr,
+                                   pai_host_kernel_loadstore, NULL);
+    }
+    for (uint32_t i = 0; i < PAI_EXP_THREADS_X; i++) {
+      a32[i] = 0x11111111u + i;
+    }
+    ud[0] = (uint32_t)(ctx->a.gpu_addr & 0xFFFFFFFFu);
+    ud[1] = (uint32_t)(ctx->a.gpu_addr >> 32);
+    ud[2] = (uint32_t)(ctx->c.gpu_addr & 0xFFFFFFFFu);
+    ud[3] = (uint32_t)(ctx->c.gpu_addr >> 32);
+    m0_build_dispatch_stream(ctx, stream, M0_PM4_CAP, PAI_LOADSTORE_RSRC2,
+                             PAI_EXP_THREADS_X, 1, ud, 4, &stream_len);
+    m0_run_gpu(ctx, stream, stream_len, c32, 128, 0xCC, "E2");
+    {
+      int ok = 1;
+      for (uint32_t i = 0; i < PAI_EXP_THREADS_X; i++) {
+        if (c32[i] != a32[i]) {
+          ok = 0;
+          break;
+        }
+      }
+      m0_exp_report("E2", ok);
+      if (!ok) {
+        PAI_LOG_ERROR_(PAI_SUB_GPU, "[M0-E2] c[0..7] = %08x %08x %08x %08x "
+                       "%08x %08x %08x %08x\n",
+                       c32[0], c32[1], c32[2], c32[3], c32[4], c32[5], c32[6],
+                       c32[7]);
+      }
+    }
+  }
+
+  /* E3: memset golden, single group (blocks=64). */
+  {
+    memcpy(ctx->code.cpu_addr, pai_memset16_code,
+           PAI_MEMSET16_CODE_WORDS * sizeof(uint32_t));
+    if (pai_gpu_device_backend(gpu) == PAI_GPU_BACKEND_HOST_REF) {
+      pai_gpu_host_register_shader(gpu, ctx->code.gpu_addr,
+                                   pai_host_kernel_memset16, NULL);
+    }
+    m0_build_memset16_stream(ctx, stream, M0_PM4_CAP, ctx->dst.gpu_addr, 64,
+                             pattern, &stream_len);
+    m0_run_gpu(ctx, stream, stream_len, dst32, 64 * 16, 0x00, "E3");
+    {
+      uint32_t ref[64 * 16 / 4];
+      int ok;
+      pai_ref_memset16(ref, pattern, 64);
+      ok = memcmp(dst32, ref, 64 * 16) == 0;
+      m0_exp_report("E3", ok);
+      if (!ok) {
+        PAI_LOG_ERROR_(PAI_SUB_GPU, "[M0-E3] dst[0..7] = %08x %08x %08x %08x "
+                       "%08x %08x %08x %08x\n",
+                       dst32[0], dst32[1], dst32[2], dst32[3], dst32[4],
+                       dst32[5], dst32[6], dst32[7]);
+      }
+    }
+  }
+
+  /* E4: memset golden, 16 groups (control — the original failing case). */
+  {
+    m0_build_memset16_stream(ctx, stream, M0_PM4_CAP, ctx->dst.gpu_addr, 1024,
+                             pattern, &stream_len);
+    m0_run_gpu(ctx, stream, stream_len, dst32, 1024 * 16, 0x00, "E4");
+    {
+      uint32_t ref[1024 * 16 / 4];
+      int ok;
+      pai_ref_memset16(ref, pattern, 1024);
+      ok = memcmp(dst32, ref, 1024 * 16) == 0;
+      m0_exp_report("E4", ok);
+      if (!ok) {
+        PAI_LOG_ERROR_(PAI_SUB_GPU, "[M0-E4] dst[0..15] = %08x %08x %08x %08x "
+                       "%08x %08x %08x %08x %08x %08x %08x %08x %08x %08x "
+                       "%08x %08x\n",
+                       dst32[0], dst32[1], dst32[2], dst32[3], dst32[4],
+                       dst32[5], dst32[6], dst32[7], dst32[8], dst32[9],
+                       dst32[10], dst32[11], dst32[12], dst32[13], dst32[14],
+                       dst32[15]);
+      }
+    }
+  }
+
   return 0;
 }
 
@@ -565,6 +748,8 @@ main(void) {
   if (m0_stage_a(&ctx) != 0) {
     fail |= M0_STAGE_A_FAIL;
   }
+
+  m0_stage_e(&ctx);
 
   if (m0_stage_b0(&ctx) != 0) {
     fail |= M0_STAGE_B_FAIL;

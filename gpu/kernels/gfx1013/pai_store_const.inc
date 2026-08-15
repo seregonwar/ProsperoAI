@@ -1,0 +1,5 @@
+/* Generated from store_const.s by llvm-mc (gfx1013). Do not edit. */
+    0x7E020200u, 0x7E040201u, 0x7E060300u, 0x34060682u,
+    0xD70F6A04u, 0x00020701u, 0xD5286A05u, 0x01A90102u,
+    0x7E0C02FFu, 0xABCD1234u, 0xDC700000u, 0x007D0604u,
+    0xBF810000u,
