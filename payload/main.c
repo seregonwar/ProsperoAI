@@ -352,7 +352,27 @@ m0_stage_b0(m0_ctx_t *ctx) {
 
   st = pai_ref_memset16(ref, pattern, blocks);
   if (st != PAI_OK || memcmp(dst, ref, blocks * 16) != 0) {
-    PAI_LOG_ERROR_(PAI_SUB_GPU, "[M0-B0] FAIL: pattern mismatch\n");
+    uint32_t matching = 0;
+    for (uint32_t i = 0; i < blocks * 16 / 4; i++) {
+      if (((uint32_t *)dst)[i] == ((uint32_t *)ref)[i]) {
+        matching++;
+      }
+    }
+    PAI_LOG_ERROR_(PAI_SUB_GPU,
+                   "[M0-B0] FAIL: pattern mismatch (%u/%u dwords match)\n",
+                   matching, blocks * 16 / 4);
+    PAI_LOG_ERROR_(PAI_SUB_GPU,
+                   "[M0-B0] dst[0..15]  = %08x %08x %08x %08x\n",
+                   ((uint32_t *)dst)[0], ((uint32_t *)dst)[1],
+                   ((uint32_t *)dst)[2], ((uint32_t *)dst)[3]);
+    PAI_LOG_ERROR_(PAI_SUB_GPU,
+                   "[M0-B0] ref[0..15]  = %08x %08x %08x %08x\n",
+                   ((uint32_t *)ref)[0], ((uint32_t *)ref)[1],
+                   ((uint32_t *)ref)[2], ((uint32_t *)ref)[3]);
+    PAI_LOG_ERROR_(PAI_SUB_GPU,
+                   "[M0-B0] dst[16..31] = %08x %08x %08x %08x\n",
+                   ((uint32_t *)dst)[4], ((uint32_t *)dst)[5],
+                   ((uint32_t *)dst)[6], ((uint32_t *)dst)[7]);
     return -1;
   }
 

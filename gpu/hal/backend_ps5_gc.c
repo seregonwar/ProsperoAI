@@ -40,6 +40,13 @@
 #define AGC_GC_IOCTL_SUBMIT_16  0xC0108102u /* nr=0x02, RW, 16 bytes */
 #define AGC_GC_IOCTL_CONTEXT_QUERY 0xC004812Eu /* nr=0x2e, R, 4 bytes */
 
+/* GPU register space (OpenAGC agc_ioctl.h, SPRX-confirmed): mapped on
+ * the gc fd when the context query reports an uninitialized context
+ * (capability lower 16 bits == 0). */
+#define AGC_GC_MMIO_BASE 0xFE0200000ULL
+#define AGC_GC_MMIO_SIZE 0x4000u
+#define AGC_GC_MMIO_PROT 0x22u /* WRITE | GPU_WRITE */
+
 #define PROT_GPU_READ  0x10
 #define PROT_GPU_WRITE 0x20
 #define MAP_NO_COALESCE 0x400000
@@ -51,6 +58,8 @@ extern int sceKernelAllocateMainDirectMemory(size_t len, size_t alignment,
 extern int sceKernelMapNamedDirectMemory(void **addr, size_t len, int prot,
                                          int flags, off_t phys, size_t align,
                                          const char *name);
+extern int sceKernelSetVirtualRangeName(const void *addr, size_t len,
+                                        const char *name);
 
 typedef struct {
   uint32_t queue_type;
@@ -67,6 +76,7 @@ typedef struct pai_ps5_gc_state {
   int fd;
   uint32_t ctx_caps;
   uint32_t submissions;
+  void *mmio;
   pai_gpu_buffer_t *cb_buf;
   pai_gpu_buffer_t *trailer_buf;
   uint32_t cb_words;
@@ -257,6 +267,35 @@ pai_gc_init(pai_gpu_device_t *device) {
                   errno);
   }
 
+  /* SPRX-confirmed: when the context is not yet initialized (lower 16
+   * bits of the capability are zero), the driver maps the GPU register
+   * space on the gc fd at the fixed 0xFE0200000 address. Without this
+   * step the kernel never runs compute dispatches for the process. */
+  if ((st->ctx_caps & 0xFFFFu) == 0) {
+    void *mmio = mmap((void *)AGC_GC_MMIO_BASE, AGC_GC_MMIO_SIZE,
+                      AGC_GC_MMIO_PROT, MAP_SHARED, st->fd, 0);
+    if (mmio == MAP_FAILED) {
+      PAI_LOG_WARN_(PAI_SUB_GPU,
+                    "gc register space mmap failed (errno %d); compute may "
+                    "not execute\n",
+                    errno);
+    } else {
+      st->mmio = mmio;
+      sceKernelSetVirtualRangeName(mmio, AGC_GC_MMIO_SIZE, "SceGnmDingDong");
+      PAI_LOG_INFO_(PAI_SUB_GPU,
+                    "gc register space mapped at 0x%llx (context init)\n",
+                    (unsigned long long)AGC_GC_MMIO_BASE);
+
+      /* Re-query: an initialized context reports nonzero capabilities. */
+      query = 0;
+      if (ioctl(st->fd, AGC_GC_IOCTL_CONTEXT_QUERY, &query) == 0) {
+        st->ctx_caps = query;
+        PAI_LOG_INFO_(PAI_SUB_GPU, "gc context query (post-mmap): caps=0x%08x\n",
+                      query);
+      }
+    }
+  }
+
   st->cb_buf = (pai_gpu_buffer_t *)calloc(1, sizeof(*st->cb_buf));
   if (!st->cb_buf ||
       pai_gc_alloc_dmem(st->cb_buf, PAI_GC_CB_BUF_SIZE, "pai-cb") != PAI_OK) {
@@ -295,6 +334,9 @@ pai_gc_shutdown(pai_gpu_device_t *device) {
     if (st->trailer_buf) {
       pai_gc_buffer_free(device, st->trailer_buf);
       free(st->trailer_buf);
+    }
+    if (st->mmio) {
+      munmap(st->mmio, AGC_GC_MMIO_SIZE);
     }
     if (st->fd >= 0) {
       close(st->fd);
