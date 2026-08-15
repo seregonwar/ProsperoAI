@@ -317,6 +317,21 @@ m0_exp_report(const char *name, int ok) {
   PAI_LOG_INFO_(PAI_SUB_GPU, "[M0-%s] %s\n", name, ok ? "PASS" : "FAIL");
 }
 
+/*
+ * The OpenAGC (ACO-compiled, hardware-qualified) memset kernel sets bit 15
+ * of every FLAT instruction word0; llvm-mc 14 for gfx1013 does not. Patch
+ * the flag into uploaded experiment kernels to test whether gfx1013
+ * requires it.
+ */
+static void
+m0_patch_flat_bit15(uint32_t *code, uint32_t word_index) {
+  code[word_index] |= 0x8000u;
+}
+
+#define M0_STORE_CONST_FLAT_WORD 9u
+#define M0_LOADSTORE_LOAD_WORD 11u
+#define M0_LOADSTORE_STORE_WORD 18u
+
 static int
 m0_stage_e(m0_ctx_t *ctx) {
   uint32_t stream[M0_PM4_CAP];
@@ -330,7 +345,7 @@ m0_stage_e(m0_ctx_t *ctx) {
 
   PAI_LOG_INFO_(PAI_SUB_GPU, "[M0-E] compute experiment matrix\n");
 
-  /* E1: store_const — no loads, validated encoding. */
+  /* E1: store_const — no loads, validated encoding (control). */
   {
     memcpy(ctx->code.cpu_addr, pai_store_const_code,
            PAI_STORE_CONST_CODE_WORDS * sizeof(uint32_t));
@@ -361,7 +376,36 @@ m0_stage_e(m0_ctx_t *ctx) {
     }
   }
 
-  /* E2: loadstore — flat_load + flat_store. */
+  /* E1b: store_const with the ACO-style bit 15 on the FLAT store. */
+  {
+    memcpy(ctx->code.cpu_addr, pai_store_const_code,
+           PAI_STORE_CONST_CODE_WORDS * sizeof(uint32_t));
+    m0_patch_flat_bit15((uint32_t *)ctx->code.cpu_addr,
+                        M0_STORE_CONST_FLAT_WORD);
+    ud[0] = (uint32_t)(ctx->dst.gpu_addr & 0xFFFFFFFFu);
+    ud[1] = (uint32_t)(ctx->dst.gpu_addr >> 32);
+    m0_build_dispatch_stream(ctx, stream, M0_PM4_CAP, PAI_STORE_CONST_RSRC2,
+                             PAI_EXP_THREADS_X, 1, ud, 2, &stream_len);
+    m0_run_gpu(ctx, stream, stream_len, dst32, 128, 0x00, "E1b");
+    {
+      int ok = 1;
+      for (uint32_t i = 0; i < PAI_EXP_THREADS_X; i++) {
+        if (dst32[i] != PAI_STORE_CONST_VALUE) {
+          ok = 0;
+          break;
+        }
+      }
+      m0_exp_report("E1b", ok);
+      if (!ok) {
+        PAI_LOG_ERROR_(PAI_SUB_GPU, "[M0-E1b] dst[0..7] = %08x %08x %08x "
+                       "%08x %08x %08x %08x %08x\n",
+                       dst32[0], dst32[1], dst32[2], dst32[3], dst32[4],
+                       dst32[5], dst32[6], dst32[7]);
+      }
+    }
+  }
+
+  /* E2: loadstore — flat_load + flat_store (control). */
   {
     memcpy(ctx->code.cpu_addr, pai_loadstore_code,
            PAI_LOADSTORE_CODE_WORDS * sizeof(uint32_t));
@@ -390,6 +434,42 @@ m0_stage_e(m0_ctx_t *ctx) {
       m0_exp_report("E2", ok);
       if (!ok) {
         PAI_LOG_ERROR_(PAI_SUB_GPU, "[M0-E2] c[0..7] = %08x %08x %08x %08x "
+                       "%08x %08x %08x %08x\n",
+                       c32[0], c32[1], c32[2], c32[3], c32[4], c32[5], c32[6],
+                       c32[7]);
+      }
+    }
+  }
+
+  /* E2b: loadstore with the ACO-style bit 15 on both FLAT ops. */
+  {
+    memcpy(ctx->code.cpu_addr, pai_loadstore_code,
+           PAI_LOADSTORE_CODE_WORDS * sizeof(uint32_t));
+    m0_patch_flat_bit15((uint32_t *)ctx->code.cpu_addr,
+                        M0_LOADSTORE_LOAD_WORD);
+    m0_patch_flat_bit15((uint32_t *)ctx->code.cpu_addr,
+                        M0_LOADSTORE_STORE_WORD);
+    for (uint32_t i = 0; i < PAI_EXP_THREADS_X; i++) {
+      a32[i] = 0x11111111u + i;
+    }
+    ud[0] = (uint32_t)(ctx->a.gpu_addr & 0xFFFFFFFFu);
+    ud[1] = (uint32_t)(ctx->a.gpu_addr >> 32);
+    ud[2] = (uint32_t)(ctx->c.gpu_addr & 0xFFFFFFFFu);
+    ud[3] = (uint32_t)(ctx->c.gpu_addr >> 32);
+    m0_build_dispatch_stream(ctx, stream, M0_PM4_CAP, PAI_LOADSTORE_RSRC2,
+                             PAI_EXP_THREADS_X, 1, ud, 4, &stream_len);
+    m0_run_gpu(ctx, stream, stream_len, c32, 128, 0xCC, "E2b");
+    {
+      int ok = 1;
+      for (uint32_t i = 0; i < PAI_EXP_THREADS_X; i++) {
+        if (c32[i] != a32[i]) {
+          ok = 0;
+          break;
+        }
+      }
+      m0_exp_report("E2b", ok);
+      if (!ok) {
+        PAI_LOG_ERROR_(PAI_SUB_GPU, "[M0-E2b] c[0..7] = %08x %08x %08x %08x "
                        "%08x %08x %08x %08x\n",
                        c32[0], c32[1], c32[2], c32[3], c32[4], c32[5], c32[6],
                        c32[7]);
