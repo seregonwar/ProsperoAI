@@ -103,6 +103,53 @@ pai_pm4_release_mem_eop(pai_pm4_builder_t *b, uint32_t event_type,
 }
 
 uint32_t *
+pai_pm4_release_mem_eop_fence(pai_pm4_builder_t *b, uint64_t addr,
+                              uint32_t value) {
+  uint32_t *p = pai_pm4_emit(b, 8);
+
+  if (!p) {
+    return NULL;
+  }
+
+  p[0] = pai_pm4_header3(PAI_PM4_OP_RELEASE_MEM, 8);
+  p[1] = (PAI_GFX1013_EOP_CACHE_FLUSH_EVENT & 0x3Fu) |
+         (PAI_GFX1013_EOP_EVENT_INDEX << 8u) |
+         ((PAI_GFX1013_EOP_GCR_CONTROL & 0xFFFu) << 12u) |
+         ((PAI_GFX1013_EOP_CACHE_POLICY & 0x3u) << 25u);
+  p[2] = (0u << 16u) | (0u << 24u) | (PAI_GFX1013_EOP_DATA_SEL_32B << 29u);
+  p[3] = (uint32_t)addr & 0xFFFFFFFCu;
+  p[4] = (uint32_t)(addr >> 32);
+  p[5] = value;
+  p[6] = 0;
+  p[7] = 0;
+  return p;
+}
+
+uint32_t *
+pai_pm4_write_data(pai_pm4_builder_t *b, uint64_t addr, const uint32_t *data,
+                   uint32_t dwords) {
+  uint32_t *p;
+
+  if (!data || dwords == 0 || dwords > 0x3FFD) {
+    return NULL;
+  }
+
+  p = pai_pm4_emit(b, dwords + 4);
+  if (!p) {
+    return NULL;
+  }
+
+  p[0] = pai_pm4_header3(PAI_PM4_OP_WRITE_DATA, dwords + 4);
+  p[1] = 0; /* destination selector 0, no increment/confirm */
+  p[2] = (uint32_t)addr & ~0x3u;
+  p[3] = (uint32_t)(addr >> 32);
+  for (uint32_t i = 0; i < dwords; i++) {
+    p[4 + i] = data[i];
+  }
+  return p;
+}
+
+uint32_t *
 pai_pm4_dma_data(pai_pm4_builder_t *b, uint64_t src, uint64_t dst,
                  uint32_t size) {
   uint32_t *p = pai_pm4_emit(b, 7);

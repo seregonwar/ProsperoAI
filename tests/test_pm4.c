@@ -93,6 +93,42 @@ TEST_MAIN_BEGIN()
   pai_pm4_builder_t b;
   pai_pm4_builder_init(&b, buf, 64);
 
+  /* Action-based EOP fence (OpenAGC runtime layout, FW 5.50-proven):
+   * header 0xC0064900, gcr 0x703, data_sel 1, 8 dwords + 2-dword NOP. */
+  pai_pm4_release_mem_eop_fence(&b, 0x1122334455667788ULL, 0xDEADBEEF);
+  pai_pm4_nop(&b, 2);
+  CHECK_EQ_UINT(buf[0], 0xC0064900u);
+  CHECK_EQ_UINT(buf[1], 0x06703514u);
+  CHECK_EQ_UINT(buf[2], 0x20000000u);
+  CHECK_EQ_UINT(buf[3], 0x55667788u);
+  CHECK_EQ_UINT(buf[4], 0x11223344u);
+  CHECK_EQ_UINT(buf[5], 0xDEADBEEF);
+  CHECK_EQ_UINT(buf[6], 0);
+  CHECK_EQ_UINT(buf[7], 0);
+  CHECK_EQ_UINT(buf[8], 0xC0001000u); /* trailing NOP */
+  CHECK_EQ_UINT(buf[9], 0);
+}
+
+{
+  static uint32_t buf[64];
+  pai_pm4_builder_t b;
+  pai_pm4_builder_init(&b, buf, 64);
+
+  /* IT_WRITE_DATA: header 0xC0033700 for 1 data dword. */
+  uint32_t data[1] = {0xCAFEBABE};
+  pai_pm4_write_data(&b, 0x8877665544332210ULL, data, 1);
+  CHECK_EQ_UINT(buf[0], 0xC0033700u);
+  CHECK_EQ_UINT(buf[1], 0);
+  CHECK_EQ_UINT(buf[2], 0x44332210u);
+  CHECK_EQ_UINT(buf[3], 0x88776655u);
+  CHECK_EQ_UINT(buf[4], 0xCAFEBABE);
+}
+
+{
+  static uint32_t buf[64];
+  pai_pm4_builder_t b;
+  pai_pm4_builder_init(&b, buf, 64);
+
   /* WAIT_REG_MEM (FW 5.50 layout): header 0xC0053C00 */
   pai_pm4_wait_reg_mem(&b, 3, 2, 1, 0x8877665544332211ULL, 0xABCDEF01,
                        0xFFFFFFFF, 64);

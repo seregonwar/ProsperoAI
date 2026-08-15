@@ -141,9 +141,27 @@ pai_host_run_stream(pai_host_ref_state_t *st, const uint32_t *pm4,
     }
 
     case PAI_PM4_OP_RELEASE_MEM: {
-      uint64_t addr = (uint64_t)pm4[i + 2] | ((uint64_t)pm4[i + 3] << 32);
-      uint32_t data = pm4[i + 4];
+      uint64_t addr;
+      uint32_t data;
+
+      if (count >= 8 && (pm4[i + 1] & 0xFFF000u) == 0x703000u) {
+        /* Action-based EOP fence (OpenAGC runtime layout):
+         * addr at [3..4], 32-bit value at [5]. */
+        addr = (uint64_t)pm4[i + 3] | ((uint64_t)pm4[i + 4] << 32);
+        data = pm4[i + 5];
+      } else {
+        /* Legacy SetEopFlip layout: addr at [2..3], value at [4]. */
+        addr = (uint64_t)pm4[i + 2] | ((uint64_t)pm4[i + 3] << 32);
+        data = pm4[i + 4];
+      }
       *(volatile uint32_t *)(uintptr_t)addr = data;
+      break;
+    }
+
+    case PAI_PM4_OP_WRITE_DATA: {
+      uint64_t dst = (uint64_t)pm4[i + 2] | ((uint64_t)pm4[i + 3] << 32);
+      memcpy((void *)(uintptr_t)dst, &pm4[i + 4],
+             (count - 4) * sizeof(uint32_t));
       break;
     }
 

@@ -27,6 +27,7 @@
 #define PAI_PM4_OP_SET_CONFIG_REG   0x68
 #define PAI_PM4_OP_SET_SH_REG       0x76
 #define PAI_PM4_OP_WAIT_REG_MEM     0x3C
+#define PAI_PM4_OP_WRITE_DATA       0x37
 
 /* Compute shader registers (SH bank, compute pipeline). */
 #define PAI_REG_COMPUTE_START_X        0x0204
@@ -47,6 +48,12 @@
 
 /* RELEASE_MEM EOP event: cache-flush event type used for fences. */
 #define PAI_GFX1013_EOP_CACHE_FLUSH_EVENT 0x14u
+
+/* OpenAGC native-runtime fence constants (FW 5.50-hardware-proven). */
+#define PAI_GFX1013_EOP_GCR_CONTROL   0x703u
+#define PAI_GFX1013_EOP_CACHE_POLICY  3u
+#define PAI_GFX1013_EOP_EVENT_INDEX   5u
+#define PAI_GFX1013_EOP_DATA_SEL_32B  1u
 
 typedef struct pai_pm4_builder {
   uint32_t *buf;
@@ -80,12 +87,39 @@ uint32_t *pai_pm4_dispatch_direct(pai_pm4_builder_t *b, uint32_t group_x,
                                   uint32_t modifier);
 
 /*
- * IT_RELEASE_MEM EOP fence: writes `data` to the 64-bit `addr` when the
- * EOP event completes (OpenAGC sceAgcDcbSetEopFlip layout, 8 dwords).
+ * IT_RELEASE_MEM EOP fence (OpenAGC sceAgcDcbSetEopFlip layout, 8 dwords).
+ * Legacy bring-up variant; prefer pai_pm4_release_mem_eop_fence().
  */
 uint32_t *pai_pm4_release_mem_eop(pai_pm4_builder_t *b, uint32_t event_type,
                                   uint32_t event_index, uint64_t addr,
                                   uint32_t data);
+
+/*
+ * IT_RELEASE_MEM EOP fence — the action-based layout the real driver
+ * uses for GPU->host fences (OpenAGC sceAgcCbReleaseMem + the runtime's
+ * agcGfx1013TransitionResource, hardware-qualified on FW 5.50):
+ *
+ *   [0] header 0xC0064900
+ *   [1] event_type[5:0] | event_index[11:8] | gcr_control[23:12]
+ *       | cache_policy[26:25]
+ *   [2] destination[17:16] | interrupt[26:24] | data_selection[31:29]
+ *   [3..4] address lo/hi (4-byte aligned)
+ *   [5..6] data lo/hi (data_selection 1 writes the 32-bit value)
+ *   [7] interrupt context id
+ *
+ * Must be followed by a 2-dword NOP (pai_pm4_nop), exactly like the
+ * reference implementation.
+ */
+uint32_t *pai_pm4_release_mem_eop_fence(pai_pm4_builder_t *b, uint64_t addr,
+                                        uint32_t value);
+
+/*
+ * IT_WRITE_DATA (0x37) — plain GPU memory write (OpenAGC
+ * sceAgcDcbWriteData, SPRX-confirmed). Fallback completion signal that
+ * needs no event machinery.
+ */
+uint32_t *pai_pm4_write_data(pai_pm4_builder_t *b, uint64_t addr,
+                             const uint32_t *data, uint32_t dwords);
 
 /*
  * Raw IT_DMA_DATA copy (7 dwords, hardware-proven layout from the

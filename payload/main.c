@@ -117,10 +117,15 @@ m0_ctx_alloc_buffers(m0_ctx_t *ctx) {
 /* ------------------------------------------------------------------ */
 
 /*
- * Append the EOP fence to `stream` and run it, trying queue type 3 then
- * queue type 0. `watch` is filled with `watch_fill` before each attempt;
- * if the label never fires but the GPU visibly modified `watch`, we know
- * the stream executed and only the fence/label path is broken.
+ * Append a completion signal to `stream` and run it on queue type 3.
+ * `watch` is filled with `watch_fill` before each attempt; if the label
+ * never fires but the GPU visibly modified `watch`, we know the stream
+ * executed and only the fence path is broken.
+ *
+ * Fence ladder (all hardware-qualified layouts):
+ *   1. action-based RELEASE_MEM EOP (OpenAGC runtime fence)
+ *   2. IT_WRITE_DATA store (no event machinery)
+ *   3. legacy SetEopFlip RELEASE_MEM
  *
  * Returns 0 on success, -1 when the stream never executed.
  */
@@ -128,11 +133,10 @@ static int
 m0_run_gpu(m0_ctx_t *ctx, uint32_t *stream, uint32_t stream_len,
            void *watch, uint32_t watch_bytes, uint32_t watch_fill,
            const char *stage) {
-  static const uint32_t queue_types[] = {3u, 0u};
+  static const char *const fence_names[] = {
+      "eop-action", "write-data", "eop-legacy"};
 
-  for (uint32_t attempt = 0;
-       attempt < sizeof(queue_types) / sizeof(queue_types[0]); attempt++) {
-    uint32_t q = queue_types[attempt];
+  for (uint32_t fence = 0; fence < 3; fence++) {
     pai_pm4_builder_t pb;
     pai_status_t st;
 
@@ -143,28 +147,46 @@ m0_run_gpu(m0_ctx_t *ctx, uint32_t *stream, uint32_t stream_len,
     pb.buf = stream;
     pb.cap = M0_PM4_CAP;
     pb.len = stream_len;
-    if (!pai_pm4_release_mem_eop(&pb, PAI_GFX1013_EOP_CACHE_FLUSH_EVENT, 0,
-                                 ctx->label.gpu_addr, ctx->label_value)) {
-      PAI_LOG_ERROR_(PAI_SUB_GPU, "[%s] pm4 fence build failed\n", stage);
-      return -1;
+
+    switch (fence) {
+    case 0:
+      if (!pai_pm4_release_mem_eop_fence(&pb, ctx->label.gpu_addr,
+                                         ctx->label_value) ||
+          !pai_pm4_nop(&pb, 2)) {
+        return -1;
+      }
+      break;
+    case 1:
+      if (!pai_pm4_write_data(&pb, ctx->label.gpu_addr, &ctx->label_value,
+                              1)) {
+        return -1;
+      }
+      break;
+    default:
+      if (!pai_pm4_release_mem_eop(&pb, PAI_GFX1013_EOP_CACHE_FLUSH_EVENT, 0,
+                                   ctx->label.gpu_addr, ctx->label_value)) {
+        return -1;
+      }
+      break;
     }
 
     PAI_LOG_DEBUG_(PAI_SUB_GPU,
-                   "[%s] attempt %u: queue_type=%u label=0x%llx value=0x%x\n",
-                   stage, attempt, q,
-                   (unsigned long long)ctx->label.gpu_addr, ctx->label_value);
+                   "[%s] attempt: fence=%s label=0x%llx value=0x%x\n", stage,
+                   fence_names[fence], (unsigned long long)ctx->label.gpu_addr,
+                   ctx->label_value);
 
-    st = pai_gpu_submit_q(ctx->gpu, stream, pb.len, q);
+    st = pai_gpu_submit_q(ctx->gpu, stream, pb.len, 3);
     if (st != PAI_OK) {
-      PAI_LOG_ERROR_(PAI_SUB_GPU, "[%s] submit failed (q=%u): %s\n", stage, q,
-                     pai_status_str(st));
+      PAI_LOG_ERROR_(PAI_SUB_GPU, "[%s] submit failed (fence=%s): %s\n",
+                     stage, fence_names[fence], pai_status_str(st));
       continue;
     }
 
     st = pai_gpu_wait_label(ctx->gpu, ctx->label.gpu_addr, ctx->label_value,
                             M0_TIMEOUT_NS);
     if (st == PAI_OK) {
-      PAI_LOG_DEBUG_(PAI_SUB_GPU, "[%s] label fired (q=%u)\n", stage, q);
+      PAI_LOG_INFO_(PAI_SUB_GPU, "[%s] label fired (fence=%s)\n", stage,
+                    fence_names[fence]);
       return 0;
     }
 
@@ -181,16 +203,16 @@ m0_run_gpu(m0_ctx_t *ctx, uint32_t *stream, uint32_t stream_len,
       }
       if (changed) {
         PAI_LOG_WARN_(PAI_SUB_GPU,
-                      "[%s] data changed but label did not fire (q=%u): "
-                      "EOP/fence path broken, stream executed\n",
-                      stage, q);
+                      "[%s] data changed but label did not fire (fence=%s): "
+                      "stream executed\n",
+                      stage, fence_names[fence]);
         return 0;
       }
     }
 
     PAI_LOG_WARN_(PAI_SUB_GPU,
-                  "[%s] no execution observed (q=%u, label timeout)\n", stage,
-                  q);
+                  "[%s] no execution observed (fence=%s, label timeout)\n",
+                  stage, fence_names[fence]);
   }
 
   return -1;
