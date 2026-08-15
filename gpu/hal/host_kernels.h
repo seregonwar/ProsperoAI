@@ -23,6 +23,11 @@ pai_status_t pai_host_kernel_memset16(void *ctx, const uint32_t user_data[16],
 pai_status_t pai_host_kernel_store_const(void *ctx, const uint32_t user_data[16],
                                          uint32_t threads_x, uint32_t group_x);
 
+/* store_const64 (E5/E7): psbc ABI, user_data 2-3 = dst. */
+pai_status_t
+pai_host_kernel_store_const64(void *ctx, const uint32_t user_data[16],
+                              uint32_t threads_x, uint32_t group_x);
+
 /* loadstore (E2): user_data 0-1 = A, 2-3 = C; c[i] = a[i]. */
 pai_status_t pai_host_kernel_loadstore(void *ctx, const uint32_t user_data[16],
                                        uint32_t threads_x, uint32_t group_x);

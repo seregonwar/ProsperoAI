@@ -306,6 +306,69 @@ m0_build_dispatch_stream(m0_ctx_t *ctx, uint32_t *stream, uint32_t cap,
   *out_len = pb.len;
 }
 
+/*
+ * Full OpenAGC compute preamble (agcGfx1013DispatchComputeCommon):
+ * context-control shadow enable + resource limits + destination enables
+ * + START/NUM thread registers. The hardware-proven dispatch sequence
+ * on the real driver; our minimal sequence skipped it.
+ */
+static void
+m0_emit_compute_preamble(pai_pm4_builder_t *pb, uint32_t threads_x) {
+  uint32_t vals[6];
+
+  pai_pm4_context_control(pb, 0x80000000u, 0x80000000u);
+
+  vals[0] = 0; /* WAVES_PER_SH: 0 unless waves%4==0 */
+  vals[1] = 0xFFFFFFFFu;
+  vals[2] = 0xFFFFFFFFu;
+  pai_pm4_set_sh_reg_compute(pb, 0x215, 3, vals); /* COMPUTE_RESOURCE_LIMITS */
+
+  vals[0] = 0xFFFFFFFFu;
+  vals[1] = 0xFFFFFFFFu;
+  pai_pm4_set_sh_reg_compute(pb, 0x219, 2, vals); /* destination enable SE1/2 */
+
+  vals[0] = 0; /* COMPUTE_START_X */
+  vals[1] = 0;
+  vals[2] = 0;
+  vals[3] = threads_x;
+  vals[4] = 1;
+  vals[5] = 1;
+  pai_pm4_set_sh_reg_compute(pb, PAI_REG_COMPUTE_START_X, 6, vals);
+}
+
+static void
+m0_build_dispatch_stream_preamble(m0_ctx_t *ctx, uint32_t *stream,
+                                  uint32_t cap, uint32_t rsrc2,
+                                  uint32_t threads_x, uint32_t groups_x,
+                                  const uint32_t *user_data, uint32_t ud_count,
+                                  uint32_t *out_len) {
+  pai_pm4_builder_t pb;
+  uint32_t vals[9];
+  uint64_t code = ctx->code.gpu_addr;
+
+  pai_pm4_builder_init(&pb, stream, cap);
+
+  m0_emit_compute_preamble(&pb, threads_x);
+
+  vals[0] = (uint32_t)(code >> 8);
+  vals[1] = (uint32_t)(code >> 40);
+  pai_pm4_set_sh_reg_compute(&pb, PAI_REG_COMPUTE_PGM_LO, 2, vals);
+
+  vals[0] = PAI_EXP_RSRC1;
+  vals[1] = rsrc2;
+  pai_pm4_set_sh_reg_compute(&pb, PAI_REG_COMPUTE_PGM_RSRC1, 2, vals);
+
+  vals[0] = PAI_EXP_RSRC3;
+  pai_pm4_set_sh_reg_compute(&pb, PAI_REG_COMPUTE_PGM_RSRC3, 1, vals);
+
+  pai_pm4_set_sh_reg_compute(&pb, PAI_REG_COMPUTE_USER_DATA_0, ud_count,
+                             user_data);
+
+  pai_pm4_dispatch_direct(&pb, groups_x, 1, 1, 0);
+
+  *out_len = pb.len;
+}
+
 /* Defined with stage B0 below. */
 static void m0_build_memset16_stream(m0_ctx_t *ctx, uint32_t *stream,
                                      uint32_t cap, uint64_t dst_addr,
@@ -486,6 +549,108 @@ m0_exp_memset(m0_ctx_t *ctx, uint32_t blocks, const char *name) {
   return 0;
 }
 
+/* E5/E7: store_const64 with the psbc user-data ABI (dst at s2/s3). */
+static int
+m0_exp_store_const64(m0_ctx_t *ctx, const char *name, int preamble) {
+  uint32_t stream[M0_PM4_CAP];
+  uint32_t stream_len;
+  uint32_t ud[4];
+  uint32_t *dst32 = (uint32_t *)ctx->dst.cpu_addr;
+
+  memcpy(ctx->code.cpu_addr, pai_store_const64_code,
+         PAI_STORE_CONST64_CODE_WORDS * sizeof(uint32_t));
+  if (pai_gpu_device_backend(ctx->gpu) == PAI_GPU_BACKEND_HOST_REF) {
+    pai_gpu_host_register_shader(ctx->gpu, ctx->code.gpu_addr,
+                                 pai_host_kernel_store_const64, NULL);
+  }
+  ud[0] = 0; /* ring offsets */
+  ud[1] = 0;
+  ud[2] = (uint32_t)(ctx->dst.gpu_addr & 0xFFFFFFFFu);
+  ud[3] = (uint32_t)(ctx->dst.gpu_addr >> 32);
+
+  if (preamble) {
+    m0_build_dispatch_stream_preamble(ctx, stream, M0_PM4_CAP,
+                                      PAI_STORE_CONST64_RSRC2,
+                                      PAI_STORE_CONST64_THREADS_X, 1, ud, 4,
+                                      &stream_len);
+  } else {
+    m0_build_dispatch_stream(ctx, stream, M0_PM4_CAP, PAI_STORE_CONST64_RSRC2,
+                             PAI_STORE_CONST64_THREADS_X, 1, ud, 4,
+                             &stream_len);
+  }
+  m0_run_gpu(ctx, stream, stream_len, dst32, 128, 0x00, name);
+
+  {
+    int ok = 1;
+    for (uint32_t i = 0; i < PAI_EXP_THREADS_X; i++) {
+      if (dst32[i] != PAI_STORE_CONST64_VALUE) {
+        ok = 0;
+        break;
+      }
+    }
+    m0_exp_report(name, ok);
+    if (!ok) {
+      PAI_LOG_ERROR_(PAI_SUB_GPU,
+                     "[M0-%s] dst[0..7] = %08x %08x %08x %08x "
+                     "%08x %08x %08x %08x\n",
+                     name, dst32[0], dst32[1], dst32[2], dst32[3], dst32[4],
+                     dst32[5], dst32[6], dst32[7]);
+    }
+  }
+  return 0;
+}
+
+/* E6: memset golden with the full OpenAGC dispatch preamble. */
+static int
+m0_exp_memset_preamble(m0_ctx_t *ctx, uint32_t blocks, const char *name) {
+  pai_pm4_builder_t pb;
+  uint32_t stream[M0_PM4_CAP];
+  uint32_t vals[9];
+  uint32_t *dst32 = (uint32_t *)ctx->dst.cpu_addr;
+  uint32_t pattern[4] = {0xDEADBEEFu, 0x11223344u, 0x55667788u, 0x99AABBCCu};
+  uint64_t code = ctx->code.gpu_addr;
+
+  memcpy(ctx->code.cpu_addr, pai_memset16_code,
+         PAI_MEMSET16_CODE_WORDS * sizeof(uint32_t));
+  if (pai_gpu_device_backend(ctx->gpu) == PAI_GPU_BACKEND_HOST_REF) {
+    pai_gpu_host_register_shader(ctx->gpu, ctx->code.gpu_addr,
+                                 pai_host_kernel_memset16, NULL);
+  }
+
+  pai_pm4_builder_init(&pb, stream, M0_PM4_CAP);
+  m0_emit_compute_preamble(&pb, PAI_MEMSET16_THREADS_X);
+
+  vals[0] = (uint32_t)(code >> 8);
+  vals[1] = (uint32_t)(code >> 40);
+  pai_pm4_set_sh_reg_compute(&pb, PAI_REG_COMPUTE_PGM_LO, 2, vals);
+
+  vals[0] = PAI_MEMSET16_RSRC1;
+  vals[1] = PAI_MEMSET16_RSRC2;
+  pai_pm4_set_sh_reg_compute(&pb, PAI_REG_COMPUTE_PGM_RSRC1, 2, vals);
+
+  vals[0] = PAI_MEMSET16_RSRC3;
+  pai_pm4_set_sh_reg_compute(&pb, PAI_REG_COMPUTE_PGM_RSRC3, 1, vals);
+
+  vals[0] = 0;
+  vals[1] = 0;
+  vals[2] = (uint32_t)(ctx->dst.gpu_addr & 0xFFFFFFFFu);
+  vals[3] = (uint32_t)(ctx->dst.gpu_addr >> 32);
+  vals[4] = blocks;
+  vals[5] = pattern[0];
+  vals[6] = pattern[1];
+  vals[7] = pattern[2];
+  vals[8] = pattern[3];
+  pai_pm4_set_sh_reg_compute(&pb, PAI_REG_COMPUTE_USER_DATA_0, 9, vals);
+
+  pai_pm4_dispatch_direct(&pb, (blocks + PAI_MEMSET16_THREADS_X - 1) /
+                                   PAI_MEMSET16_THREADS_X,
+                          1, 1, 0);
+
+  m0_run_gpu(ctx, stream, pb.len, dst32, blocks * 16, 0x00, name);
+  m0_check_memset(dst32, blocks, pattern, name);
+  return 0;
+}
+
 static int
 m0_stage_e(m0_ctx_t *ctx) {
   pai_gpu_device_t *gpu = ctx->gpu;
@@ -501,12 +666,17 @@ m0_stage_e(m0_ctx_t *ctx) {
   if (!host) {
     pai_gpu_reset(gpu);
   }
-  m0_exp_store_const(ctx, "E1b", 1);
+  m0_exp_store_const64(ctx, "E5", 0); /* psbc ABI, no preamble */
 
   if (!host) {
     pai_gpu_reset(gpu);
   }
-  m0_exp_loadstore(ctx, "E2b", 1);
+  m0_exp_memset_preamble(ctx, 64, "E6"); /* preamble + golden kernel */
+
+  if (!host) {
+    pai_gpu_reset(gpu);
+  }
+  m0_exp_store_const64(ctx, "E7", 1); /* psbc ABI + preamble */
 
   if (!host) {
     pai_gpu_reset(gpu);
@@ -517,6 +687,16 @@ m0_stage_e(m0_ctx_t *ctx) {
     pai_gpu_reset(gpu);
   }
   m0_exp_memset(ctx, 1024, "E4");
+
+  if (!host) {
+    pai_gpu_reset(gpu);
+  }
+  m0_exp_store_const(ctx, "E1b", 1);
+
+  if (!host) {
+    pai_gpu_reset(gpu);
+  }
+  m0_exp_loadstore(ctx, "E2b", 1);
 
   if (!host) {
     pai_gpu_reset(gpu);

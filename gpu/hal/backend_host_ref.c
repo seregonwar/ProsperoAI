@@ -104,6 +104,10 @@ pai_host_run_stream(pai_host_ref_state_t *st, const uint32_t *pm4,
     case PAI_PM4_OP_NOP:
       break;
 
+    case PAI_PM4_OP_CONTEXT_CONTROL:
+      /* Shadow-enable hint; the host interpreter has no shadow state. */
+      break;
+
     case PAI_PM4_OP_SET_SH_REG: {
       uint32_t reg = pm4[i + 1] & 0xFFFFu;
       uint32_t n = count - 2;

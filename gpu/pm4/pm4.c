@@ -83,6 +83,21 @@ pai_pm4_dispatch_direct(pai_pm4_builder_t *b, uint32_t group_x,
 }
 
 uint32_t *
+pai_pm4_context_control(pai_pm4_builder_t *b, uint32_t load_control,
+                        uint32_t shadow_control) {
+  uint32_t *p = pai_pm4_emit(b, 3);
+
+  if (!p) {
+    return NULL;
+  }
+
+  p[0] = pai_pm4_header3(PAI_PM4_OP_CONTEXT_CONTROL, 3);
+  p[1] = load_control;
+  p[2] = shadow_control;
+  return p;
+}
+
+uint32_t *
 pai_pm4_release_mem_eop(pai_pm4_builder_t *b, uint32_t event_type,
                         uint32_t event_index, uint64_t addr, uint32_t data) {
   uint32_t *p = pai_pm4_emit(b, 8);

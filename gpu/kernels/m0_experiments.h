@@ -23,6 +23,13 @@
 #define PAI_STORE_CONST_CODE_WORDS 13u
 #define PAI_STORE_CONST_VALUE 0xABCD1234u
 
+/* store_const64: psbc ABI (s0-s1 ring offsets, s2:s3 = dst),
+ * 64 threads / group, idempotent constant store. */
+#define PAI_STORE_CONST64_RSRC2 0x00000008u
+#define PAI_STORE_CONST64_CODE_WORDS 13u
+#define PAI_STORE_CONST64_THREADS_X 64u
+#define PAI_STORE_CONST64_VALUE 0xCAFEF00Du
+
 /* loadstore: 4 user SGPRs (A, C). */
 #define PAI_LOADSTORE_RSRC2 0x00000008u
 #define PAI_LOADSTORE_CODE_WORDS 20u
@@ -39,6 +46,7 @@
 #define PAI_LOADSTORE_FLAT_STORE_WORD 17u
 
 extern const uint32_t pai_store_const_code[PAI_STORE_CONST_CODE_WORDS];
+extern const uint32_t pai_store_const64_code[PAI_STORE_CONST64_CODE_WORDS];
 extern const uint32_t pai_loadstore_code[PAI_LOADSTORE_CODE_WORDS];
 
 #endif /* PAI_GPU_M0_EXPERIMENT_KERNELS_H */

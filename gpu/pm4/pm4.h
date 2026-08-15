@@ -20,6 +20,7 @@
 /* PM4 type-3 opcodes used by PAI-M0. */
 #define PAI_PM4_OP_NOP              0x10
 #define PAI_PM4_OP_DISPATCH_DIRECT  0x15
+#define PAI_PM4_OP_CONTEXT_CONTROL  0x28
 #define PAI_PM4_OP_INDIRECT_BUFFER  0x3F
 #define PAI_PM4_OP_EVENT_WRITE      0x46
 #define PAI_PM4_OP_RELEASE_MEM      0x49
@@ -85,6 +86,14 @@ uint32_t *pai_pm4_set_sh_reg_compute(pai_pm4_builder_t *b, uint32_t reg_offset,
 uint32_t *pai_pm4_dispatch_direct(pai_pm4_builder_t *b, uint32_t group_x,
                                   uint32_t group_y, uint32_t group_z,
                                   uint32_t modifier);
+
+/*
+ * IT_CONTEXT_CONTROL (0x28): enables context-register shadowing so the
+ * compute register state commits (OpenAGC agcGfx1013SetContextControl,
+ * 0x80000000/0x80000000 = load/shadow enable, hardware-proven).
+ */
+uint32_t *pai_pm4_context_control(pai_pm4_builder_t *b, uint32_t load_control,
+                                  uint32_t shadow_control);
 
 /*
  * IT_RELEASE_MEM EOP fence (OpenAGC sceAgcDcbSetEopFlip layout, 8 dwords).
