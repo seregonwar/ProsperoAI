@@ -651,6 +651,132 @@ m0_exp_memset_preamble(m0_ctx_t *ctx, uint32_t blocks, const char *name) {
   return 0;
 }
 
+/* E8: user-data probe — 9 distinct slot values through the golden kernel;
+ * reveals which SGPR slots feed the store data on this hardware. */
+static int
+m0_exp_ud_probe(m0_ctx_t *ctx, const char *name) {
+  pai_pm4_builder_t pb;
+  uint32_t stream[M0_PM4_CAP];
+  uint32_t vals[9];
+  uint32_t *dst32 = (uint32_t *)ctx->dst.cpu_addr;
+  uint64_t code = ctx->code.gpu_addr;
+
+  memcpy(ctx->code.cpu_addr, pai_memset16_code,
+         PAI_MEMSET16_CODE_WORDS * sizeof(uint32_t));
+
+  pai_pm4_builder_init(&pb, stream, M0_PM4_CAP);
+
+  vals[0] = (uint32_t)(code >> 8);
+  vals[1] = (uint32_t)(code >> 40);
+  pai_pm4_set_sh_reg_compute(&pb, PAI_REG_COMPUTE_PGM_LO, 2, vals);
+
+  vals[0] = PAI_MEMSET16_RSRC1;
+  vals[1] = PAI_MEMSET16_RSRC2;
+  pai_pm4_set_sh_reg_compute(&pb, PAI_REG_COMPUTE_PGM_RSRC1, 2, vals);
+
+  vals[0] = PAI_MEMSET16_RSRC3;
+  pai_pm4_set_sh_reg_compute(&pb, PAI_REG_COMPUTE_PGM_RSRC3, 1, vals);
+
+  vals[0] = PAI_MEMSET16_THREADS_X;
+  vals[1] = 1;
+  vals[2] = 1;
+  pai_pm4_set_sh_reg_compute(&pb, PAI_REG_COMPUTE_NUM_THREAD_X, 3, vals);
+
+  for (uint32_t i = 0; i < 9; i++) {
+    vals[i] = 0x11111111u * (i + 1);
+  }
+  pai_pm4_set_sh_reg_compute(&pb, PAI_REG_COMPUTE_USER_DATA_0, 9, vals);
+
+  pai_pm4_dispatch_direct(&pb, 1, 1, 1, 0);
+
+  m0_run_gpu(ctx, stream, pb.len, dst32, 256, 0x00, name);
+
+  PAI_LOG_INFO_(PAI_SUB_GPU,
+                "[M0-%s] dst[0..31] = %08x %08x %08x %08x %08x %08x %08x "
+                "%08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x "
+                "%08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x "
+                "%08x %08x %08x\n",
+                name, dst32[0], dst32[1], dst32[2], dst32[3], dst32[4],
+                dst32[5], dst32[6], dst32[7], dst32[8], dst32[9], dst32[10],
+                dst32[11], dst32[12], dst32[13], dst32[14], dst32[15],
+                dst32[16], dst32[17], dst32[18], dst32[19], dst32[20],
+                dst32[21], dst32[22], dst32[23], dst32[24], dst32[25],
+                dst32[26], dst32[27], dst32[28], dst32[29], dst32[30],
+                dst32[31]);
+  return 0;
+}
+
+/* E11: my store_const64 kernel with the exact golden register config
+ * (RSRC2=0x92, TGID_X_EN, 9 user SGPRs) — isolates whether the golden
+ * register config is what makes waves launch. */
+static int
+m0_exp_store_const64_golden_cfg(m0_ctx_t *ctx, const char *name) {
+  pai_pm4_builder_t pb;
+  uint32_t stream[M0_PM4_CAP];
+  uint32_t vals[9];
+  uint32_t *dst32 = (uint32_t *)ctx->dst.cpu_addr;
+  uint64_t code = ctx->code.gpu_addr;
+
+  memcpy(ctx->code.cpu_addr, pai_store_const64_code,
+         PAI_STORE_CONST64_CODE_WORDS * sizeof(uint32_t));
+  if (pai_gpu_device_backend(ctx->gpu) == PAI_GPU_BACKEND_HOST_REF) {
+    pai_gpu_host_register_shader(ctx->gpu, ctx->code.gpu_addr,
+                                 pai_host_kernel_store_const64, NULL);
+  }
+
+  pai_pm4_builder_init(&pb, stream, M0_PM4_CAP);
+
+  vals[0] = (uint32_t)(code >> 8);
+  vals[1] = (uint32_t)(code >> 40);
+  pai_pm4_set_sh_reg_compute(&pb, PAI_REG_COMPUTE_PGM_LO, 2, vals);
+
+  vals[0] = PAI_MEMSET16_RSRC1;
+  vals[1] = PAI_MEMSET16_RSRC2; /* 0x92: 9 user SGPRs + TGID_X_EN */
+  pai_pm4_set_sh_reg_compute(&pb, PAI_REG_COMPUTE_PGM_RSRC1, 2, vals);
+
+  vals[0] = PAI_MEMSET16_RSRC3;
+  pai_pm4_set_sh_reg_compute(&pb, PAI_REG_COMPUTE_PGM_RSRC3, 1, vals);
+
+  vals[0] = PAI_MEMSET16_THREADS_X; /* 64 threads, like the golden */
+  vals[1] = 1;
+  vals[2] = 1;
+  pai_pm4_set_sh_reg_compute(&pb, PAI_REG_COMPUTE_NUM_THREAD_X, 3, vals);
+
+  vals[0] = 0; /* ring offsets */
+  vals[1] = 0;
+  vals[2] = (uint32_t)(ctx->dst.gpu_addr & 0xFFFFFFFFu);
+  vals[3] = (uint32_t)(ctx->dst.gpu_addr >> 32);
+  vals[4] = 0;
+  vals[5] = 0;
+  vals[6] = 0;
+  vals[7] = 0;
+  vals[8] = 0;
+  pai_pm4_set_sh_reg_compute(&pb, PAI_REG_COMPUTE_USER_DATA_0, 9, vals);
+
+  pai_pm4_dispatch_direct(&pb, 1, 1, 1, 0);
+
+  m0_run_gpu(ctx, stream, pb.len, dst32, 128, 0x00, name);
+
+  {
+    int ok = 1;
+    for (uint32_t i = 0; i < PAI_EXP_THREADS_X; i++) {
+      if (dst32[i] != PAI_STORE_CONST64_VALUE) {
+        ok = 0;
+        break;
+      }
+    }
+    m0_exp_report(name, ok);
+    if (!ok) {
+      PAI_LOG_ERROR_(PAI_SUB_GPU,
+                     "[M0-%s] dst[0..7] = %08x %08x %08x %08x "
+                     "%08x %08x %08x %08x\n",
+                     name, dst32[0], dst32[1], dst32[2], dst32[3], dst32[4],
+                     dst32[5], dst32[6], dst32[7]);
+    }
+  }
+  return 0;
+}
+
 static int
 m0_stage_e(m0_ctx_t *ctx) {
   pai_gpu_device_t *gpu = ctx->gpu;
@@ -666,6 +792,21 @@ m0_stage_e(m0_ctx_t *ctx) {
   if (!host) {
     pai_gpu_reset(gpu);
   }
+  m0_exp_ud_probe(ctx, "E8"); /* which user-data slot feeds the store */
+
+  if (!host) {
+    pai_gpu_reset(gpu);
+  }
+  m0_exp_store_const64_golden_cfg(ctx, "E11"); /* my kernel + golden regs */
+
+  if (!host) {
+    pai_gpu_reset(gpu);
+  }
+  m0_exp_memset(ctx, 64, "E3");
+
+  if (!host) {
+    pai_gpu_reset(gpu);
+  }
   m0_exp_store_const64(ctx, "E5", 0); /* psbc ABI, no preamble */
 
   if (!host) {
@@ -677,11 +818,6 @@ m0_stage_e(m0_ctx_t *ctx) {
     pai_gpu_reset(gpu);
   }
   m0_exp_store_const64(ctx, "E7", 1); /* psbc ABI + preamble */
-
-  if (!host) {
-    pai_gpu_reset(gpu);
-  }
-  m0_exp_memset(ctx, 64, "E3");
 
   if (!host) {
     pai_gpu_reset(gpu);
