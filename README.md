@@ -28,7 +28,10 @@ Implemented so far:
 
 - **Host builds**: CMake ≥ 3.20, Ninja, Clang (or MSVC)
 - **PS5 cross builds**: the OpenOrbis `ps5-payload-sdk` checkout in
-  `ps5-payload-sdk/` (not committed; see `.gitignore`)
+  `ps5-payload-sdk/` (not committed; see `.gitignore`) and Clang ≥ 20 on
+  the Windows PATH. Note: the vendored `win/prospero-clang.cmd` was adapted
+  for Clang 20's native PS5 target support (`SCE_PROSPERO_SDK_DIR` + final
+  `--sysroot`); re-apply that patch if the SDK is re-downloaded.
 - **Shader assembly** (optional): `llvm-mc`/`llvm-objcopy` (native or WSL)
   and Python 3; otherwise the checked-in prebuilt blobs are used
 

@@ -1,5 +1,7 @@
 #include "pm4.h"
 
+#include <stddef.h>
+
 void
 pai_pm4_builder_init(pai_pm4_builder_t *b, uint32_t *buf, uint32_t cap) {
   b->buf = buf;
