@@ -79,6 +79,34 @@ pai_host_kernel_store_const64(void *ctx, const uint32_t user_data[16],
 }
 
 pai_status_t
+pai_host_kernel_store64_x2(void *ctx, const uint32_t user_data[16],
+                           uint32_t threads_x, uint32_t group_x) {
+  uint32_t *dst = (uint32_t *)(uintptr_t)pai_ud64(user_data, 2);
+
+  (void)ctx;
+  (void)group_x;
+
+  for (uint32_t i = 0; i < threads_x * 2; i++) {
+    dst[i] = 0xBEADF00Du;
+  }
+  return PAI_OK;
+}
+
+pai_status_t
+pai_host_kernel_store64_x4(void *ctx, const uint32_t user_data[16],
+                           uint32_t threads_x, uint32_t group_x) {
+  uint32_t *dst = (uint32_t *)(uintptr_t)pai_ud64(user_data, 2);
+
+  (void)ctx;
+  (void)group_x;
+
+  for (uint32_t i = 0; i < threads_x * 4; i++) {
+    dst[i] = 0xF00DFEEDu;
+  }
+  return PAI_OK;
+}
+
+pai_status_t
 pai_host_kernel_loadstore(void *ctx, const uint32_t user_data[16],
                           uint32_t threads_x, uint32_t group_x) {
   uint32_t *a = (uint32_t *)(uintptr_t)pai_ud64(user_data, 0);

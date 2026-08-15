@@ -28,6 +28,16 @@ pai_status_t
 pai_host_kernel_store_const64(void *ctx, const uint32_t user_data[16],
                               uint32_t threads_x, uint32_t group_x);
 
+/* store64_x2 (E12): 2 dwords per thread. */
+pai_status_t pai_host_kernel_store64_x2(void *ctx,
+                                        const uint32_t user_data[16],
+                                        uint32_t threads_x, uint32_t group_x);
+
+/* store64_x4 (E13): 16 bytes per thread. */
+pai_status_t pai_host_kernel_store64_x4(void *ctx,
+                                        const uint32_t user_data[16],
+                                        uint32_t threads_x, uint32_t group_x);
+
 /* loadstore (E2): user_data 0-1 = A, 2-3 = C; c[i] = a[i]. */
 pai_status_t pai_host_kernel_loadstore(void *ctx, const uint32_t user_data[16],
                                        uint32_t threads_x, uint32_t group_x);

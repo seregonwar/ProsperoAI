@@ -777,6 +777,106 @@ m0_exp_store_const64_golden_cfg(m0_ctx_t *ctx, const char *name) {
   return 0;
 }
 
+/* E12/E13: FLAT store variant probe — x2/x4 stores instead of the
+ * single-dword flat_store_dword. */
+static int
+m0_exp_store64_variant(m0_ctx_t *ctx, const char *name,
+                       const uint32_t *code, uint32_t code_words,
+                       uint32_t value, uint32_t check_words,
+                       pai_host_kernel_fn host_fn) {
+  uint32_t stream[M0_PM4_CAP];
+  uint32_t stream_len;
+  uint32_t ud[4];
+  uint32_t *dst32 = (uint32_t *)ctx->dst.cpu_addr;
+
+  memcpy(ctx->code.cpu_addr, code, code_words * sizeof(uint32_t));
+  if (pai_gpu_device_backend(ctx->gpu) == PAI_GPU_BACKEND_HOST_REF) {
+    pai_gpu_host_register_shader(ctx->gpu, ctx->code.gpu_addr, host_fn, NULL);
+  }
+  ud[0] = 0;
+  ud[1] = 0;
+  ud[2] = (uint32_t)(ctx->dst.gpu_addr & 0xFFFFFFFFu);
+  ud[3] = (uint32_t)(ctx->dst.gpu_addr >> 32);
+  m0_build_dispatch_stream(ctx, stream, M0_PM4_CAP, PAI_STORE_CONST64_RSRC2,
+                           PAI_STORE_CONST64_THREADS_X, 1, ud, 4, &stream_len);
+  m0_run_gpu(ctx, stream, stream_len, dst32, check_words * 4, 0x00, name);
+
+  {
+    int ok = 1;
+    for (uint32_t i = 0; i < check_words; i++) {
+      if (dst32[i] != value) {
+        ok = 0;
+        break;
+      }
+    }
+    m0_exp_report(name, ok);
+    if (!ok) {
+      PAI_LOG_ERROR_(PAI_SUB_GPU,
+                     "[M0-%s] dst[0..7] = %08x %08x %08x %08x "
+                     "%08x %08x %08x %08x\n",
+                     name, dst32[0], dst32[1], dst32[2], dst32[3], dst32[4],
+                     dst32[5], dst32[6], dst32[7]);
+    }
+  }
+  return 0;
+}
+
+/* E14: golden memset with the pattern placed IN the destination buffer
+ * at offset 0x27C (the kernel's SMEM load reads it from there). */
+static int
+m0_exp_memset_pattern_in_buf(m0_ctx_t *ctx, const char *name) {
+  pai_pm4_builder_t pb;
+  uint32_t stream[M0_PM4_CAP];
+  uint32_t vals[9];
+  uint32_t *dst32 = (uint32_t *)ctx->dst.cpu_addr;
+  uint32_t pattern[4] = {0xDEADBEEFu, 0x11223344u, 0x55667788u, 0x99AABBCCu};
+  uint64_t code = ctx->code.gpu_addr;
+
+  memcpy(ctx->code.cpu_addr, pai_memset16_code,
+         PAI_MEMSET16_CODE_WORDS * sizeof(uint32_t));
+
+  /* Place the pattern at dst + 0x27C before dispatch. */
+  memset(dst32, 0, 4096);
+  memcpy((uint8_t *)dst32 + 0x27C, pattern, 16);
+
+  pai_pm4_builder_init(&pb, stream, M0_PM4_CAP);
+
+  vals[0] = (uint32_t)(code >> 8);
+  vals[1] = (uint32_t)(code >> 40);
+  pai_pm4_set_sh_reg_compute(&pb, PAI_REG_COMPUTE_PGM_LO, 2, vals);
+
+  vals[0] = PAI_MEMSET16_RSRC1;
+  vals[1] = PAI_MEMSET16_RSRC2;
+  pai_pm4_set_sh_reg_compute(&pb, PAI_REG_COMPUTE_PGM_RSRC1, 2, vals);
+
+  vals[0] = PAI_MEMSET16_RSRC3;
+  pai_pm4_set_sh_reg_compute(&pb, PAI_REG_COMPUTE_PGM_RSRC3, 1, vals);
+
+  vals[0] = PAI_MEMSET16_THREADS_X;
+  vals[1] = 1;
+  vals[2] = 1;
+  pai_pm4_set_sh_reg_compute(&pb, PAI_REG_COMPUTE_NUM_THREAD_X, 3, vals);
+
+  vals[0] = 0;
+  vals[1] = 0;
+  vals[2] = (uint32_t)(ctx->dst.gpu_addr & 0xFFFFFFFFu);
+  vals[3] = (uint32_t)(ctx->dst.gpu_addr >> 32);
+  vals[4] = 64;
+  vals[5] = 0;
+  vals[6] = 0;
+  vals[7] = 0;
+  vals[8] = 0;
+  pai_pm4_set_sh_reg_compute(&pb, PAI_REG_COMPUTE_USER_DATA_0, 9, vals);
+
+  pai_pm4_dispatch_direct(&pb, 1, 1, 1, 0);
+
+  /* Watch only the region after the pre-placed pattern (0x27C + 16). */
+  m0_run_gpu(ctx, stream, pb.len, (uint8_t *)dst32 + 0x400, 1024 - 0x400,
+             0x00, name);
+  m0_check_memset(dst32, 64, pattern, name);
+  return 0;
+}
+
 static int
 m0_stage_e(m0_ctx_t *ctx) {
   pai_gpu_device_t *gpu = ctx->gpu;
@@ -792,12 +892,21 @@ m0_stage_e(m0_ctx_t *ctx) {
   if (!host) {
     pai_gpu_reset(gpu);
   }
-  m0_exp_ud_probe(ctx, "E8"); /* which user-data slot feeds the store */
+  m0_exp_store64_variant(ctx, "E12", pai_store64_x2_code,
+                         PAI_STORE64_X2_CODE_WORDS, PAI_STORE64_X2_VALUE, 128,
+                         pai_host_kernel_store64_x2);
 
   if (!host) {
     pai_gpu_reset(gpu);
   }
-  m0_exp_store_const64_golden_cfg(ctx, "E11"); /* my kernel + golden regs */
+  m0_exp_store64_variant(ctx, "E13", pai_store64_x4_code,
+                         PAI_STORE64_X4_CODE_WORDS, PAI_STORE64_X4_VALUE, 256,
+                         pai_host_kernel_store64_x4);
+
+  if (!host) {
+    pai_gpu_reset(gpu);
+  }
+  m0_exp_memset_pattern_in_buf(ctx, "E14");
 
   if (!host) {
     pai_gpu_reset(gpu);

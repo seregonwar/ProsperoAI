@@ -1,0 +1,5 @@
+/* Generated from store64_x2.s by llvm-mc 18 (gfx1013). Do not edit. */
+    0x7E020202u, 0x7E040203u, 0x7E060300u, 0x34060683u,
+    0xD70F6A04u, 0x00020701u, 0xD5286A05u, 0x01A90102u,
+    0x7E0C02FFu, 0xBEADF00Du, 0x7E0E0306u, 0xDC740000u,
+    0x007D0604u, 0xBF810000u,

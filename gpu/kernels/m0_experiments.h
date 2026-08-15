@@ -30,6 +30,16 @@
 #define PAI_STORE_CONST64_THREADS_X 64u
 #define PAI_STORE_CONST64_VALUE 0xCAFEF00Du
 
+/* E12: FLAT_STORE_DWORDX2 variant (2 dwords per thread). */
+#define PAI_STORE64_X2_RSRC2 0x00000008u
+#define PAI_STORE64_X2_CODE_WORDS 14u
+#define PAI_STORE64_X2_VALUE 0xBEADF00Du
+
+/* E13: FLAT_STORE_DWORDX4 variant (16 bytes per thread, golden op). */
+#define PAI_STORE64_X4_RSRC2 0x00000008u
+#define PAI_STORE64_X4_CODE_WORDS 16u
+#define PAI_STORE64_X4_VALUE 0xF00DFEEDu
+
 /* loadstore: 4 user SGPRs (A, C). */
 #define PAI_LOADSTORE_RSRC2 0x00000008u
 #define PAI_LOADSTORE_CODE_WORDS 20u
@@ -47,6 +57,8 @@
 
 extern const uint32_t pai_store_const_code[PAI_STORE_CONST_CODE_WORDS];
 extern const uint32_t pai_store_const64_code[PAI_STORE_CONST64_CODE_WORDS];
+extern const uint32_t pai_store64_x2_code[PAI_STORE64_X2_CODE_WORDS];
+extern const uint32_t pai_store64_x4_code[PAI_STORE64_X4_CODE_WORDS];
 extern const uint32_t pai_loadstore_code[PAI_LOADSTORE_CODE_WORDS];
 
 #endif /* PAI_GPU_M0_EXPERIMENT_KERNELS_H */
