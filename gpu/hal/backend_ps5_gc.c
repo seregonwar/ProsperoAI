@@ -271,11 +271,7 @@ pai_gc_wait_label(pai_gpu_device_t *device, uint64_t label_addr,
   for (;;) {
     volatile uint32_t *label = (volatile uint32_t *)(uintptr_t)label_addr;
     if (*label == label_value) {
-  /* Repair the GPU mapping for this buffer (the reference PDE was
-   * captured from the kernel's own acqrb mapping — validated walk). */
-  (void)pai_gvmspace_repair(buffer->gpu_addr, phys);
-
-  return PAI_OK;
+      return PAI_OK;
     }
     if (pai_gc_now_ns() >= deadline) {
       break;
