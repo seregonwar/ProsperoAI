@@ -268,6 +268,12 @@
 #define PAI_G37_TBUF_WORD2 0x20002000u
 #define PAI_G37_TBUF_WORD3 0x31044FACu
 #define PAI_G38_TBUF_WORD3 0x31040080u
+
+/* G39: VALU float dot, serial SMEM path (pai_fdot_serial.inc). */
+#define PAI_FDOT_RSRC2 0x0000008Cu
+#define PAI_FDOT_THREADS 1u
+#define PAI_FDOT_CODE_WORDS 33u
+#define PAI_FDOT_ITERS 10u
 #define PAI_G35_WORDS 15u
 #define PAI_G32_WORDS 16u
 #define PAI_G25_VALUE 0xDEAD0001u
@@ -376,6 +382,7 @@ extern const uint32_t pai_fbatch4_code[PAI_G33_CODE_WORDS];
 extern const uint32_t pai_fbatch5_code[];
 extern const uint32_t pai_mubufload36_code[PAI_G36_CODE_WORDS];
 extern const uint32_t pai_mubufload37_code[];
+extern const uint32_t pai_fdot_serial_code[PAI_FDOT_CODE_WORDS];
 extern const uint32_t pai_hbatch_code[];
 extern const uint32_t pai_hbatch2_code[];
 extern const uint32_t pai_hbatch3_code[PAI_H10_CODE_WORDS];

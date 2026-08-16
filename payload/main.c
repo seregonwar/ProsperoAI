@@ -3232,6 +3232,52 @@ m0_exp_v0model(m0_ctx_t *ctx) {
     }
   }
 
+  /* G39: VALU float dot, serial SMEM path. SALU float does not exist
+   * on gfx1013; the float ops are VALU-only. The e64 direct-SGPR
+   * mul (G35 rule) + VGPR+VGPR add (G32 rule). */
+  if (!host) {
+    pai_gpu_reset(gpu);
+  }
+  {
+    uint32_t *fp = (uint32_t *)ctx->a.cpu_addr;
+    uint32_t *c39 = (uint32_t *)ctx->c.cpu_addr;
+    uint32_t n = 128u;
+    uint32_t stream_len = 0;
+    float want = 0.0f;
+    memcpy(ctx->code.cpu_addr, pai_fdot_serial_code,
+           PAI_FDOT_CODE_WORDS * sizeof(uint32_t));
+    if (host) {
+      pai_gpu_host_register_shader(gpu, ctx->code.gpu_addr,
+                                   pai_host_kernel_fbatch, NULL);
+    }
+    fp[0] = n;
+    fp[1] = 0;
+    for (uint32_t i = 0; i < n; i++) {
+      float a = 1.5f + (float)i * 0.25f;
+      float b = 2.0f - (float)i * 0.125f;
+      memcpy(&fp[2u + 2u * i], &a, 4);
+      memcpy(&fp[3u + 2u * i], &b, 4);
+      want += a * b;
+    }
+    pai_gpu_buffer_flush(ctx->gpu, &ctx->a);
+    ud[0] = 0;
+    ud[1] = 0;
+    ud[2] = (uint32_t)(ctx->a.gpu_addr & 0xFFFFFFFFu);
+    ud[3] = (uint32_t)(ctx->a.gpu_addr >> 32);
+    ud[4] = (uint32_t)(ctx->c.gpu_addr & 0xFFFFFFFFu);
+    ud[5] = (uint32_t)(ctx->c.gpu_addr >> 32);
+    m0_build_dispatch_stream(ctx, stream, M0_PM4_CAP, PAI_FDOT_RSRC2,
+                             PAI_FDOT_THREADS, 1, ud, 6, &stream_len);
+    m0_run_gpu(ctx, stream, stream_len, c39, 16, 0xCC, "G39");
+    {
+      float got;
+      memcpy(&got, &c39[0], 4);
+      PAI_LOG_INFO_(PAI_SUB_GPU, "[M0-G39] c[0]=%.6f want=%.6f (%08x)\n",
+                    (double)got, (double)want, c39[0]);
+      m0_exp_report("G39", got == want);
+    }
+  }
+
   /* G17: load from the kernel's own acqrb VA - does ANY load complete,
    * or only our dmem pages hang? */
   if (!host) {
