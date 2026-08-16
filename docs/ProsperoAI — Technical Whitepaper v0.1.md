@@ -1747,7 +1747,18 @@ Open gates before Phase 1 / PAI-M2 work should prioritize:
 
 - MUBUF / flat vector loads (T# still unresolved; flat loads hang);
 - LDS unlock via the AGC blob above;
-- wave-parallel dispatch beyond the serial `NUM_THREAD_X=1` group model.
+- ~~wave-parallel dispatch beyond the serial `NUM_THREAD_X=1` group
+  model~~ — **UNLOCKED (2026-08-17, run 011141/011947, console
+  9021)**. First wave-parallel kernels validated: G55 float ramp
+  (`c[i]=base+k*i`, NUM_THREAD_X=32, values derived from tid +
+  uniform scalars, `v_cvt_f32_i32`+`v_mul/v_add_f32_e64`, commit
+  `9f84142`); G56 same kernel fed by `s_load_dword` from a GPU-mem
+  header — scalar-read data path inside a 32-thread wave proven, the
+  x-side of a wave-parallel GEMV (`adb11b6`). G57 (per-lane select
+  from an `s_load_dwordx16` block via `v_movrels_b32`, the W-side
+  unlock for GEMV) in flight. Empirical note: RSRC1 `VGPRS` must
+  cover the VGPRs a kernel actually touches (G55/G56 use v1-v6,
+  lanepick v16-v31 → `PAI_EXP_RSRC1_VGPR32=0x602C0003`).
 
 Measured serial GEMV submit→EOP bandwidth is apparent (~2–4 GB/s), not
 HBM peak; treat it as a harness timing signal only.

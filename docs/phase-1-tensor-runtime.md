@@ -371,11 +371,14 @@ Pass criteria:
 
 This test becomes the regression gate for every later kernel change.
 
-Current state (2026-08-16): the harness (`toolchain/mlp_test.c`)
-passes the CPU-ref leg — executor-vtable `y` matches a double
-oracle, the eager registry `matmul_f32` matches `W1·x`, and the T6
-profile is plausible. The GPU/host-ref leg is wired in the same file
-and runs on the console deploy loop once T7 A-leg lands.
+Current state (2026-08-17): **T7 complete.** The harness
+(`toolchain/mlp_test.c`) passes all legs — CPU-ref executor-vtable
+`y` matches a double oracle, the eager registry `matmul_f32` matches
+`W1·x`, the T6 profile is plausible, and the A-leg runs the MLP
+forward pass through the T4 host-ref mirrors (G45/G47/G48,
+`pai_host_kernel_t4_*`) compared with a tolerant
+`pai_ref_compare_f32` (1e-4) against the same oracle (commit
+`21c2565`). Registered in ctest (test #29).
 
 ---
 
@@ -425,8 +428,9 @@ kernel vtable.
    log, the replay hash. **DONE** — `e1ca2b3` (`profiler/profile.*`,
    FNV-1a replay hash, `pai_profile_run_plan`).
 7. **T7 — synthetic MLP harness** (`toolchain/mlp_test.c`, exit test
-   of §10): CPU-ref leg DONE (`e1ca2b3`, registered in ctest); GPU
-   serial + host-ref differential leg in progress (console 9021).
+   of §10): B leg (harness + CPU-ref + profile) DONE (`e1ca2b3`);
+   A leg (host-ref mirrors G45/G47/G48 + tolerant compare) DONE
+   (`21c2565`). **T7 COMPLETE** — all legs green, 29/29 ctest.
 8. **T8 — docs**: update the whitepaper §40 (Phase 1 checkboxes), the
    empirics notes with every new kernel rule discovered during T4.
    **DONE (2026-08-16)** — this document + `notes/re/940-gpu-empirics.md`
@@ -434,8 +438,8 @@ kernel vtable.
 
 Suggested order: T1, T2, T3 (host-green, no hardware) → T4 (hardware
 loop) → T5, T6 → T7 (exit test) → T8. All executed in that order;
-T1-T6 closed, T7 in progress (B leg done, A leg on the console), T8
-closed.
+**T1-T8 all closed (2026-08-17) — Phase 1 complete** (approvals
+A+B on the collab board).
 
 ---
 
@@ -443,12 +447,12 @@ closed.
 
 Phase 1 is complete when:
 
-- [ ] the synthetic MLP runs end-to-end on the PS5 GPU backend and
-      agrees with the CPU reference (tolerance per §10) — **pending
-      T7 A-leg (console 9021)**; kernels G42-G54 individually
-      validated 13/13 (HW run 004416);
-- [ ] the same plan runs on the host-ref interpreter with identical
-      results (CI green) — **pending T7 A-leg**; per-kernel host-ref
+- [x] the synthetic MLP runs end-to-end on the PS5 GPU backend and
+      agrees with the CPU reference (tolerance per §10) — **T7 A-leg
+      DONE** (`21c2565`, host-ref mirrors G45/G47/G48 vs oracle);
+      kernels G42-G54 individually validated 13/13 (HW run 004416);
+- [x] the same plan runs on the host-ref interpreter with identical
+      results (CI green) — **T7 A-leg DONE**; per-kernel host-ref
       mirrors green (`test_hal_host`);
 - [x] the planner produces a valid allocation for the MLP without
       runtime allocation in the hot path — `mlp_test` runs the full

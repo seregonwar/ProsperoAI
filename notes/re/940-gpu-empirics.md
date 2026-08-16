@@ -247,6 +247,26 @@ lanes of the wave. HW-validated PASS.
   Phase 2 (cos/sin generation is `base + k*i` scaled by a table
   factor), still limited to 8 storing lanes per wave on 9.40.
 
+## G56 wave-parallel ramp, s_load-fed (2026-08-17, run 011947)
+
+Same kernel as G55 but k/base are read from a GPU-mem header via
+`s_load_dword` (`s_load_dword s16, s[2:3], 0` / `, 4` + `s_waitcnt
+lgkmcnt(0)`), instead of user-data scalars. HW-validated PASS. This
+proves the scalar-read data path works inside a 32-thread wave — the
+x-side of a wave-parallel GEMV (x[k] is uniform across rows and
+readable with scalar loads). ABI: s2:s3 = header (k, base), s4:s5 =
+C; commit `adb11b6`.
+
+## G57 probe: per-lane select from s_load_dwordx16 (in flight)
+
+`lanepick.s` loads a 16-dword block into s[16:31] with
+`s_load_dwordx16`, copies to v[16:31], and selects per-lane with
+`v_movrels_b32` (m0 base = 64 → VGPR16 in bytes, index = v0 tid).
+Lesson from the first FAIL: **RSRC1 VGPRS field must cover the VGPRs
+the kernel touches** — default `PAI_EXP_RSRC1` (VGPRS=0 → 8 VGPR)
+drops writes to v16-v31; the fix is `PAI_EXP_RSRC1_VGPR32 =
+0x602C0003` (VGPRS=3 → 32 VGPR). Re-deploy pending.
+
 ## Toolchain
 
 - llvm-mc 18 (Windows, ps5-payload-sdk/tools/llvm18/bin) assembles
