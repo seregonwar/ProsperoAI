@@ -100,16 +100,25 @@ typedef struct pai_pai_builder {
   uint32_t num_sections;
   struct {
     uint32_t type;
+    uint32_t flags;
     const uint8_t *data;
     uint32_t size;
   } sections[PAI_PAI_MAX_SECTIONS];
 } pai_pai_builder_t;
+
+/* Section flags (v0): only the WEIGHTS section uses them today. */
+#define PAI_PAI_SEC_FLAG_COMPRESSED 1u /* payload is pai_compress blob */
 
 void pai_pai_builder_init(pai_pai_builder_t *builder);
 
 /* Attach a section payload (copied into the encoded blob). */
 pai_status_t pai_pai_builder_add(pai_pai_builder_t *builder, uint32_t type,
                                  const void *data, uint32_t size);
+
+/* Same, with per-section flags. */
+pai_status_t pai_pai_builder_add_flags(pai_pai_builder_t *builder,
+                                       uint32_t type, uint32_t flags,
+                                       const void *data, uint32_t size);
 
 /* Encode the meta structure into its fixed payload. */
 pai_status_t pai_pai_meta_encode(const pai_pai_meta_t *meta, uint8_t *out,
@@ -142,6 +151,10 @@ pai_status_t pai_pai_open(const uint8_t *data, uint32_t nbytes,
 /* Payload of a section (NULL when absent). */
 const uint8_t *pai_pai_section(const pai_pai_container_t *container,
                                uint32_t type, uint32_t *out_size);
+
+/* Flags of a section, 0 when absent. */
+uint32_t pai_pai_section_flags(const pai_pai_container_t *container,
+                               uint32_t type);
 
 pai_status_t pai_pai_meta_decode(const uint8_t *data, uint32_t size,
                                  pai_pai_meta_t *out);

@@ -19,6 +19,7 @@ set(PAI_TESTS
   test_pm4
   test_ref_ops
   test_hal_host
+  test_compress
   test_protocol
   test_tcp
   test_json
@@ -33,6 +34,7 @@ foreach(test_name ${PAI_TESTS})
     pai_runtime
     pai_tensor
     pai_memory
+    pai_compression
     pai_graph
     pai_ir
     pai_scheduler

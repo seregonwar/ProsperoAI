@@ -54,6 +54,7 @@ extern "C" {
 typedef struct pai_import_options {
   const char *quant;    /* NULL | "none" | "q8" | "q4"                   */
   uint16_t quant_group; /* elements per scale group; 0 = per-tensor      */
+  uint32_t compress;    /* pai_compress method for the weights section   */
 } pai_import_options_t;
 
 /*

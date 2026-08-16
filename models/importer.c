@@ -604,6 +604,11 @@ build_container(const imp_model_t *m, const pai_import_options_t *opts,
     quant.quant = "none";
     quant.quant_group = 0;
   }
+  if (opts != NULL) {
+    quant.compress = opts->compress;
+  } else {
+    quant.compress = 0;
+  }
 
   st = pai_container_build(&meta, tensors, m->num_values, ops, m->num_ops,
                            tokens, m->num_tokens, NULL, 0, &quant,

@@ -79,20 +79,21 @@ build_fixture(uint8_t **out_blob, uint32_t *out_nbytes) {
                                    manifest_blob, manifest_n),
                PAI_OK);
   {
-    /* Weights blob: f32 layout, offsets as recorded above. */
+    /* Weights blob: f32 layout, offsets as recorded above. The builder
+     * keeps the pointer; pai_pai_build() copies it, so free after. */
     uint8_t *weights = (uint8_t *)calloc(1, (size_t)offset);
     CHECK(weights != NULL);
     memset(weights, 0xAB, (size_t)offset);
     CHECK_EQ_INT(pai_pai_builder_add(&builder, PAI_PAI_SEC_WEIGHTS, weights,
                                      (uint32_t)offset),
                  PAI_OK);
+    total = pai_pai_encoded_size(&builder);
+    blob = (uint8_t *)malloc(total);
+    CHECK(blob != NULL);
+    CHECK_EQ_INT(pai_pai_build(&builder, blob, total, &total), PAI_OK);
     free(weights);
   }
 
-  total = pai_pai_encoded_size(&builder);
-  blob = (uint8_t *)malloc(total);
-  CHECK(blob != NULL);
-  CHECK_EQ_INT(pai_pai_build(&builder, blob, total, &total), PAI_OK);
   *out_blob = blob;
   *out_nbytes = total;
   return 1;

@@ -27,11 +27,18 @@ pai_pai_builder_init(pai_pai_builder_t *builder) {
 pai_status_t
 pai_pai_builder_add(pai_pai_builder_t *builder, uint32_t type,
                     const void *data, uint32_t size) {
+  return pai_pai_builder_add_flags(builder, type, 0u, data, size);
+}
+
+pai_status_t
+pai_pai_builder_add_flags(pai_pai_builder_t *builder, uint32_t type,
+                          uint32_t flags, const void *data, uint32_t size) {
   if (builder == NULL || type == 0 || type > PAI_PAI_SEC_PROFILE ||
       (data == NULL && size > 0) || builder->num_sections >= PAI_PAI_MAX_SECTIONS) {
     return PAI_ERR_INVALID_ARG;
   }
   builder->sections[builder->num_sections].type = type;
+  builder->sections[builder->num_sections].flags = flags;
   builder->sections[builder->num_sections].data = (const uint8_t *)data;
   builder->sections[builder->num_sections].size = size;
   builder->num_sections++;
@@ -102,10 +109,10 @@ pai_pai_build(const pai_pai_builder_t *builder, uint8_t *out, uint32_t cap,
     t[1] = (uint8_t)((type >> 8) & 0xFF);
     t[2] = (uint8_t)((type >> 16) & 0xFF);
     t[3] = (uint8_t)((type >> 24) & 0xFF);
-    t[4] = 0; /* flags */
-    t[5] = 0;
-    t[6] = 0;
-    t[7] = 0;
+    t[4] = (uint8_t)(builder->sections[i].flags & 0xFF);
+    t[5] = (uint8_t)((builder->sections[i].flags >> 8) & 0xFF);
+    t[6] = (uint8_t)((builder->sections[i].flags >> 16) & 0xFF);
+    t[7] = (uint8_t)((builder->sections[i].flags >> 24) & 0xFF);
     t[8] = (uint8_t)(cursor & 0xFF);
     t[9] = (uint8_t)((cursor >> 8) & 0xFF);
     t[10] = (uint8_t)((cursor >> 16) & 0xFF);
@@ -181,11 +188,16 @@ pai_pai_open(const uint8_t *data, uint32_t nbytes, pai_pai_container_t *out) {
                     ((uint32_t)t[14] << 16) | ((uint32_t)t[15] << 24);
     uint32_t type = (uint32_t)t[0] | ((uint32_t)t[1] << 8) |
                     ((uint32_t)t[2] << 16) | ((uint32_t)t[3] << 24);
+    uint32_t flags = (uint32_t)t[4] | ((uint32_t)t[5] << 8) |
+                     ((uint32_t)t[6] << 16) | ((uint32_t)t[7] << 24);
 
-    if (t[4] != 0 || t[5] != 0 || t[6] != 0 || t[7] != 0) {
+    if (type == 0 || type > PAI_PAI_SEC_PROFILE) {
       return PAI_ERR_PROTOCOL;
     }
-    if (type == 0 || type > PAI_PAI_SEC_PROFILE) {
+    /* Only the WEIGHTS section may carry flags today. */
+    if (flags != 0 &&
+        (type != PAI_PAI_SEC_WEIGHTS ||
+         (flags & ~PAI_PAI_SEC_FLAG_COMPRESSED) != 0)) {
       return PAI_ERR_PROTOCOL;
     }
     /* Section payloads must not overlap the table or each other, and a
@@ -237,7 +249,9 @@ pai_pai_open(const uint8_t *data, uint32_t nbytes, pai_pai_container_t *out) {
     const uint8_t *t = data + PAI_PAI_HEADER_SIZE + i * 16u;
     out->sections[i].type = (uint32_t)t[0] | ((uint32_t)t[1] << 8) |
                             ((uint32_t)t[2] << 16) | ((uint32_t)t[3] << 24);
-    out->sections[i].flags = 0;
+    out->sections[i].flags = (uint32_t)t[4] | ((uint32_t)t[5] << 8) |
+                             ((uint32_t)t[6] << 16) |
+                             ((uint32_t)t[7] << 24);
     out->sections[i].offset = (uint32_t)t[8] | ((uint32_t)t[9] << 8) |
                               ((uint32_t)t[10] << 16) |
                               ((uint32_t)t[11] << 24);
@@ -268,6 +282,21 @@ pai_pai_section(const pai_pai_container_t *container, uint32_t type,
     *out_size = 0;
   }
   return NULL;
+}
+
+uint32_t
+pai_pai_section_flags(const pai_pai_container_t *container, uint32_t type) {
+  uint32_t i;
+
+  if (container == NULL) {
+    return 0;
+  }
+  for (i = 0; i < container->num_sections; i++) {
+    if (container->sections[i].type == type) {
+      return container->sections[i].flags;
+    }
+  }
+  return 0;
 }
 
 /* ------------------------------------------------------------------ */

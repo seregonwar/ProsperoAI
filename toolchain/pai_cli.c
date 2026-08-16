@@ -1,7 +1,7 @@
 /*
  * ProsperoAI — `pai` command-line tool (whitepaper §20 official tooling)
  *
- *   pai convert  <desc.txt> <out.pai> [--quant q8|q4] [--group N]
+ *   pai convert  <desc.txt> <out.pai> [--quant q8|q4] [--group N] [--compress kraken|none]
  *   pai inspect  <model.pai> [--json]
  *   pai validate <model.pai>
  *   pai optimize <model.pai> [--budget B] [--group N] [--json]
@@ -14,6 +14,7 @@
  */
 
 #include <bench.h>
+#include <compression/pai_compress.h>
 #include <gateway/gateway.h>
 #include <importer.h>
 #include <model.h>
@@ -43,7 +44,7 @@ usage(void) {
       "pai — ProsperoAI model tooling\n"
       "\n"
       "usage:\n"
-      "  pai convert  <desc.txt> <out.pai> [--quant q8|q4] [--group N]\n"
+      "  pai convert  <desc.txt> <out.pai> [--quant q8|q4] [--group N] [--compress kraken|none]\n"
       "               import a model description + raw weights into a .pai\n"
       "  pai inspect  <model.pai> [--json]  dump container contents\n"
       "  pai validate <model.pai>            full integrity + load check\n"
@@ -86,6 +87,16 @@ cmd_convert(int argc, char **argv) {
       opts.quant = argv[++i];
     } else if (strcmp(argv[i], "--group") == 0 && i + 1 < argc) {
       opts.quant_group = (uint16_t)strtoul(argv[++i], NULL, 10);
+    } else if (strcmp(argv[i], "--compress") == 0 && i + 1 < argc) {
+      if (strcmp(argv[i + 1], "kraken") == 0) {
+        opts.compress = PAI_COMP_METHOD_KRAKEN;
+      } else if (strcmp(argv[i + 1], "none") == 0) {
+        opts.compress = 0;
+      } else {
+        usage();
+        return 2;
+      }
+      i++;
     } else {
       usage();
       return 2;
@@ -106,6 +117,7 @@ cmd_convert(int argc, char **argv) {
       pai_container_quant_t q;
       q.quant = opts.quant;
       q.quant_group = opts.quant_group;
+      q.compress = opts.compress;
       st = pai_llama_import(desc, out, &q);
     } else {
       st = pai_import_model_to_file(desc, out, &opts);

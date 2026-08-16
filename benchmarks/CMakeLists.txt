@@ -11,4 +11,10 @@ if(PAI_PLATFORM STREQUAL "host")
     pai_cpu_reference
   )
   pai_enable_big_stack(bench_gemm)
+
+  add_executable(bench_compress bench_compress.c)
+  target_link_libraries(bench_compress PRIVATE
+    pai_bench
+    pai_compression
+  )
 endif()

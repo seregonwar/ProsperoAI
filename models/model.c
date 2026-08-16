@@ -1,5 +1,6 @@
 #include "model.h"
 
+#include <compression/pai_compress.h>
 #include <quantize.h>
 
 #include <stdlib.h>
@@ -75,19 +76,50 @@ pai_model_open_blob(const uint8_t *blob, uint32_t nbytes,
     goto fail;
   }
 
-  /* Weights: canonical blob, owned by the model. */
+  /* Weights: canonical blob, owned by the model. The section may be
+   * stored compressed (section flag): the manifest offsets index the
+   * decompressed blob. */
   sec = pai_pai_section(&container, PAI_PAI_SEC_WEIGHTS, &sec_size);
   if (sec == NULL || sec_size == 0) {
     st = PAI_ERR_PROTOCOL;
     goto fail;
   }
-  model->weights = (uint8_t *)malloc(sec_size);
-  if (model->weights == NULL) {
-    st = PAI_ERR_NOMEM;
-    goto fail;
+  if (pai_pai_section_flags(&container, PAI_PAI_SEC_WEIGHTS) &
+      PAI_PAI_SEC_FLAG_COMPRESSED) {
+    uint64_t dec_size = 0;
+    uint64_t dec_n = 0;
+    uint32_t i;
+    for (i = 0; i < model->num_tensors; i++) {
+      uint64_t end = model->manifest[i].offset + model->manifest[i].size_bytes;
+      if (end > dec_size) {
+        dec_size = end;
+      }
+    }
+    if (dec_size == 0) {
+      st = PAI_ERR_PROTOCOL;
+      goto fail;
+    }
+    model->weights = (uint8_t *)malloc((size_t)dec_size);
+    if (model->weights == NULL) {
+      st = PAI_ERR_NOMEM;
+      goto fail;
+    }
+    st = pai_compress_decode(sec, sec_size, model->weights, dec_size,
+                             &dec_n);
+    if (st != PAI_OK || dec_n != dec_size) {
+      st = PAI_ERR_PROTOCOL;
+      goto fail;
+    }
+    model->weights_bytes = dec_size;
+  } else {
+    model->weights = (uint8_t *)malloc(sec_size);
+    if (model->weights == NULL) {
+      st = PAI_ERR_NOMEM;
+      goto fail;
+    }
+    memcpy(model->weights, sec, sec_size);
+    model->weights_bytes = sec_size;
   }
-  memcpy(model->weights, sec, sec_size);
-  model->weights_bytes = sec_size;
 
   /* Prospero IR: the compiled program. */
   sec = pai_pai_section(&container, PAI_PAI_SEC_IR, &sec_size);

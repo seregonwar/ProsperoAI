@@ -19,10 +19,13 @@
 extern "C" {
 #endif
 
-/* Quantization options shared by all import paths (§15). */
+/* Quantization + compression options shared by all import paths
+ * (§15). `compress`: 0 = store weights raw, PAI_COMP_METHOD_KRAKEN =
+ * store the weights blob compressed (decompressed at model open). */
 typedef struct pai_container_quant {
   const char *quant;    /* NULL | "none" | "q8" | "q4"                   */
   uint16_t quant_group; /* elements per scale group; 0 = per-tensor      */
+  uint32_t compress;    /* pai_compress method for the weights section   */
 } pai_container_quant_t;
 
 /*

@@ -20,4 +20,5 @@ target_link_libraries(pai_models PUBLIC
   pai_scheduler
   pai_cache
   pai_tensor
+  pai_compression
 )

@@ -3,6 +3,7 @@
 
 #include "container.h"
 
+#include <compression/pai_compress.h>
 #include <graph/graph.h>
 #include <ir/ir.h>
 
@@ -36,6 +37,7 @@ pai_container_build(const pai_pai_meta_t *meta,
   int quant_on = 0;
   int quant_q4 = 0;
   uint8_t *ir_blob = NULL;
+  uint8_t *comp_weights = NULL;
   uint32_t ir_n = 0;
   uint8_t *tok_blob = NULL;
   uint32_t tok_n = 0;
@@ -302,8 +304,29 @@ pai_container_build(const pai_pai_meta_t *meta,
   pai_pai_builder_add(&builder, PAI_PAI_SEC_META, meta_blob, meta_n);
   pai_pai_builder_add(&builder, PAI_PAI_SEC_MANIFEST, manifest_blob,
                       manifest_n);
-  pai_pai_builder_add(&builder, PAI_PAI_SEC_WEIGHTS, weights,
-                      (uint32_t)weights_n);
+  if (quant != NULL && quant->compress != 0 && weights_n > 0) {
+    uint64_t comp_n = 0;
+    uint64_t comp_cap = pai_compress_bound(weights_n) + 16u; /* envelope */
+
+    comp_weights = (uint8_t *)malloc((size_t)comp_cap);
+    if (comp_weights == NULL) {
+      st = PAI_ERR_NOMEM;
+      goto done;
+    }
+    st = pai_compress_encode(weights, weights_n, comp_weights, comp_cap,
+                             &comp_n);
+    if (st == PAI_OK) {
+      st = pai_pai_builder_add_flags(&builder, PAI_PAI_SEC_WEIGHTS,
+                                     PAI_PAI_SEC_FLAG_COMPRESSED, comp_weights,
+                                     (uint32_t)comp_n);
+    }
+    if (st != PAI_OK) {
+      goto done;
+    }
+  } else {
+    pai_pai_builder_add(&builder, PAI_PAI_SEC_WEIGHTS, weights,
+                        (uint32_t)weights_n);
+  }
   pai_pai_builder_add(&builder, PAI_PAI_SEC_IR, ir_blob, ir_n);
   if (tok_n > 0) {
     pai_pai_builder_add(&builder, PAI_PAI_SEC_TOKENIZER, tok_blob, tok_n);
@@ -330,6 +353,7 @@ pai_container_build(const pai_pai_meta_t *meta,
 
 done:
   free(container);
+  free(comp_weights);
   free(tok_blob);
   free(ir_blob);
   free(manifest_blob);

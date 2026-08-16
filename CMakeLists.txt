@@ -11,6 +11,7 @@ include(cmake/pai_common.cmake)
 
 add_subdirectory(tensor)
 add_subdirectory(memory)
+add_subdirectory(compression)
 add_subdirectory(graph)
 add_subdirectory(ir)
 add_subdirectory(scheduler)
