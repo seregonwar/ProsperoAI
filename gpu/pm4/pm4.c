@@ -98,6 +98,25 @@ pai_pm4_context_control(pai_pm4_builder_t *b, uint32_t load_control,
 }
 
 uint32_t *
+pai_pm4_acquire_mem(pai_pm4_builder_t *b) {
+  uint32_t *p = pai_pm4_emit(b, 8);
+
+  if (!p) {
+    return NULL;
+  }
+
+  p[0] = pai_pm4_header3(PAI_PM4_OP_ACQUIRE_MEM, 8);
+  p[1] = 0u;
+  p[2] = 0xFFFFFFFFu; /* coher_size_lo */
+  p[3] = 0x00FFFFFFu; /* coher_size_hi */
+  p[4] = 0u;          /* coher_base_lo */
+  p[5] = 0u;          /* coher_base_hi */
+  p[6] = 0x0Au;       /* poll interval */
+  p[7] = 0xC3B1u;     /* GCR_CNTL: GL1_INV|GLM_INV|GLM_WB|GLV_INV|GLK_INV */
+  return p;
+}
+
+uint32_t *
 pai_pm4_release_mem_eop(pai_pm4_builder_t *b, uint32_t event_type,
                         uint32_t event_index, uint64_t addr, uint32_t data) {
   uint32_t *p = pai_pm4_emit(b, 8);

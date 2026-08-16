@@ -1304,6 +1304,15 @@ m0_exp_v0model(m0_ctx_t *ctx) {
     ud[3] = (uint32_t)(ctx->a.gpu_addr >> 32);
     m0_build_dispatch_stream(ctx, stream, M0_PM4_CAP, PAI_H11_RSRC2,
                              PAI_EXP_THREADS_X, 1, ud, 4, &stream_len);
+    /* Prepend IT_ACQUIRE_MEM: invalidate caches so the shader load sees
+     * the CPU-written buffer (OpenAGC acquire-before-read rule). */
+    memmove(stream + 8, stream, stream_len * sizeof(uint32_t));
+    {
+      pai_pm4_builder_t acq;
+      pai_pm4_builder_init(&acq, stream, M0_PM4_CAP);
+      pai_pm4_acquire_mem(&acq);
+      stream_len += 8;
+    }
     m0_run_gpu(ctx, stream, stream_len, a32, 128, 0xEE, "H11");
     PAI_LOG_INFO_(PAI_SUB_GPU, "[M0-H11] A[0..15] = %08x %08x %08x %08x "
                   "%08x %08x %08x %08x %08x %08x %08x %08x %08x %08x "

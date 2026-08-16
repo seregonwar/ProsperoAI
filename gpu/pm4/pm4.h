@@ -22,6 +22,7 @@
 #define PAI_PM4_OP_DISPATCH_DIRECT  0x15
 #define PAI_PM4_OP_CONTEXT_CONTROL  0x28
 #define PAI_PM4_OP_INDIRECT_BUFFER  0x3F
+#define PAI_PM4_OP_ACQUIRE_MEM      0x58
 #define PAI_PM4_OP_EVENT_WRITE      0x46
 #define PAI_PM4_OP_RELEASE_MEM      0x49
 #define PAI_PM4_OP_DMA_DATA         0x50
@@ -94,6 +95,13 @@ uint32_t *pai_pm4_dispatch_direct(pai_pm4_builder_t *b, uint32_t group_x,
  */
 uint32_t *pai_pm4_context_control(pai_pm4_builder_t *b, uint32_t load_control,
                                   uint32_t shadow_control);
+
+/*
+ * IT_ACQUIRE_MEM (0x58): invalidate the GPU caches so the shader reads
+ * data the CPU wrote (OpenAGC agcGfx1013EmitAcquireAll, GCR_ALL=0xC3B1).
+ * Must precede the first shader load of host-written buffers.
+ */
+uint32_t *pai_pm4_acquire_mem(pai_pm4_builder_t *b);
 
 /*
  * IT_RELEASE_MEM EOP fence (OpenAGC sceAgcDcbSetEopFlip layout, 8 dwords).
