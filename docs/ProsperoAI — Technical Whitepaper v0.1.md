@@ -1467,6 +1467,8 @@ This phase is the most important feasibility checkpoint.
 
 ## Phase 1 — Tensor Runtime
 
+Detailed design: [`phase-1-tensor-runtime.md`](phase-1-tensor-runtime.md).
+
 Implement:
 
 - tensor descriptors;
