@@ -15,9 +15,10 @@
 .globl vecscalar
 vecscalar:
     v_mov_b32 v1, v0
+    v_add_f32 v0, v1, s4
+    v_mov_b32 v4, v0
     v_mov_b32 v2, s2
     v_mov_b32 v3, s3
-    v_mov_b32_e64 v4, s4
     v_lshlrev_b32 v5, 2, v1
     v_add_co_u32 v2, vcc_lo, v2, v5
     v_add_co_ci_u32 v3, vcc_lo, v3, 0, vcc_lo
