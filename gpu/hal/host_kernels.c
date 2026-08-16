@@ -486,8 +486,8 @@ pai_host_kernel_t4_clip(void *ctx, const uint32_t user_data[16],
 }
 
 /* T4 biasadd (G47): header at ud 2-3 [cols, pad, a_lo, a_hi,
- * bias_lo, bias_hi], C at ud 4-5; one group per row:
- * c[g*cols+j] = a[g*cols+j] + bias[j]. */
+ * bias_lo, bias_hi], C at ud 4-5; one group per cell:
+ * c[g] = a[g] + bias[g % cols], groups = rows*cols. */
 pai_status_t
 pai_host_kernel_t4_biasadd(void *ctx, const uint32_t user_data[16],
                            uint32_t threads_x, uint32_t group_x) {
@@ -501,16 +501,14 @@ pai_host_kernel_t4_biasadd(void *ctx, const uint32_t user_data[16],
   (void)threads_x;
 
   for (uint32_t g = 0; g < group_x; g++) {
-    for (uint32_t j = 0; j < cols; j++) {
-      c[g * cols + j] = a[g * cols + j] + bias[j];
-    }
+    c[g] = a[g] + bias[g % cols];
   }
   return PAI_OK;
 }
 
 /* T4 matmul (G48): header at ud 2-3 [K, N, a_lo, a_hi, b_lo, b_hi],
- * C at ud 4-5; one group per row:
- * c[i*N+j] = sum_k a[i*K+k] * b[k*N+j]. */
+ * C at ud 4-5; one group per cell, groups = rows*N:
+ * c[g] = sum_k a[i*K+k] * b[k*N+j], i = g/N, j = g%N. */
 pai_status_t
 pai_host_kernel_t4_matmul(void *ctx, const uint32_t user_data[16],
                           uint32_t threads_x, uint32_t group_x) {
@@ -524,15 +522,15 @@ pai_host_kernel_t4_matmul(void *ctx, const uint32_t user_data[16],
   (void)ctx;
   (void)threads_x;
 
-  for (uint32_t i = 0; i < group_x; i++) {
+  for (uint32_t g = 0; g < group_x; g++) {
+    uint32_t i = g / n;
+    uint32_t j = g % n;
     const float *row = a + i * kdim;
-    for (uint32_t j = 0; j < n; j++) {
-      float acc = 0.0f;
-      for (uint32_t k = 0; k < kdim; k++) {
-        acc += row[k] * b[k * n + j];
-      }
-      c[i * n + j] = acc;
+    float acc = 0.0f;
+    for (uint32_t k = 0; k < kdim; k++) {
+      acc += row[k] * b[k * n + j];
     }
+    c[g] = acc;
   }
   return PAI_OK;
 }
@@ -603,8 +601,8 @@ pai_host_kernel_int_clip(void *ctx, const uint32_t user_data[16],
 }
 
 /* T4 integer matmul (G54): header at ud 2-3 [K, N, a_lo, a_hi,
- * b_lo, b_hi], C at ud 4-5; one group per row:
- * c[i*N+j] = sum_k a[i*K+k] * b[k*N+j], u32 wrap. */
+ * b_lo, b_hi], C at ud 4-5; one group per cell, groups = rows*N:
+ * c[g] = sum_k a[i*K+k] * b[k*N+j] (u32 wrap), i = g/N, j = g%N. */
 pai_status_t
 pai_host_kernel_int_matmul(void *ctx, const uint32_t user_data[16],
                            uint32_t threads_x, uint32_t group_x) {
@@ -618,15 +616,15 @@ pai_host_kernel_int_matmul(void *ctx, const uint32_t user_data[16],
   (void)ctx;
   (void)threads_x;
 
-  for (uint32_t i = 0; i < group_x; i++) {
+  for (uint32_t g = 0; g < group_x; g++) {
+    uint32_t i = g / n;
+    uint32_t j = g % n;
     const uint32_t *row = a + i * kdim;
-    for (uint32_t j = 0; j < n; j++) {
-      uint32_t acc = 0;
-      for (uint32_t k = 0; k < kdim; k++) {
-        acc += row[k] * b[k * n + j];
-      }
-      c[i * n + j] = acc;
+    uint32_t acc = 0;
+    for (uint32_t k = 0; k < kdim; k++) {
+      acc += row[k] * b[k * n + j];
     }
+    c[g] = acc;
   }
   return PAI_OK;
 }

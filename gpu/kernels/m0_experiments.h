@@ -305,10 +305,10 @@
 #define PAI_T4_CLIP_OFF 96u
 #define PAI_T4_CLIP_WORDS 26u
 #define PAI_T4_BIASADD_OFF 122u
-#define PAI_T4_BIASADD_WORDS 49u
-#define PAI_T4_MATMUL_OFF 171u
-#define PAI_T4_MATMUL_WORDS 67u
-#define PAI_T4_CODE_WORDS 238u
+#define PAI_T4_BIASADD_WORDS 45u
+#define PAI_T4_MATMUL_OFF 167u
+#define PAI_T4_MATMUL_WORDS 63u
+#define PAI_T4_CODE_WORDS 230u
 
 /* G49-G54: T4 serial integer op kernels (int_ops.s / pai_int_ops.inc).
  * Same ABI as the float T4 ops: packed (a,b) pairs, C[g] per group.
@@ -330,8 +330,8 @@
 #define PAI_INT_CLIP_OFF 92u
 #define PAI_INT_CLIP_WORDS 24u
 #define PAI_INT_MATMUL_OFF 116u
-#define PAI_INT_MATMUL_WORDS 66u
-#define PAI_INT_CODE_WORDS 182u
+#define PAI_INT_MATMUL_WORDS 62u
+#define PAI_INT_CODE_WORDS 178u
 #define PAI_G35_WORDS 15u
 #define PAI_G32_WORDS 16u
 #define PAI_G25_VALUE 0xDEAD0001u

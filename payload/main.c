@@ -3488,8 +3488,8 @@ for (uint32_t variant = 0; variant < 5; variant++) {
     }
   }
 
-  /* G47: T4 biasadd - C[g*cols+j] = a[g*cols+j] + bias[j], one group
-   * per row. Header at s2:s3: [cols, pad, a_lo, a_hi, bias_lo, bias_hi]. */
+  /* G47: T4 biasadd - C[g] = a[g] + bias[g%cols], one group per
+   * cell. Header at s2:s3: [cols, pad, a_lo, a_hi, bias_lo, bias_hi]. */
   if (!host) {
     pai_gpu_reset(gpu);
   }
@@ -3536,7 +3536,8 @@ h47[0] = cols;
     ud[5] = (uint32_t)(ctx->c.gpu_addr >> 32);
     ud[6] = 0;
     m0_build_dispatch_stream(ctx, stream, M0_PM4_CAP, PAI_T4_RSRC2,
-                             PAI_T4_THREADS, rows, ud, 7, &stream_len);
+                             PAI_T4_THREADS, rows * cols, ud, 7,
+                             &stream_len);
     m0_run_gpu(ctx, stream, stream_len, c47, 64, 0xCC, "G47");
     for (uint32_t i = 0; i < rows && ok; i++) {
       for (uint32_t j = 0; j < cols; j++) {
@@ -3555,8 +3556,9 @@ h47[0] = cols;
     m0_exp_report("G47", ok);
   }
 
-  /* G48: T4 matmul - C[i*N+j] = sum_k a[i*K+k] * b[k*N+j], one group
-   * per row. Header at s2:s3: [K, N, a_lo, a_hi, b_lo, b_hi]. */
+  /* G48: T4 matmul - C[g] = sum_k a[i*K+k] * b[k*N+j] (i=g/N,
+   * j=g%N), one group per cell. Header at s2:s3: [K, N, a_lo, a_hi,
+   * b_lo, b_hi]. */
   if (!host) {
     pai_gpu_reset(gpu);
   }
@@ -3605,20 +3607,37 @@ h48[0] = kk;
     ud[5] = (uint32_t)(ctx->c.gpu_addr >> 32);
     ud[6] = 0;
     m0_build_dispatch_stream(ctx, stream, M0_PM4_CAP, PAI_T4_RSRC2,
-                             PAI_T4_THREADS, rows, ud, 7, &stream_len);
+                             PAI_T4_THREADS, rows * cols, ud, 7,
+                             &stream_len);
     m0_run_gpu(ctx, stream, stream_len, c48, 64, 0xCC, "G48");
-    for (uint32_t i = 0; i < rows && ok; i++) {
-      for (uint32_t j = 0; j < cols; j++) {
-        float want = 0.0f;
-        float gg;
-        for (uint32_t t = 0; t < kk; t++) {
-          want += (0.5f + 0.1f * (float)i + 0.01f * (float)t) *
-                  (1.0f - 0.02f * (float)t + 0.1f * (float)j);
+    {
+      float ref48[64];
+      uint64_t mismatch48 = 0;
+      pai_status_t st48;
+      for (uint32_t i = 0; i < rows; i++) {
+        for (uint32_t j = 0; j < cols; j++) {
+          float want = 0.0f;
+          for (uint32_t t = 0; t < kk; t++) {
+            want += (0.5f + 0.1f * (float)i + 0.01f * (float)t) *
+                    (1.0f - 0.02f * (float)t + 0.1f * (float)j);
+          }
+          ref48[i * cols + j] = want;
         }
-        memcpy(&gg, &c48[i * cols + j], 4);
-        if (gg != want) {
-          ok = 0;
-        }
+      }
+      /* Tolerant compare: the GPU accumulates with v_add_f32 per term;
+       * host summation order can differ by <=1 ULP, so exact equality
+       * is not the right oracle here (G42-G47 and G54 use exact checks
+       * because their ops are single-rounding). */
+      st48 = pai_ref_compare_f32((float *)c48, ref48, rows * cols, 1e-6f,
+                                 1e-6f, &mismatch48);
+      if (st48 != PAI_OK) {
+        PAI_LOG_ERROR_(
+            PAI_SUB_GPU,
+            "[M0-G48] FAIL: mismatch at %llu (gpu=%f ref=%f)\n",
+            (unsigned long long)mismatch48,
+            mismatch48 < rows * cols ? (double)((float *)c48)[mismatch48] : 0.0,
+            mismatch48 < rows * cols ? (double)ref48[mismatch48] : 0.0);
+        ok = 0;
       }
     }
     PAI_LOG_INFO_(PAI_SUB_GPU, "[M0-G48] c[0..3] = %.4f %.4f %.4f %.4f\n",
@@ -3717,9 +3736,9 @@ h48[0] = kk;
     }
   }
 
-  /* G54: T4 integer matmul - C[i*N+j] = sum_k a[i*K+k] * b[k*N+j],
-   * u32 wrap, one group per row. Header [K, N, a_lo, a_hi, b_lo, b_hi].
-   * b is row-major [k][N]: k-stride = N*4 bytes. */
+  /* G54: T4 integer matmul - C[g] = sum_k a[i*K+k] * b[k*N+j]
+   * (i=g/N, j=g%N), u32 wrap, one group per cell. Header [K, N,
+   * a_lo, a_hi, b_lo, b_hi]. b is row-major [k][N]. */
   if (!host) {
     pai_gpu_reset(gpu);
   }
@@ -3766,7 +3785,8 @@ h48[0] = kk;
     ud[5] = (uint32_t)(ctx->c.gpu_addr >> 32);
     ud[6] = 0;
     m0_build_dispatch_stream(ctx, stream, M0_PM4_CAP, PAI_INT_RSRC2,
-                             PAI_INT_THREADS, rows, ud, 7, &stream_len);
+                             PAI_INT_THREADS, rows * cols, ud, 7,
+                             &stream_len);
     m0_run_gpu(ctx, stream, stream_len, c54, 64, 0xCC, "G54");
     for (uint32_t i = 0; i < rows && ok; i++) {
       for (uint32_t j = 0; j < cols; j++) {

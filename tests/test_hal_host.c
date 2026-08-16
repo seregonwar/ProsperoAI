@@ -295,7 +295,7 @@ TEST_MAIN_BEGIN()
       h[5] = (uint32_t)((uintptr_t)b48 >> 32);
       ud[2] = (uint32_t)(uintptr_t)h;
       ud[3] = (uint32_t)((uintptr_t)h >> 32);
-      CHECK(pai_host_kernel_int_matmul(NULL, ud, 1, rows) == PAI_OK);
+      CHECK(pai_host_kernel_int_matmul(NULL, ud, 1, rows * cols) == PAI_OK);
       for (uint32_t i = 0; i < rows; i++) {
         for (uint32_t j = 0; j < cols; j++) {
           want = 0;
@@ -305,6 +305,52 @@ TEST_MAIN_BEGIN()
           CHECK_EQ_UINT(cbuf[i * cols + j], want);
         }
       }
+    }
+
+    /* float matmul (t4_matmul): same ABI, tolerant compare (16-term
+     * v_add_f32 accumulation can differ from host by <=1 ULP). */
+    {
+      uint32_t h[6];
+      float fa48[4 * 16];
+      float fb48[16 * 4];
+      float ref48[4 * 4];
+      float *fc48 = (float *)cbuf;
+      uint32_t rows = 4, kk = 16, cols = 4;
+      uint64_t mismatch = 0;
+      pai_status_t st;
+
+      for (uint32_t i = 0; i < rows; i++) {
+        for (uint32_t t = 0; t < kk; t++) {
+          fa48[i * kk + t] = 0.5f + 0.1f * (float)i + 0.01f * (float)t;
+        }
+      }
+      for (uint32_t t = 0; t < kk; t++) {
+        for (uint32_t j = 0; j < cols; j++) {
+          fb48[t * cols + j] =
+              1.0f - 0.02f * (float)t + 0.1f * (float)j;
+        }
+      }
+      for (uint32_t i = 0; i < rows; i++) {
+        for (uint32_t j = 0; j < cols; j++) {
+          float acc = 0.0f;
+          for (uint32_t t = 0; t < kk; t++) {
+            acc += fa48[i * kk + t] * fb48[t * cols + j];
+          }
+          ref48[i * cols + j] = acc;
+        }
+      }
+      h[0] = kk;
+      h[1] = cols;
+      h[2] = (uint32_t)(uintptr_t)fa48;
+      h[3] = (uint32_t)((uintptr_t)fa48 >> 32);
+      h[4] = (uint32_t)(uintptr_t)fb48;
+      h[5] = (uint32_t)((uintptr_t)fb48 >> 32);
+      ud[2] = (uint32_t)(uintptr_t)h;
+      ud[3] = (uint32_t)((uintptr_t)h >> 32);
+      CHECK(pai_host_kernel_t4_matmul(NULL, ud, 1, rows * cols) == PAI_OK);
+      st = pai_ref_compare_f32(fc48, ref48, rows * cols, 1e-6f, 1e-6f,
+                               &mismatch);
+      CHECK(st == PAI_OK);
     }
   }
 
