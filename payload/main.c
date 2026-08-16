@@ -1239,7 +1239,7 @@ m0_exp_v0model(m0_ctx_t *ctx) {
   }
 
     /* H12/H13: zeroed-s0-s1 workaround — loads into s4+ / T# at s4+. */
-    ctx->acb_mode = 1; /* route through the special compute queue */
+    ctx->acb_mode = 0; /* queue disabled: stay on the GFX ring */
   {
     uint32_t *a32 = (uint32_t *)ctx->a.cpu_addr;
     uint32_t a0;

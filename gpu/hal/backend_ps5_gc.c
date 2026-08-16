@@ -353,6 +353,11 @@ pai_gc_init(pai_gpu_device_t *device) {
     }
   }
 
+  /* DANGEROUS without full ring init: the kernel wires our ring to the
+   * GPU compute engine, which executes garbage from the uninitialized
+   * ring and corrupts the display pipeline. Disabled until the DingDong
+   * ring bring-up is implemented properly. */
+#if 0
   /* Driver-style context bring-up: ACQRB + EOP FIFO flexible-memory
    * regions and the authenticated special queue (SPRX magic tokens). */
   if (sceKernelMapNamedSystemFlexibleMemory(&st->acqrb, 0x1E0000, 0x33, 0,
@@ -391,6 +396,8 @@ pai_gc_init(pai_gpu_device_t *device) {
                     (unsigned long long)acqrb_va, (unsigned long long)eop_va);
     }
   }
+
+#endif
 
   /* Read-only layout diagnostic for the GPU page-table work. */
   (void)pai_gvmspace_diag();
