@@ -146,6 +146,15 @@
 #define PAI_H3_RSRC2 0x00000014u
 #define PAI_TBUF_WORD3_RAW 0x31014FACu
 
+/* H7-H9: load result register probes (pai_hbatch2.inc). */
+#define PAI_H7_OFF 0u
+#define PAI_H7_WORDS 16u
+#define PAI_H8_OFF 16u
+#define PAI_H8_WORDS 16u
+#define PAI_H9_OFF 32u
+#define PAI_H9_WORDS 16u
+#define PAI_TBUF_WORD3_EXEC 0x00080688u
+
 /* E31: loadstore with vaddr pairs 1 (v[2:3]) only. */
 #define PAI_LOADSTORE_GOLD_RSRC2 0x0000000Cu
 #define PAI_LOADSTORE_GOLD_CODE_WORDS 20u
@@ -197,6 +206,7 @@ extern const uint32_t pai_gbatch2_code[];
 extern const uint32_t pai_gbatch3_code[];
 extern const uint32_t pai_g15_code[PAI_G15_CODE_WORDS];
 extern const uint32_t pai_hbatch_code[];
+extern const uint32_t pai_hbatch2_code[];
 extern const uint32_t pai_v0model_code[];
 extern const uint32_t pai_loadstore_gold_code[PAI_LOADSTORE_GOLD_CODE_WORDS];
 extern const uint32_t pai_loadstore_code[PAI_LOADSTORE_CODE_WORDS];

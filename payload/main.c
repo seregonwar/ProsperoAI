@@ -1280,6 +1280,47 @@ m0_exp_v0model(m0_ctx_t *ctx) {
     }
   }
 
+  /* H7-H9: load result register probes (T# 0x80688). */
+  {
+    static const uint32_t h_offs[3] = {PAI_H7_OFF, PAI_H8_OFF, PAI_H9_OFF};
+    static const uint32_t h_lens[3] = {PAI_H7_WORDS, PAI_H8_WORDS,
+                                       PAI_H9_WORDS};
+    static const char *const h_names[3] = {"H7", "H8", "H9"};
+    uint32_t *a32 = (uint32_t *)ctx->a.cpu_addr;
+
+    for (uint32_t i = 0; i < PAI_EXP_THREADS_X; i++) {
+      a32[i] = 0x33330000u + i;
+    }
+
+    for (uint32_t variant = 0; variant < 3; variant++) {
+      const char *name = h_names[variant];
+      if (!host) {
+        pai_gpu_reset(gpu);
+      }
+      memcpy(ctx->code.cpu_addr, &pai_hbatch2_code[h_offs[variant]],
+             h_lens[variant] * sizeof(uint32_t));
+      if (host) {
+        pai_gpu_host_register_shader(gpu, ctx->code.gpu_addr,
+                                     pai_host_kernel_h1, NULL);
+      }
+      ud[0] = (uint32_t)(ctx->a.gpu_addr & 0xFFFFFFFFu);
+      ud[1] = (uint32_t)(ctx->a.gpu_addr >> 32);
+      ud[2] = 4096u;
+      ud[3] = PAI_TBUF_WORD3_EXEC;
+      ud[4] = (uint32_t)(ctx->c.gpu_addr & 0xFFFFFFFFu);
+      ud[5] = (uint32_t)(ctx->c.gpu_addr >> 32);
+      m0_build_dispatch_stream(ctx, stream, M0_PM4_CAP, PAI_H1_RSRC2,
+                               PAI_EXP_THREADS_X, 1, ud, 6, &stream_len);
+      m0_run_gpu(ctx, stream, stream_len, c32, 128 * 4, 0xCC, name);
+      PAI_LOG_INFO_(PAI_SUB_GPU, "[M0-%s] c[0..15] = %08x %08x %08x %08x "
+                    "%08x %08x %08x %08x %08x %08x %08x %08x %08x %08x "
+                    "%08x %08x\n",
+                    name, c32[0], c32[1], c32[2], c32[3], c32[4], c32[5],
+                    c32[6], c32[7], c32[8], c32[9], c32[10], c32[11], c32[12],
+                    c32[13], c32[14], c32[15]);
+    }
+  }
+
   /* H4-H6: T# candidates with the proven-executing E38 kernel shape. */
   {
     static const uint32_t t_candidates[3] = {
