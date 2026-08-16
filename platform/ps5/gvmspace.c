@@ -29,10 +29,13 @@
 
 #include <ps5/kernel.h>
 
-#define PAI_GPU_WALK_ADDR_MASK 0x0000FFFFFFFFC0ULL
+#define PAI_GPU_WALK_ADDR_MASK 0xFFFFFFFFC0ULL /* spoofer/11.20 */
 #define PAI_GPU_VALID          (1ULL << 0)
 #define PAI_GPU_IS_PTE         (1ULL << 54)
 #define PAI_GPU_PHYS_MASK_2MB  ~(uint64_t)((2u << 20) - 1)
+/* 9.40 GPU PTE: physical address in the low 46 bits, flags in the top
+ * bits (observed: 0xF00000224BD067 -> phys 0x224BD000). */
+#define PAI_GPU_PHYS_MASK_940  0x00003FFFFFFFFFFFULL
 
 #define PAI_DMAP_MIN 0xFFFFFF8000000000ULL
 #define PAI_DMAP_MAX 0xFFFFFFC000000000ULL
@@ -271,14 +274,17 @@ pai_gvmspace_probe(uint64_t pml4_phys, uint64_t va, intptr_t dmap_base) {
                 (unsigned long long)root_e[4], (unsigned long long)root_e[5],
                 (unsigned long long)root_e[6], (unsigned long long)root_e[7]);
 
-  /* 3-level interpretation: root = PDPE table. */
+  /* 3-level interpretation: root = PDPE table, 9.40 PTE format
+   * (phys in the low 46 bits). */
   e3 = root_e[idx3];
   if (e3 & PAI_GPU_VALID) {
-    if (kernel_copyout(dmap_base + (intptr_t)((e3 & PAI_GPU_WALK_ADDR_MASK) +
-                                             idx2 * 8),
-                       &e2, 8) == 0) {
+    uint64_t pdpe_phys = e3 & PAI_GPU_PHYS_MASK_940 & ~0xFFFULL;
+    if (kernel_copyout(dmap_base + (intptr_t)(pdpe_phys + idx2 * 8), &e2,
+                       8) == 0) {
       PAI_LOG_INFO_(PAI_SUB_GPU,
-                    "gvm probe (3-level): va=0x%llx pde=0x%llx (%s)\n",
+                    "gvm probe (3-level): pdpe=0x%llx (phys 0x%llx) "
+                    "va=0x%llx pde=0x%llx (%s)\n",
+                    (unsigned long long)e3, (unsigned long long)pdpe_phys,
                     (unsigned long long)va, (unsigned long long)e2,
                     (e2 & PAI_GPU_VALID) ? "valid" : "INVALID");
       return PAI_OK;
@@ -292,20 +298,24 @@ pai_gvmspace_probe(uint64_t pml4_phys, uint64_t va, intptr_t dmap_base) {
                   (unsigned long long)e4);
     return PAI_ERR_CAPABILITY;
   }
-  if (kernel_copyout(dmap_base + (intptr_t)((e4 & PAI_GPU_WALK_ADDR_MASK) +
-                                           idx3 * 8),
-                     &e3, 8) != 0) {
-    return PAI_ERR_CAPABILITY;
+  {
+    uint64_t p4_phys = e4 & PAI_GPU_PHYS_MASK_940 & ~0xFFFULL;
+    if (kernel_copyout(dmap_base + (intptr_t)(p4_phys + idx3 * 8), &e3, 8) !=
+        0) {
+      return PAI_ERR_CAPABILITY;
+    }
   }
   if (!(e3 & PAI_GPU_VALID)) {
     PAI_LOG_INFO_(PAI_SUB_GPU, "gvm probe (4-level): pdpe invalid (0x%llx)\n",
                   (unsigned long long)e3);
     return PAI_ERR_CAPABILITY;
   }
-  if (kernel_copyout(dmap_base + (intptr_t)((e3 & PAI_GPU_WALK_ADDR_MASK) +
-                                           idx2 * 8),
-                     &e2, 8) != 0) {
-    return PAI_ERR_CAPABILITY;
+  {
+    uint64_t p3_phys = e3 & PAI_GPU_PHYS_MASK_940 & ~0xFFFULL;
+    if (kernel_copyout(dmap_base + (intptr_t)(p3_phys + idx2 * 8), &e2, 8) !=
+        0) {
+      return PAI_ERR_CAPABILITY;
+    }
   }
   PAI_LOG_INFO_(PAI_SUB_GPU,
                 "gvm probe (4-level): pml4=0x%llx va=0x%llx pde=0x%llx "
