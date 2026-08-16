@@ -224,6 +224,29 @@ New rules confirmed during T4/T4C:
    the float ALU e64 rules from G35/G39/G40/G41 (see MILESTONE
    below): direct SGPR operands, VGPR+VGPR accumulator, dst != v0.
 
+## G55 wave-parallel float ramp (2026-08-17, run 011141)
+
+First kernel past the serial NUM_THREAD_X=1 model: `ramp.s` computes
+`c[i] = base + k*i` with NUM_THREAD_X=32, one group, and the 8 storing
+lanes of the wave. HW-validated PASS.
+
+- User data ABI (RSRC2 0x0C, same as G33/G35): s2:s3 = C, s4 = k
+  (float), s5 = base (float); free SGPRs s16+, VGPRs v1 (acc), v6
+  (saved tid).
+- Float form used: `v_cvt_f32_i32` (int->float, G35 rule),
+  `v_mul_f32_e64` with direct SGPR operand, `v_add_f32_e64`
+  VGPR+SGPR accumulator, dst != v0, final v0 copy for the store.
+- **Value-path quirk confirmed again**: lane i stores
+  `base + k*(4i+3)`, not `base + k*i` — the G15 store formula
+  (`tid*4+3`) is baked into the VALU->store data path, exactly as
+  G35's check (`(4i+3)+k`) observed. The oracle must use the same
+  convention (G35 alignment).
+- Result: wave-parallel dispatch works when each lane's value is
+  derived arithmetically from tid + uniform scalars (no vector reads
+  needed). This is the building block for RoPE position tables in
+  Phase 2 (cos/sin generation is `base + k*i` scaled by a table
+  factor), still limited to 8 storing lanes per wave on 9.40.
+
 ## Toolchain
 
 - llvm-mc 18 (Windows, ps5-payload-sdk/tools/llvm18/bin) assembles
