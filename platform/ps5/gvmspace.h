@@ -10,6 +10,14 @@
 #include <stdint.h>
 
 /*
+ * Repair the GPU mapping for `gpu_va` (2 MB granularity) after the
+ * walk has been VALIDATED against a kernel-mapped reference VA.
+ * Writes a 2 MB leaf PDE with the reference flags and our physical
+ * frame, then verifies. Requires the layout + a captured reference PDE.
+ */
+pai_status_t pai_gvmspace_repair(uint64_t gpu_va, uint64_t phys);
+
+/*
  * Retrieve the layout values the diagnostic derived (read-only):
  * the GPU pml4 physical address and the direct-map base.
  * Returns -1 when the layout is not known yet.

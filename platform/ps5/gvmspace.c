@@ -163,6 +163,7 @@ pai_gvm_walk(pai_gvmspace_ctx_t *g, uint64_t va, uint64_t *out_pde_addr,
 static uint64_t g_diag_gpu_pml4_phys;
 static intptr_t g_diag_dmap;
 static int g_diag_have_layout;
+static uint64_t g_ref_pde; /* valid PDE captured from a kernel-mapped VA */
 
 pai_status_t
 pai_gvmspace_diag(void) {
@@ -346,6 +347,90 @@ pai_gvmspace_probe(uint64_t pml4_phys, uint64_t va, intptr_t dmap_base) {
                 (unsigned long long)pml4_phys, (unsigned long long)va,
                 (unsigned long long)e2,
                 (e2 & PAI_GPU_VALID) ? "valid" : "INVALID");
+  if (e2 & PAI_GPU_VALID) {
+    g_ref_pde = e2;
+  }
+  return PAI_OK;
+}
+
+/*
+ * Repair the GPU mapping for `gpu_va` (2 MB granularity): walk the
+ * verified page-table structure and, when the PDE is invalid, write a
+ * 2 MB leaf built from the reference flags (captured from a
+ * kernel-mapped VA) and our physical frame. Verifies the write.
+ */
+pai_status_t
+pai_gvmspace_repair(uint64_t gpu_va, uint64_t phys) {
+  uint64_t e4, e3, e2;
+  uint64_t idx4 = (gpu_va >> 39) & 0x1FFu;
+  uint64_t idx3 = (gpu_va >> 30) & 0x1FFu;
+  uint64_t idx2 = (gpu_va >> 21) & 0x1FFu;
+  intptr_t dmap;
+  uint64_t pml4;
+  uint64_t p4_phys, p3_phys;
+  uint64_t pde_addr;
+  uint64_t new_pde;
+  uint64_t verify;
+
+  if (!g_diag_have_layout || !g_ref_pde) {
+    PAI_LOG_WARN_(PAI_SUB_GPU,
+                  "gvm repair: layout/reference PDE unavailable\n");
+    return PAI_ERR_CAPABILITY;
+  }
+  dmap = g_diag_dmap;
+  pml4 = g_diag_gpu_pml4_phys;
+
+  if (kernel_copyout(dmap + (intptr_t)(pml4 + idx4 * 8), &e4, 8) != 0 ||
+      !(e4 & PAI_GPU_VALID)) {
+    return PAI_ERR_CAPABILITY;
+  }
+  p4_phys = e4 & PAI_GPU_PHYS_MASK_940 & ~0xFFFULL;
+  if (kernel_copyout(dmap + (intptr_t)(p4_phys + idx3 * 8), &e3, 8) != 0 ||
+      !(e3 & PAI_GPU_VALID)) {
+    return PAI_ERR_CAPABILITY;
+  }
+  p3_phys = e3 & PAI_GPU_PHYS_MASK_940 & ~0xFFFULL;
+  if (p3_phys >= 0x400000000ULL) {
+    PAI_LOG_ERROR_(PAI_SUB_GPU, "gvm repair: pde table phys out of range\n");
+    return PAI_ERR_CAPABILITY;
+  }
+  pde_addr = dmap + (intptr_t)(p3_phys + idx2 * 8);
+
+  if (kernel_copyout(pde_addr, &e2, 8) != 0) {
+    return PAI_ERR_CAPABILITY;
+  }
+
+  if ((e2 & PAI_GPU_VALID) &&
+      (e2 & 0x00003FFFFFE00000ULL) == (phys & 0x00003FFFFFE00000ULL)) {
+    PAI_LOG_INFO_(PAI_SUB_GPU,
+                  "gvm repair: va=0x%llx already maps phys 0x%llx\n",
+                  (unsigned long long)gpu_va, (unsigned long long)phys);
+    return PAI_OK;
+  }
+
+  /* Build the 2 MB leaf: reference flags + our physical frame. */
+  new_pde = (g_ref_pde & ~0x00003FFFFFE00000ULL) |
+            (phys & 0x00003FFFFFE00000ULL) | PAI_GPU_VALID;
+
+  PAI_LOG_INFO_(PAI_SUB_GPU,
+                "gvm repair: va=0x%llx phys=0x%llx pde 0x%llx -> 0x%llx "
+                "(ref 0x%llx)\n",
+                (unsigned long long)gpu_va, (unsigned long long)phys,
+                (unsigned long long)e2, (unsigned long long)new_pde,
+                (unsigned long long)g_ref_pde);
+
+  if (kernel_copyin(&new_pde, pde_addr, 8) != 0) {
+    PAI_LOG_ERROR_(PAI_SUB_GPU, "gvm repair: PDE write failed\n");
+    return PAI_ERR_CAPABILITY;
+  }
+
+  if (kernel_copyout(pde_addr, &verify, 8) != 0 || verify != new_pde) {
+    PAI_LOG_ERROR_(PAI_SUB_GPU, "gvm repair: PDE verify failed (0x%llx)\n",
+                   (unsigned long long)verify);
+    return PAI_ERR_CAPABILITY;
+  }
+
+  PAI_LOG_INFO_(PAI_SUB_GPU, "gvm repair: PDE patched and verified\n");
   return PAI_OK;
 }
 
