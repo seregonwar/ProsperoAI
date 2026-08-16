@@ -2,7 +2,7 @@
 
 Reverse-engineering notes for the PAI-M0 GPU bring-up path. Sources:
 OpenAGC (Apache-2.0, FW 5.50-hardware-proven, mirrored at
-`C:\Users\marco\AppData\Local\Temp\opencode\openagc-ref`), PS5-Firmware-Spoofer
+`C:\Users\seregonwar\AppData\Local\Temp\opencode\openagc-ref`), PS5-Firmware-Spoofer
 (darkness/tcphdr, 11.20), kernel_940.elf string analysis.
 
 ## Confirmed on 9.40
