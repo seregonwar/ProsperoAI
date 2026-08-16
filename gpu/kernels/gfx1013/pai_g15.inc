@@ -1,0 +1,5 @@
+/* Generated from g15.s by llvm-mc 18 (gfx1013). Do not edit. */
+    0x7E020300u, 0x7E040202u, 0x7E060203u, 0x340A0282u,
+    0xD70F6A02u, 0x00020B02u, 0xD5286A03u, 0x01A90103u,
+    0xD70F6A01u, 0x00000901u, 0x7E000301u, 0xDC700000u,
+    0x007D0402u, 0xBF810000u,

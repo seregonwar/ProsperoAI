@@ -1280,6 +1280,54 @@ m0_exp_v0model(m0_ctx_t *ctx) {
     }
   }
 
+  /* G15: THE MILESTONE — c[i] = i + k_int verified vs CPU (lanes 0-7). */
+  if (!host) {
+    pai_gpu_reset(gpu);
+  }
+  {
+    uint32_t k = 0x1000u;
+    uint32_t ref[PAI_EXP_THREADS_X];
+    memcpy(ctx->code.cpu_addr, pai_g15_code,
+           PAI_G15_CODE_WORDS * sizeof(uint32_t));
+    if (host) {
+      pai_gpu_host_register_shader(gpu, ctx->code.gpu_addr,
+                                   pai_host_kernel_g8, NULL);
+    }
+    ud[0] = 0;
+    ud[1] = 0;
+    ud[2] = (uint32_t)(ctx->c.gpu_addr & 0xFFFFFFFFu);
+    ud[3] = (uint32_t)(ctx->c.gpu_addr >> 32);
+    ud[4] = k;
+    ud[5] = 0;
+    m0_build_dispatch_stream(ctx, stream, M0_PM4_CAP, PAI_G15_RSRC2,
+                             PAI_EXP_THREADS_X, 1, ud, 6, &stream_len);
+    m0_run_gpu(ctx, stream, stream_len, c32, 128, 0xCC, "G15");
+
+    for (uint32_t i = 0; i < PAI_EXP_THREADS_X; i++) {
+      ref[i] = i + k;
+    }
+    {
+      int ok = 1;
+      for (uint32_t i = 0; i < 8; i++) {
+        if (c32[i] != ref[i]) {
+          ok = 0;
+          PAI_LOG_ERROR_(PAI_SUB_GPU, "[M0-G15] c[%u] = %08x want %08x\n",
+                         i, c32[i], ref[i]);
+          break;
+        }
+      }
+      m0_exp_report("G15", ok);
+      if (!ok) {
+        PAI_LOG_ERROR_(PAI_SUB_GPU, "[M0-G15] c[0..15] = %08x %08x %08x "
+                       "%08x %08x %08x %08x %08x %08x %08x %08x %08x "
+                       "%08x %08x %08x %08x\n",
+                       c32[0], c32[1], c32[2], c32[3], c32[4], c32[5], c32[6],
+                       c32[7], c32[8], c32[9], c32[10], c32[11], c32[12],
+                       c32[13], c32[14], c32[15]);
+      }
+    }
+  }
+
   /* G13/G14: literal source probes + formal milestone fill. */
   {
     static const uint32_t g_offs[2] = {PAI_G13_OFF, PAI_G14_OFF};
