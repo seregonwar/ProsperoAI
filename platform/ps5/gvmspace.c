@@ -90,23 +90,33 @@ pai_gvm_plausible_entry(uint64_t value) {
 }
 
 /* Try to find a working dmap base by reading a known physical address
- * (the GPU pml4) and checking the content looks like a page table. */
+ * (the GPU pml4) and checking the content looks like a page table.
+ * Only probe kernel VA space we know exists. */
 static intptr_t
 pai_gvm_find_dmap(uint64_t page_dir_phys) {
-  for (uint64_t base = PAI_DMAP_MIN; base < PAI_DMAP_MAX;
+  if (page_dir_phys >= 0x400000000ULL) {
+    return 0; /* phys must be inside the 16 GB console RAM */
+  }
+  for (uint64_t base = PAI_DMAP_MIN; base < PAI_DMAP_MIN + 0x4000000000ULL;
        base += PAI_DMAP_STEP) {
     uint64_t e0 = 0;
     uint64_t e1 = 0;
+    intptr_t va = (intptr_t)(base + page_dir_phys);
 
-    if (kernel_copyout((intptr_t)(base + page_dir_phys), &e0, 8) != 0) {
+    if (va < (intptr_t)0xFFFF800000000000ULL ||
+        va > (intptr_t)0xFFFFFFFFFF000000ULL) {
       continue;
     }
-    if (kernel_copyout((intptr_t)(base + page_dir_phys + 8), &e1, 8) != 0) {
+
+    if (kernel_copyout(va, &e0, 8) != 0) {
+      continue;
+    }
+    if (kernel_copyout(va + 8, &e1, 8) != 0) {
       continue;
     }
 
     if (pai_gvm_plausible_entry(e0) && pai_gvm_plausible_entry(e1)) {
-      return (intptr_t)base;
+      return base;
     }
   }
   return 0;
