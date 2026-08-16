@@ -3,6 +3,31 @@
 #include <cpu/reference/ref_ops.h>
 
 #include <string.h>
+#include <time.h>
+
+#ifdef _WIN32
+#include <windows.h>
+#endif
+
+/* Monotonic clock for the per-step hook (T6 profiler). */
+static uint64_t
+sched_clock_ns(void) {
+#ifdef _WIN32
+  static LARGE_INTEGER freq = {0};
+  LARGE_INTEGER now;
+
+  if (freq.QuadPart == 0) {
+    QueryPerformanceFrequency(&freq);
+  }
+  QueryPerformanceCounter(&now);
+  return (uint64_t)((double)now.QuadPart * 1000000000.0 /
+                    (double)freq.QuadPart);
+#else
+  struct timespec ts;
+  clock_gettime(CLOCK_MONOTONIC, &ts);
+  return (uint64_t)ts.tv_sec * UINT64_C(1000000000) + (uint64_t)ts.tv_nsec;
+#endif
+}
 
 static const char *const k_policy_names[] = {
     "interactive", "throughput", "exclusive", "balanced",
@@ -318,9 +343,11 @@ run_gemm(const pai_graph_t *graph, const pai_graph_mem_plan_t *mem_plan,
 }
 
 pai_status_t
-pai_sched_execute(const pai_graph_t *graph, const pai_graph_mem_plan_t *mem_plan,
-                  const pai_sched_plan_t *plan, uint8_t *region,
-                  pai_sched_run_stats_t *out_stats) {
+pai_sched_execute_hooked(const pai_graph_t *graph,
+                         const pai_graph_mem_plan_t *mem_plan,
+                         const pai_sched_plan_t *plan, uint8_t *region,
+                         pai_sched_run_stats_t *out_stats,
+                         pai_sched_step_fn step_fn, void *hook_ctx) {
   pai_sched_run_stats_t stats;
   pai_status_t st;
 
@@ -364,6 +391,7 @@ pai_sched_execute(const pai_graph_t *graph, const pai_graph_mem_plan_t *mem_plan
     float *pa = a != NULL ? value_ptr(mem_plan, region, op->inputs[0]) : NULL;
     float *pb = b != NULL ? value_ptr(mem_plan, region, op->inputs[1]) : NULL;
     float *pc = c != NULL ? value_ptr(mem_plan, region, op->outputs[0]) : NULL;
+    uint64_t step_start = sched_clock_ns();
 
     switch (op->kind) {
       case PAI_OP_ADD:
@@ -591,12 +619,144 @@ pai_sched_execute(const pai_graph_t *graph, const pai_graph_mem_plan_t *mem_plan
     } else {
       stats.cpu_steps++;
     }
+    if (step_fn != NULL) {
+      step_fn(hook_ctx, i, step->op_id, step->device,
+              sched_clock_ns() - step_start);
+    }
   }
 
   if (out_stats != NULL) {
     *out_stats = stats;
   }
   return PAI_OK;
+}
+
+pai_status_t
+pai_sched_execute(const pai_graph_t *graph, const pai_graph_mem_plan_t *mem_plan,
+                  const pai_sched_plan_t *plan, uint8_t *region,
+                  pai_sched_run_stats_t *out_stats) {
+  return pai_sched_execute_hooked(graph, mem_plan, plan, region, out_stats,
+                                  NULL, NULL);
+}
+
+/* ------------------------------------------------------------------ */
+/* Kernel vtable (T5B)                                                  */
+/* ------------------------------------------------------------------ */
+
+/* Graph op kind -> registry op name (T5A vocabulary). */
+static const char *
+op_registry_name(pai_graph_op_kind_t kind) {
+  switch (kind) {
+    case PAI_OP_ADD:
+      return "vecadd_f32";
+    case PAI_OP_MUL:
+      return "vecmul_f32";
+    case PAI_OP_GEMM:
+    case PAI_OP_MATMUL:
+      return "matmul_f32";
+    case PAI_OP_GEMV:
+      return "gemv_f32";
+    case PAI_OP_RELU:
+      return "relu_f32";
+    case PAI_OP_SOFTMAX:
+      return "softmax_f32";
+    case PAI_OP_SILU:
+      return "silu_f32";
+    case PAI_OP_LAYERNORM:
+      return "layernorm_f32";
+    case PAI_OP_RMSNORM:
+      return "rmsnorm_f32";
+    case PAI_OP_CONCAT:
+      return "concat_f32";
+    case PAI_OP_COPY:
+    case PAI_OP_RESHAPE:
+    case PAI_OP_CONVERT:
+      return "copy_f32";
+    case PAI_OP_ROPE:
+      return "rope_f32";
+    case PAI_OP_ATTENTION:
+      return "attention_f32";
+    default:
+      return NULL; /* PAI_OP_NONE / PAI_OP_CUSTOM */
+  }
+}
+
+pai_status_t
+pai_kernel_select(const pai_graph_t *graph, pai_graph_op_id op_id,
+                  const pai_op_registry_t *reg, pai_kernel_entry_t *out) {
+  pai_op_registry_t local_reg;
+  const pai_op_descriptor_t *desc;
+  const char *name;
+
+  if (graph == NULL || op_id == 0 || op_id > graph->num_ops || out == NULL) {
+    return PAI_ERR_INVALID_ARG;
+  }
+  if (reg == NULL) {
+    pai_status_t st = pai_op_registry_builtin(&local_reg);
+    if (st != PAI_OK) {
+      return st;
+    }
+    reg = &local_reg;
+  }
+
+  name = op_registry_name(graph->ops[op_id].kind);
+  if (name == NULL) {
+    return PAI_ERR_UNSUPPORTED; /* CUSTOM / unknown kinds */
+  }
+  desc = pai_op_registry_lookup(reg, name);
+  if (desc == NULL) {
+    return PAI_ERR_UNSUPPORTED; /* op not present in this registry */
+  }
+
+  memset(out, 0, sizeof(*out));
+  out->kind = graph->ops[op_id].kind;
+  out->op_name = desc->name;
+  out->kernel_id = desc->kernel_id;
+  out->device = default_device(graph->ops[op_id].kind);
+  out->caps = desc->caps;
+  return PAI_OK;
+}
+
+pai_status_t
+pai_kernel_plan_check(const pai_graph_t *graph, const pai_sched_plan_t *plan,
+                      uint32_t caps_required, const pai_op_registry_t *reg) {
+  pai_op_registry_t local_reg;
+  pai_status_t st;
+
+  if (graph == NULL || plan == NULL) {
+    return PAI_ERR_INVALID_ARG;
+  }
+  if (reg == NULL) {
+    st = pai_op_registry_builtin(&local_reg);
+    if (st != PAI_OK) {
+      return st;
+    }
+    reg = &local_reg;
+  }
+
+  for (uint32_t i = 0; i < plan->num_steps; i++) {
+    pai_kernel_entry_t entry;
+    st = pai_kernel_select(graph, plan->steps[i].op_id, reg, &entry);
+    if (st != PAI_OK) {
+      return st;
+    }
+    if ((entry.caps & caps_required) != caps_required) {
+      return PAI_ERR_UNSUPPORTED; /* no implementation for this backend */
+    }
+  }
+  return PAI_OK;
+}
+
+pai_status_t
+pai_sched_execute_vtable(const pai_graph_t *graph,
+                         const pai_graph_mem_plan_t *mem_plan,
+                         const pai_sched_plan_t *plan, uint8_t *region,
+                         pai_sched_run_stats_t *out_stats) {
+  pai_status_t st = pai_kernel_plan_check(graph, plan, PAI_OP_CAP_CPU_REF, NULL);
+  if (st != PAI_OK) {
+    return st;
+  }
+  return pai_sched_execute(graph, mem_plan, plan, region, out_stats);
 }
 
 /* ------------------------------------------------------------------ */

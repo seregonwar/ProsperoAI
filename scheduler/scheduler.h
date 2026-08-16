@@ -14,6 +14,7 @@
 #define PAI_SCHEDULER_H
 
 #include <pai/error.h>
+#include <pai/op.h>
 
 #include <graph/graph.h>
 
@@ -136,6 +137,71 @@ pai_status_t pai_sched_execute(const pai_graph_t *graph,
                                const pai_graph_mem_plan_t *mem_plan,
                                const pai_sched_plan_t *plan, uint8_t *region,
                                pai_sched_run_stats_t *out_stats);
+
+/* Per-step hook invoked after each successfully executed step with its
+ * measured wall time (monotonic, ns). NULL disables; used by the T6
+ * profiler to build per-step profiles without re-running the plan. */
+typedef void (*pai_sched_step_fn)(void *ctx, uint32_t step_index,
+                                  pai_graph_op_id op_id, uint8_t device,
+                                  uint64_t wall_ns);
+
+/* pai_sched_execute with an optional per-step hook (profiling). */
+pai_status_t pai_sched_execute_hooked(const pai_graph_t *graph,
+                                      const pai_graph_mem_plan_t *mem_plan,
+                                      const pai_sched_plan_t *plan,
+                                      uint8_t *region,
+                                      pai_sched_run_stats_t *out_stats,
+                                      pai_sched_step_fn step_fn, void *ctx);
+
+/* ------------------------------------------------------------------ */
+/* Kernel vtable (T5B)                                                */
+/* ------------------------------------------------------------------ */
+
+/*
+ * One resolved kernel slot: the registry entry selected for a graph op
+ * (T5A registry x T5B selection). `device` is the default placement
+ * (same policy as pai_sched_build without hints).
+ */
+typedef struct pai_kernel_entry {
+  pai_graph_op_kind_t kind;   /* graph op kind                          */
+  const char        *op_name; /* registry name, e.g. "vecadd_f32"       */
+  pai_kernel_id_t    kernel_id; /* PAI_KERNEL_* or PAI_KERNEL_NONE      */
+  uint8_t            device;  /* pai_sched_device_t default placement   */
+  uint32_t           caps;    /* PAI_OP_CAP_* advertised by the op      */
+} pai_kernel_entry_t;
+
+/*
+ * Select the kernel for a graph op through the op registry. `reg` may
+ * be NULL to use the builtin Phase-1 registry (built on the stack).
+ * Unregistered kinds (PAI_OP_CUSTOM) resolve to PAI_ERR_UNSUPPORTED.
+ */
+pai_status_t pai_kernel_select(const pai_graph_t *graph,
+                               pai_graph_op_id op_id,
+                               const pai_op_registry_t *reg,
+                               pai_kernel_entry_t *out);
+
+/*
+ * Capability gate over a whole plan: every step's op must resolve in
+ * the registry and advertise every flag in `caps_required`. NULL `reg`
+ * uses the builtin registry. Catches ops with no implementation for
+ * the target backend before any memory is touched.
+ */
+pai_status_t pai_kernel_plan_check(const pai_graph_t *graph,
+                                   const pai_sched_plan_t *plan,
+                                   uint32_t caps_required,
+                                   const pai_op_registry_t *reg);
+
+/*
+ * Vtable-gated reference executor: runs pai_kernel_plan_check with
+ * PAI_OP_CAP_CPU_REF, then pai_sched_execute. Same result as
+ * pai_sched_execute for supported graphs, PAI_ERR_UNSUPPORTED when any
+ * op lacks a CPU reference implementation.
+ */
+pai_status_t pai_sched_execute_vtable(const pai_graph_t *graph,
+                                      const pai_graph_mem_plan_t *mem_plan,
+                                      const pai_sched_plan_t *plan,
+                                      uint8_t *region,
+                                      pai_sched_run_stats_t *out_stats);
 
 /* ------------------------------------------------------------------ */
 /* Session registry (§18: session priority, batching seed)             */

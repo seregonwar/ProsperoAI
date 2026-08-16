@@ -13,4 +13,5 @@ target_link_libraries(pai_scheduler PUBLIC
   pai_graph
   pai_memory
   pai_cpu_reference
+  pai_ops
 )

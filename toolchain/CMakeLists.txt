@@ -21,4 +21,18 @@ if(PAI_PLATFORM STREQUAL "host")
     pai_diag
   )
   pai_enable_big_stack(pai)
+
+  # T7 exit test: MLP 8->16->8 differential harness (B leg: CPU-ref +
+  # profile; A leg: GPU serial + host-ref plugs into mlp_test.c).
+  add_executable(mlp_test mlp_test.c)
+  target_link_libraries(mlp_test PRIVATE
+    pai_runtime
+    pai_graph
+    pai_scheduler
+    pai_profiler
+    pai_cpu_reference
+    pai_tensor
+    pai_diag
+  )
+  pai_enable_big_stack(mlp_test)
 endif()

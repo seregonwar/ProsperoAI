@@ -18,6 +18,8 @@ set(PAI_TESTS
   test_gguf
   test_pm4
   test_ref_ops
+  test_op_registry
+  test_profiler
   test_hal_host
   test_compress
   test_protocol
@@ -55,3 +57,9 @@ foreach(test_name ${PAI_TESTS})
   add_test(NAME ${test_name} COMMAND ${test_name})
   pai_enable_big_stack(${test_name})
 endforeach()
+
+# T7 exit-test harness (target defined in toolchain/CMakeLists.txt):
+# MLP 8->16->8 differential - CPU-ref executor + eager registry + plan
+# profile. The GPU/host-ref leg lands with T4C.
+add_test(NAME mlp_test COMMAND mlp_test)
+

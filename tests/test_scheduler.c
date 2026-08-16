@@ -575,4 +575,129 @@ build_net(&g_net);
         PAI_ERR_INVALID_ARG);
 }
 
+{
+  /* kernel vtable (T5B): every op kind in the synthetic net resolves to
+   * a registered op with the expected kernel id, device and caps */
+  pai_graph_mem_plan_t mp;
+  pai_sched_plan_t plan;
+  pai_kernel_entry_t e;
+  CHECK(pai_graph_memory_plan(&g_net, &mp) == PAI_OK);
+  CHECK(pai_sched_build(&g_net, &mp, PAI_SCHED_INTERACTIVE, NULL, &plan) ==
+        PAI_OK);
+  for (uint32_t i = 0; i < plan.num_steps; i++) {
+    pai_graph_op_id op = plan.steps[i].op_id;
+    CHECK(pai_kernel_select(&g_net, op, NULL, &e) == PAI_OK);
+    CHECK_EQ_UINT(e.kind, g_net.ops[op].kind);
+    CHECK((e.caps & PAI_OP_CAP_CPU_REF) == PAI_OP_CAP_CPU_REF);
+    /* default placement agrees with the plan (no hints) */
+    CHECK_EQ_UINT(e.device, plan.steps[i].device);
+    switch (g_net.ops[op].kind) {
+      case PAI_OP_GEMM:
+      case PAI_OP_MATMUL:
+        CHECK(strcmp(e.op_name, "matmul_f32") == 0);
+        CHECK_EQ_INT(e.kernel_id, PAI_KERNEL_MATMUL);
+        break;
+      case PAI_OP_ADD:
+        CHECK(strcmp(e.op_name, "vecadd_f32") == 0);
+        CHECK_EQ_INT(e.kernel_id, PAI_KERNEL_ADD1D);
+        break;
+      case PAI_OP_RELU:
+        CHECK(strcmp(e.op_name, "relu_f32") == 0);
+        CHECK_EQ_INT(e.kernel_id, PAI_KERNEL_RELU);
+        break;
+      case PAI_OP_GEMV:
+        CHECK(strcmp(e.op_name, "gemv_f32") == 0);
+        CHECK_EQ_INT(e.kernel_id, PAI_KERNEL_NONE);
+        break;
+      case PAI_OP_COPY:
+      case PAI_OP_RESHAPE:
+      case PAI_OP_CONVERT:
+        CHECK(strcmp(e.op_name, "copy_f32") == 0);
+        break;
+      default:
+        break;
+    }
+  }
+
+  /* invalid op id and unregistered (CUSTOM) kind */
+  CHECK(pai_kernel_select(&g_net, 0, NULL, &e) == PAI_ERR_INVALID_ARG);
+  CHECK(pai_kernel_select(&g_net, g_net.num_ops + 1, NULL, &e) ==
+        PAI_ERR_INVALID_ARG);
+  CHECK(pai_kernel_select(&g_net, 1, NULL, NULL) == PAI_ERR_INVALID_ARG);
+  {
+    pai_graph_t graph;
+    const uint64_t v4[1] = {4};
+    pai_graph_value_id a, b;
+    pai_graph_init(&graph);
+    a = pai_graph_add_value(&graph, PAI_DTYPE_F32, 1, v4, 0);
+    b = pai_graph_add_value(&graph, PAI_DTYPE_F32, 1, v4, 0);
+    {
+      pai_graph_value_id in[] = {a};
+      pai_graph_value_id out[] = {b};
+      CHECK(pai_graph_add_op(&graph, PAI_OP_CUSTOM, 1, 1, in, out) != 0);
+    }
+    CHECK(pai_kernel_select(&graph, 1, NULL, &e) == PAI_ERR_UNSUPPORTED);
+  }
+}
+
+{
+  /* vtable gate: plan-wide capability check and gated executor */
+  pai_graph_mem_plan_t mp;
+  pai_sched_plan_t plan;
+  pai_sched_run_stats_t stats;
+  uint8_t *region;
+  pai_kernel_entry_t e;
+
+  CHECK(pai_graph_memory_plan(&g_net, &mp) == PAI_OK);
+  CHECK(pai_sched_build(&g_net, &mp, PAI_SCHED_INTERACTIVE, NULL, &plan) ==
+        PAI_OK);
+  /* the synthetic net is all CPU_REF-capable */
+  CHECK(pai_kernel_plan_check(&g_net, &plan, PAI_OP_CAP_CPU_REF, NULL) ==
+        PAI_OK);
+  /* GPU_SERIAL requirement fails: most ops are ref-only */
+  CHECK(pai_kernel_plan_check(&g_net, &plan, PAI_OP_CAP_GPU_SERIAL, NULL) ==
+        PAI_ERR_UNSUPPORTED);
+  CHECK(pai_kernel_plan_check(&g_net, NULL, PAI_OP_CAP_CPU_REF, NULL) ==
+        PAI_ERR_INVALID_ARG);
+
+  /* gated executor produces the same result as pai_sched_execute */
+  region = (uint8_t *)calloc(1, (size_t)mp.region_bytes);
+  CHECK(region != NULL);
+  if (region != NULL) {
+    double y_exp[4];
+    double h2_exp[4];
+    fill_net(&mp, region);
+    CHECK(pai_sched_execute_vtable(&g_net, &mp, &plan, region, &stats) ==
+          PAI_OK);
+    CHECK_EQ_UINT(stats.steps_executed, 13);
+    CHECK_EQ_UINT(stats.gpu_steps, 4);
+    CHECK_EQ_UINT(stats.cpu_steps, 9);
+    compute_expected(h2_exp, y_exp);
+    for (int i = 0; i < 4; i++) {
+      CHECK(fabsf(getv(&mp, region, V_Y, (uint32_t)i) - (float)y_exp[i]) <
+            1e-4f);
+    }
+    free(region);
+  }
+
+  /* explicit registry: a minimal registry missing the plan's ops fails
+   * the gate before execution */
+  {
+    pai_op_registry_t reg;
+    pai_op_descriptor_t fake = {.name = "vecadd_f32",
+                                .version = 1,
+                                .num_inputs = 2,
+                                .num_outputs = 1,
+                                .in_dtype = PAI_DTYPE_F32,
+                                .out_dtype = PAI_DTYPE_F32,
+                                .caps = 0,
+                                .ref_fn = NULL,
+                                .kernel_id = PAI_KERNEL_ADD1D};
+    CHECK(pai_op_registry_init(&reg) == PAI_OK);
+    CHECK(pai_op_registry_register(&reg, &fake) == PAI_OK);
+    CHECK(pai_kernel_plan_check(&g_net, &plan, PAI_OP_CAP_CPU_REF, &reg) ==
+          PAI_ERR_UNSUPPORTED);
+  }
+}
+
 TEST_MAIN_END()
