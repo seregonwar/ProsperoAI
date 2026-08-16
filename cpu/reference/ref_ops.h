@@ -15,9 +15,41 @@
 pai_status_t pai_ref_vecadd_f32(const float *a, const float *b, float *c,
                                 uint64_t n);
 
+/* c[i] = a[i] - b[i], element-wise, f32, contiguous buffers. */
+pai_status_t pai_ref_vecsub_f32(const float *a, const float *b, float *c,
+                                uint64_t n);
+
 /* c[i] = a[i] * b[i], element-wise, f32, contiguous buffers. */
 pai_status_t pai_ref_vecmul_f32(const float *a, const float *b, float *c,
                                 uint64_t n);
+
+/* c[i] = clamp(a[i], lo, hi), element-wise, f32; lo <= hi. */
+pai_status_t pai_ref_clip_f32(const float *a, float *c, uint64_t n, float lo,
+                              float hi);
+
+/* Serial f32 dot product: sum_i a[i] * b[i] in deterministic order. */
+pai_status_t pai_ref_dot_f32(const float *a, const float *b, float *out,
+                             uint64_t n);
+
+/* L1 norm: sum |a[i]|. */
+pai_status_t pai_ref_l1norm_f32(const float *a, float *out, uint64_t n);
+
+/* L2 norm: sqrt(sum a[i]^2). */
+pai_status_t pai_ref_l2norm_f32(const float *a, float *out, uint64_t n);
+
+/*
+ * Matrix-vector multiply, row-major: y[i] = sum_j a[i][j] * x[j],
+ * a is m x k, x holds k elements, y holds m.
+ */
+pai_status_t pai_ref_gemv_f32(uint64_t m, uint64_t k, const float *a,
+                              const float *x, float *y);
+
+/*
+ * Bias add over the last dim (broadcast): c[i][j] = a[i][j] + bias[j],
+ * a/c are rows x cols row-major, bias holds cols elements.
+ */
+pai_status_t pai_ref_biasadd_f32(const float *a, const float *bias, float *c,
+                                 uint64_t rows, uint64_t cols);
 
 /* c[i] = alpha * a[i] (in place when a == c). */
 pai_status_t pai_ref_scale_f32(float *a, float alpha, uint64_t n);

@@ -228,4 +228,78 @@ TEST_MAIN_BEGIN()
   CHECK(fabsf(a[2] - 3.0f) < 1e-7f);
 }
 
+{
+  /* vecsub */
+  float a[4] = {5, 3, -2, 0.5f};
+  float b[4] = {2, 7, -2, 1.5f};
+  float c[4];
+  CHECK(pai_ref_vecsub_f32(a, b, c, 4) == PAI_OK);
+  CHECK(fabsf(c[0] - 3.0f) < 1e-6f);
+  CHECK(fabsf(c[1] - -4.0f) < 1e-6f);
+  CHECK(fabsf(c[2] - 0.0f) < 1e-6f);
+  CHECK(fabsf(c[3] - -1.0f) < 1e-6f);
+  CHECK(pai_ref_vecsub_f32(NULL, b, c, 4) == PAI_ERR_INVALID_ARG);
+}
+
+{
+  /* clip */
+  float a[5] = {-3, 0, 0.5f, 7, 10};
+  float c[5];
+  CHECK(pai_ref_clip_f32(a, c, 5, 0.0f, 1.0f) == PAI_OK);
+  CHECK(fabsf(c[0] - 0.0f) < 1e-6f);
+  CHECK(fabsf(c[1] - 0.0f) < 1e-6f);
+  CHECK(fabsf(c[2] - 0.5f) < 1e-6f);
+  CHECK(fabsf(c[3] - 1.0f) < 1e-6f);
+  CHECK(fabsf(c[4] - 1.0f) < 1e-6f);
+  CHECK(pai_ref_clip_f32(a, c, 5, 1.0f, 0.0f) == PAI_ERR_INVALID_ARG);
+}
+
+{
+  /* dot: deterministic order */
+  float a[5] = {1, 2, 3, 4, 5};
+  float b[5] = {0.5f, -1, 2, 0.25f, -4};
+  float out;
+  float want = 1 * 0.5f + 2 * -1.0f + 3 * 2.0f + 4 * 0.25f + 5 * -4.0f;
+  CHECK(pai_ref_dot_f32(a, b, &out, 5) == PAI_OK);
+  CHECK(fabsf(out - want) < 1e-6f);
+  CHECK(pai_ref_dot_f32(a, b, NULL, 5) == PAI_ERR_INVALID_ARG);
+}
+
+{
+  /* l1/l2 norms */
+  float a[4] = {-3, 4, 0, -2};
+  float out;
+  CHECK(pai_ref_l1norm_f32(a, &out, 4) == PAI_OK);
+  CHECK(fabsf(out - 9.0f) < 1e-6f);
+  CHECK(pai_ref_l2norm_f32(a, &out, 4) == PAI_OK);
+  CHECK(fabsf(out - 5.385164807f) < 1e-6f);
+}
+
+{
+  /* gemv: 3x2 matrix */
+  float a[6] = {1, 2, 3, 4, 5, 6};
+  float x[2] = {10, 100};
+  float y[3];
+  CHECK(pai_ref_gemv_f32(3, 2, a, x, y) == PAI_OK);
+  CHECK(fabsf(y[0] - (10 + 200)) < 1e-6f);
+  CHECK(fabsf(y[1] - (30 + 400)) < 1e-6f);
+  CHECK(fabsf(y[2] - (50 + 600)) < 1e-6f);
+  CHECK(pai_ref_gemv_f32(0, 2, a, x, y) == PAI_ERR_INVALID_ARG);
+}
+
+{
+  /* biasadd: 2 rows x 3 cols broadcast over the last dim */
+  float a[6] = {1, 2, 3, 4, 5, 6};
+  float bias[3] = {10, 20, 30};
+  float c[6];
+  CHECK(pai_ref_biasadd_f32(a, bias, c, 2, 3) == PAI_OK);
+  CHECK(fabsf(c[0] - 11.0f) < 1e-6f);
+  CHECK(fabsf(c[1] - 22.0f) < 1e-6f);
+  CHECK(fabsf(c[2] - 33.0f) < 1e-6f);
+  CHECK(fabsf(c[3] - 14.0f) < 1e-6f);
+  CHECK(fabsf(c[4] - 25.0f) < 1e-6f);
+  CHECK(fabsf(c[5] - 36.0f) < 1e-6f);
+  CHECK(pai_ref_biasadd_f32(NULL, bias, c, 2, 3) == PAI_ERR_INVALID_ARG);
+}
+
 TEST_MAIN_END()

@@ -17,6 +17,110 @@ pai_ref_vecadd_f32(const float *a, const float *b, float *c, uint64_t n) {
 }
 
 pai_status_t
+pai_ref_vecsub_f32(const float *a, const float *b, float *c, uint64_t n) {
+  if ((!a || !b || !c) && n != 0) {
+    return PAI_ERR_INVALID_ARG;
+  }
+
+  for (uint64_t i = 0; i < n; i++) {
+    c[i] = a[i] - b[i];
+  }
+  return PAI_OK;
+}
+
+pai_status_t
+pai_ref_clip_f32(const float *a, float *c, uint64_t n, float lo, float hi) {
+  if ((!a || !c) && n != 0) {
+    return PAI_ERR_INVALID_ARG;
+  }
+  if (lo > hi) {
+    return PAI_ERR_INVALID_ARG;
+  }
+
+  for (uint64_t i = 0; i < n; i++) {
+    c[i] = a[i] < lo ? lo : (a[i] > hi ? hi : a[i]);
+  }
+  return PAI_OK;
+}
+
+pai_status_t
+pai_ref_dot_f32(const float *a, const float *b, float *out, uint64_t n) {
+  float acc = 0.0f;
+
+  if (!out || n == 0 || (!a || !b)) {
+    return PAI_ERR_INVALID_ARG;
+  }
+
+  for (uint64_t i = 0; i < n; i++) {
+    acc += a[i] * b[i];
+  }
+  *out = acc;
+  return PAI_OK;
+}
+
+pai_status_t
+pai_ref_l1norm_f32(const float *a, float *out, uint64_t n) {
+  float acc = 0.0f;
+
+  if (!out || n == 0 || !a) {
+    return PAI_ERR_INVALID_ARG;
+  }
+
+  for (uint64_t i = 0; i < n; i++) {
+    acc += fabsf(a[i]);
+  }
+  *out = acc;
+  return PAI_OK;
+}
+
+pai_status_t
+pai_ref_l2norm_f32(const float *a, float *out, uint64_t n) {
+  float acc = 0.0f;
+
+  if (!out || n == 0 || !a) {
+    return PAI_ERR_INVALID_ARG;
+  }
+
+  for (uint64_t i = 0; i < n; i++) {
+    acc += a[i] * a[i];
+  }
+  *out = sqrtf(acc);
+  return PAI_OK;
+}
+
+pai_status_t
+pai_ref_gemv_f32(uint64_t m, uint64_t k, const float *a, const float *x,
+                 float *y) {
+  if (m == 0 || k == 0 || !a || !x || !y) {
+    return PAI_ERR_INVALID_ARG;
+  }
+
+  for (uint64_t i = 0; i < m; i++) {
+    float acc = 0.0f;
+    for (uint64_t j = 0; j < k; j++) {
+      acc += a[i * k + j] * x[j];
+    }
+    y[i] = acc;
+  }
+  return PAI_OK;
+}
+
+pai_status_t
+pai_ref_biasadd_f32(const float *a, const float *bias, float *c, uint64_t rows,
+                    uint64_t cols) {
+  if (rows == 0 || cols == 0 || !a || !bias || !c) {
+    return PAI_ERR_INVALID_ARG;
+  }
+
+  for (uint64_t i = 0; i < rows; i++) {
+    for (uint64_t j = 0; j < cols; j++) {
+      c[i * cols + j] = a[i * cols + j] + bias[j];
+    }
+  }
+  return PAI_OK;
+}
+
+pai_status_t
 pai_ref_vecmul_f32(const float *a, const float *b, float *c, uint64_t n) {
   if ((!a || !b || !c) && n != 0) {
     return PAI_ERR_INVALID_ARG;
