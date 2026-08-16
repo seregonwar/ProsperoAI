@@ -15,7 +15,13 @@ pai_bench_now_ns(void) {
   if (freq.QuadPart <= 0) {
     return 0;
   }
-  return (uint64_t)((counter.QuadPart * 1000000000LL) / freq.QuadPart);
+  {
+    /* split division: counter*freq would overflow 64-bit */
+    uint64_t sec = (uint64_t)counter.QuadPart / (uint64_t)freq.QuadPart;
+    uint64_t rem = (uint64_t)counter.QuadPart % (uint64_t)freq.QuadPart;
+    return sec * 1000000000ull +
+           (rem * 1000000000ull) / (uint64_t)freq.QuadPart;
+  }
 }
 
 #else

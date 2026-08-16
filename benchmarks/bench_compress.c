@@ -108,20 +108,29 @@ run_scenario(const char *name, uint64_t n, int repeats, double *best_enc,
     st = pai_compress_decode(comp, clen, dec, n, &dlen);
     t1 = now_ns();
     if (st != PAI_OK || dlen != n || memcmp(src, dec, (size_t)n) != 0) {
-      printf("  %-8s decode failed (%d)\n", name, st);
+      uint64_t i;
+      int64_t diff = -1;
+      for (i = 0; i < n; i++) {
+        if (src[i] != dec[i]) {
+          diff = (int64_t)i;
+          break;
+        }
+      }
+      printf("  %-8s decode failed (st=%d dlen=%llu firstdiff=%lld)\n", name,
+             st, (unsigned long long)dlen, (long long)diff);
       goto done;
     }
     td += (double)(t1 - t0) / (double)repeats;
   }
 
   printf("  %-8s ratio %6.1f%%  encode %7.1f MB/s  decode %7.1f MB/s\n", name,
-         100.0 * (double)clen / (double)n, (double)n / te / 1e6,
-         (double)n / td / 1e6);
-  if (best_enc != NULL && (double)n / te > *best_enc) {
-    *best_enc = (double)n / te;
+         100.0 * (double)clen / (double)n, (double)n * 1e3 / te,
+         (double)n * 1e3 / td);
+  if (best_enc != NULL && (double)n * 1e3 / te > *best_enc) {
+    *best_enc = (double)n * 1e3 / te;
   }
-  if (best_dec != NULL && (double)n / td > *best_dec) {
-    *best_dec = (double)n / td;
+  if (best_dec != NULL && (double)n * 1e3 / td > *best_dec) {
+    *best_dec = (double)n * 1e3 / td;
   }
 
 done:

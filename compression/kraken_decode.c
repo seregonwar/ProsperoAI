@@ -134,19 +134,40 @@ kk_in_bytes(kk_in_t *in, const uint8_t **out, uint32_t n) {
   return 0;
 }
 
-/* Copy a match; source always precedes destination (overlapping OK). */
+/* Copy a match; source always precedes destination. Distance >= 8 can
+ * use 8-byte copies (the source never reads unwritten bytes); smaller
+ * distances are self-replicating patterns: write the first dist bytes,
+ * then double the written region until n bytes are produced. */
 static void
 kk_copy_match(uint8_t *dst, const uint8_t *match, size_t n) {
+  size_t dist = (size_t)(dst - match);
   size_t i = 0;
-  while (i + 8 <= n) {
-    uint64_t v;
-    memcpy(&v, match + i, 8);
-    memcpy(dst + i, &v, 8);
-    i += 8;
+
+  if (dist >= 8) {
+    while (i + 8 <= n) {
+      uint64_t v;
+      memcpy(&v, match + i, 8);
+      memcpy(dst + i, &v, 8);
+      i += 8;
+    }
+    while (i < n) {
+      dst[i] = match[i];
+      i++;
+    }
+    return;
   }
-  while (i < n) {
+
+  while (i < dist && i < n) {
     dst[i] = match[i];
     i++;
+  }
+  while (i < n) {
+    size_t step = i;
+    if (step > n - i) {
+      step = n - i;
+    }
+    memcpy(dst + i, dst + i - step, step);
+    i += step;
   }
 }
 

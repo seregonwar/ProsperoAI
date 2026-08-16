@@ -150,10 +150,14 @@ ke_flush_lits(ke_enc_t *e, uint64_t pos, uint64_t half_end) {
   return 0;
 }
 
-/* Find the longest match at pos. *out_q receives the match position. */
+/* Find the longest match at pos. Candidates are subject to the
+ * encodability rules the decoder enforces: near matches (dist <=
+ * 0xFFFF) may reference anything back to the stream start, far matches
+ * (dist > 0xFFFF) must be within the current chunk. *out_q receives
+ * the match position. */
 static int
-ke_find(ke_enc_t *e, uint64_t pos, uint32_t max_len, uint32_t *out_len,
-        uint64_t *out_q) {
+ke_find(ke_enc_t *e, uint64_t pos, uint64_t chunk_start, uint32_t max_len,
+        uint32_t *out_len, uint64_t *out_q) {
   uint32_t hash, best = 0, walk = 0;
   int32_t cand;
   uint64_t best_q = 0;
@@ -170,15 +174,32 @@ ke_find(ke_enc_t *e, uint64_t pos, uint32_t max_len, uint32_t *out_len,
     if (dist == 0 || dist > 0xFFFFFFFFu) {
       break;
     }
+    if (dist > KE_WINDOW && q < chunk_start) {
+      /* far match outside the chunk is not encodable; keep walking */
+      cand = e->chain[cand];
+      walk++;
+      continue;
+    }
+    if (best > 0 && best < max_len &&
+        e->src[q + best] != e->src[pos + best]) {
+      /* cannot beat the current best; keep walking */
+      cand = e->chain[cand];
+      walk++;
+      continue;
+    }
     while (n < max_len && e->src[q + n] == e->src[pos + n]) {
       n++;
     }
     if (n > best) {
       best = n;
       best_q = q;
-      if (n >= max_len) {
+      if (n >= max_len || n >= 64u) {
         break;
       }
+    }
+    if (best == 0 && walk >= 16) {
+      /* incompressible region: nothing useful this far */
+      break;
     }
     cand = e->chain[cand];
     walk++;
@@ -198,11 +219,6 @@ ke_emit_match(ke_enc_t *e, uint64_t pos, uint64_t q, uint32_t mlen,
   uint32_t dist = (uint32_t)(pos - q);
   uint32_t litlen = ke_pending(e);
   int far = dist > KE_WINDOW;
-
-  if (pos >= 0x40000u && pos < 0x42000u) {
-    fprintf(stderr, "DBGENC1 pos=%llx mlen=%u dist=%u litlen=%u\n",
-            (unsigned long long)pos, mlen, dist, litlen);
-  }
 
   if (far && q < chunk_start) {
     return 0; /* not encodable */
@@ -323,7 +339,7 @@ ke_encode_chunk(ke_enc_t *e, ke_buf_t *q, uint64_t chunk_start,
     half_end = (half == 0) ? chunk_start + KE_HALF : end;
 
     if (ke_pending(e) <= 7u &&
-        ke_find(e, p, (uint32_t)(end - p), &mlen, &mq)) {
+        ke_find(e, p, chunk_start, (uint32_t)(end - p), &mlen, &mq)) {
       /* matches must not cross the half boundary */
       if (mlen > half_end - p) {
         mlen = (uint32_t)(half_end - p);
@@ -448,6 +464,24 @@ ke_encode_chunk(ke_enc_t *e, ke_buf_t *q, uint64_t chunk_start,
   return 0;
 }
 
+/* True when the whole quantum is one byte value (fills encode in 4
+ * bytes instead of a compressed payload). */
+static int
+ke_quantum_fill(const uint8_t *p, uint32_t n, uint8_t *out_fill) {
+  uint32_t i;
+
+  if (n == 0) {
+    return 0;
+  }
+  for (i = 1; i < n; i++) {
+    if (p[i] != p[0]) {
+      return 0;
+    }
+  }
+  *out_fill = p[0];
+  return 1;
+}
+
 int
 kk_encode_stream(const uint8_t *src, uint64_t len, ke_buf_t *out) {
   ke_enc_t *e;
@@ -502,56 +536,70 @@ kk_encode_stream(const uint8_t *src, uint64_t len, ke_buf_t *out) {
       }
     }
 
-    q.p = out->p + out->n + 3u; /* room for the quantum header */
-    q.n = 0;
-    q.cap = out->cap - out->n - 3u;
-
-    e->lit.n = 0;
-    e->cmd.n = 0;
-    e->off16.n = 0;
-    e->off32.n = 0;
-    e->lenb.n = 0;
-    e->lit_claimed = 0;
-
-    while (produced < qlen) {
-      uint32_t chunk = qlen - produced;
-      if (chunk > KE_CHUNK) {
-        chunk = KE_CHUNK;
-      }
-      if (ke_encode_chunk(e, &q, pos + produced, chunk,
-                          pos + produced) != 0) {
-        goto fail;
-      }
-      produced += chunk;
-    }
-
-    if (q.n >= qlen) {
-      if (qlen == KE_QUANTUM) {
-        /* PAI extension: raw full 0x40000 quantum (the plain size
-         * field collides with the special marker) */
-        uint8_t hdr[3] = {0x0Fu, 0xFFu, 0xFFu};
+    {
+      uint8_t fill;
+      if (ke_quantum_fill(src + pos, qlen, &fill)) {
+        /* uniform quantum: 3-byte fill header + one byte */
+        uint8_t hdr[3] = {0x07u, 0xFFu, 0xFFu};
+        if (out->cap - out->n < 4) {
+          goto fail;
+        }
         memcpy(out->p + out->n, hdr, 3);
-        out->n += 3;
+        out->p[out->n + 3] = fill;
+        out->n += 4;
       } else {
-        uint8_t hdr[3];
-        hdr[0] = (uint8_t)((qlen - 1u) >> 16);
-        hdr[1] = (uint8_t)((qlen - 1u) >> 8);
-        hdr[2] = (uint8_t)(qlen - 1u);
-        memcpy(out->p + out->n, hdr, 3);
-        out->n += 3;
+        q.p = out->p + out->n + 3u; /* room for the quantum header */
+        q.n = 0;
+        q.cap = out->cap - out->n - 3u;
+
+        e->lit.n = 0;
+        e->cmd.n = 0;
+        e->off16.n = 0;
+        e->off32.n = 0;
+        e->lenb.n = 0;
+        e->lit_claimed = 0;
+
+        while (produced < qlen) {
+          uint32_t chunk = qlen - produced;
+          if (chunk > KE_CHUNK) {
+            chunk = KE_CHUNK;
+          }
+          if (ke_encode_chunk(e, &q, pos + produced, chunk,
+                              pos + produced) != 0) {
+            goto fail;
+          }
+          produced += chunk;
+        }
+
+        if (q.n >= qlen) {
+          if (qlen == KE_QUANTUM) {
+            /* PAI extension: raw full 0x40000 quantum (the plain size
+             * field collides with the special marker) */
+            uint8_t hdr[3] = {0x0Fu, 0xFFu, 0xFFu};
+            memcpy(out->p + out->n, hdr, 3);
+            out->n += 3;
+          } else {
+            uint8_t hdr[3];
+            hdr[0] = (uint8_t)((qlen - 1u) >> 16);
+            hdr[1] = (uint8_t)((qlen - 1u) >> 8);
+            hdr[2] = (uint8_t)(qlen - 1u);
+            memcpy(out->p + out->n, hdr, 3);
+            out->n += 3;
+          }
+          if (out->cap - out->n < qlen) {
+            goto fail;
+          }
+          memcpy(out->p + out->n, src + pos, qlen);
+          out->n += qlen;
+        } else {
+          uint8_t hdr[3];
+          hdr[0] = (uint8_t)((q.n - 1u) >> 16);
+          hdr[1] = (uint8_t)((q.n - 1u) >> 8);
+          hdr[2] = (uint8_t)(q.n - 1u);
+          memcpy(out->p + out->n, hdr, 3);
+          out->n += 3 + q.n;
+        }
       }
-      if (out->cap - out->n < qlen) {
-        goto fail;
-      }
-      memcpy(out->p + out->n, src + pos, qlen);
-      out->n += qlen;
-    } else {
-      uint8_t hdr[3];
-      hdr[0] = (uint8_t)((q.n - 1u) >> 16);
-      hdr[1] = (uint8_t)((q.n - 1u) >> 8);
-      hdr[2] = (uint8_t)(q.n - 1u);
-      memcpy(out->p + out->n, hdr, 3);
-      out->n += 3 + q.n;
     }
 
     /* hash the chunk window for future matches */
