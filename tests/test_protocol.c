@@ -389,10 +389,35 @@ TEST_MAIN_BEGIN()
         PAI_ERR_INVALID_ARG);
   f.payload_len = 0;
 
-  /* compressed flag is reserved in v0 */
+  /* compressed flag is reserved in v0 — refused on send */
   f.flags = PAI_PROTO_FLAG_COMPRESSED;
   CHECK(pai_proto_frame_encode(&f, wire, sizeof(wire), &n) ==
         PAI_ERR_INVALID_ARG);
+
+  /* ... and rejected on receive even when the CRC is valid. */
+  {
+    pai_proto_frame_t f2;
+    uint8_t w2[64];
+    uint32_t n2 = 0;
+    memset(&f2, 0, sizeof(f2));
+    f2.msg_type = PAI_PROTO_MSG_PING;
+    CHECK(pai_proto_frame_encode(&f2, w2, sizeof(w2), &n2) == PAI_OK);
+    w2[6] |= PAI_PROTO_FLAG_COMPRESSED;
+    {
+      uint32_t crc = pai_proto_crc32_init();
+      crc = pai_proto_crc32_upd(crc, w2, 32);
+      crc = pai_proto_crc32_upd(crc, w2 + PAI_PROTO_HEADER_SIZE, 0);
+      {
+        uint32_t c = pai_proto_crc32_fin(crc);
+        w2[32] = (uint8_t)c;
+        w2[33] = (uint8_t)(c >> 8);
+        w2[34] = (uint8_t)(c >> 16);
+        w2[35] = (uint8_t)(c >> 24);
+      }
+    }
+    CHECK(pai_proto_frame_decode(w2, &f) == PAI_ERR_PROTOCOL);
+    CHECK(pai_proto_frame_validate(w2, NULL) == PAI_ERR_PROTOCOL);
+  }
 }
 
 /* ------------------------------------------------------------------ */

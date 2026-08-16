@@ -109,7 +109,7 @@ ProsperoAI
 |-- platform/         PS5 privilege, lifecycle, notifications, logging
 |-- diagnostics/      structured logging
 |-- docs/ notes/      whitepaper + RE research
-`-- tests/            host test suite (ctest)
+`-- tests/            host test suite (ctest) + seeded protocol fuzzer
 ```
 
 The payload talks to the desktop through the Prospero Protocol; the gateway

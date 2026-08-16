@@ -41,6 +41,12 @@ static int g_pai_test_failures;
   int main(void) {                                                           \
     g_pai_test_failures = 0;
 
+#define TEST_MAIN_BEGIN_ARGS()                                               \
+  int main(int argc, char **argv) {                                          \
+    g_pai_test_failures = 0;                                                 \
+    (void)argc;                                                              \
+    (void)argv;
+
 #define TEST_MAIN_END()                                                      \
     if (g_pai_test_failures) {                                               \
       printf("FAILED (%d)\n", g_pai_test_failures);                          \

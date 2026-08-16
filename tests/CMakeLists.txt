@@ -22,6 +22,7 @@ set(PAI_TESTS
   test_tcp
   test_json
   test_gateway
+  test_fuzz
 )
 
 foreach(test_name ${PAI_TESTS})

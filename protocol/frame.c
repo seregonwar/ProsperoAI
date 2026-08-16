@@ -122,6 +122,11 @@ pai_proto_frame_decode(const uint8_t *data, pai_proto_frame_t *out) {
   if (get_le32(data + 36) != 0) {
     return PAI_ERR_PROTOCOL; /* reserved field must be zero */
   }
+  if (get_le16(data + 6) & PAI_PROTO_FLAG_COMPRESSED) {
+    /* Compression is reserved in v0; receivers reject the flag
+     * (the send paths already refuse to emit it). */
+    return PAI_ERR_PROTOCOL;
+  }
   if (get_le32(data + 12) > PAI_PROTO_MAX_PAYLOAD) {
     return PAI_ERR_PROTOCOL;
   }

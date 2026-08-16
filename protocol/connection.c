@@ -185,7 +185,11 @@ pai_proto_conn_send_raw(pai_proto_conn_t *conn, uint32_t msg_type,
 
 uint64_t
 pai_proto_conn_new_request_id(pai_proto_conn_t *conn) {
-  return conn->next_request_id++;
+  uint64_t id = conn->next_request_id++;
+  if (conn->next_request_id == 0) {
+    conn->next_request_id = 1; /* 0 is reserved for connection-level */
+  }
+  return id;
 }
 
 /* Best-effort auto-reply with a structured status code (§24). */
