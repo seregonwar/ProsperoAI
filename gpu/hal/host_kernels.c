@@ -419,3 +419,120 @@ pai_host_kernel_h3(void *ctx, const uint32_t user_data[16],
   }
   return PAI_OK;
 }
+
+/* T4 elementwise float ops (t4_ops.s G42-G46): packed (a,b) pairs at
+ * ud 2-3, C at ud 4-5, one group per element, float semantics. */
+static pai_status_t
+pai_host_kernel_t4_ew(void *ctx, const uint32_t user_data[16],
+                      uint32_t threads_x, uint32_t group_x, uint32_t op) {
+  const float *ab = (const float *)(uintptr_t)pai_ud64(user_data, 2);
+  float *c = (float *)(uintptr_t)pai_ud64(user_data, 4);
+
+  (void)ctx;
+  (void)threads_x;
+
+  for (uint32_t g = 0; g < group_x; g++) {
+    float av = ab[2u * g];
+    float bv = ab[2u * g + 1u];
+    switch (op) {
+    case 0:
+      c[g] = av + bv;
+      break;
+    case 1:
+      c[g] = av - bv;
+      break;
+    case 2:
+      c[g] = av * bv;
+      break;
+    case 3:
+      c[g] = av > 0.0f ? av : 0.0f;
+      break;
+    default:
+      c[g] = av < 0.0f ? 0.0f : (av > 1.0f ? 1.0f : av);
+      break;
+    }
+  }
+  return PAI_OK;
+}
+
+pai_status_t
+pai_host_kernel_t4_add1d(void *ctx, const uint32_t user_data[16],
+                         uint32_t threads_x, uint32_t group_x) {
+  return pai_host_kernel_t4_ew(ctx, user_data, threads_x, group_x, 0);
+}
+
+pai_status_t
+pai_host_kernel_t4_sub1d(void *ctx, const uint32_t user_data[16],
+                         uint32_t threads_x, uint32_t group_x) {
+  return pai_host_kernel_t4_ew(ctx, user_data, threads_x, group_x, 1);
+}
+
+pai_status_t
+pai_host_kernel_t4_mul1d(void *ctx, const uint32_t user_data[16],
+                         uint32_t threads_x, uint32_t group_x) {
+  return pai_host_kernel_t4_ew(ctx, user_data, threads_x, group_x, 2);
+}
+
+pai_status_t
+pai_host_kernel_t4_relu(void *ctx, const uint32_t user_data[16],
+                        uint32_t threads_x, uint32_t group_x) {
+  return pai_host_kernel_t4_ew(ctx, user_data, threads_x, group_x, 3);
+}
+
+pai_status_t
+pai_host_kernel_t4_clip(void *ctx, const uint32_t user_data[16],
+                        uint32_t threads_x, uint32_t group_x) {
+  return pai_host_kernel_t4_ew(ctx, user_data, threads_x, group_x, 4);
+}
+
+/* T4 biasadd (G47): header at ud 2-3 [cols, pad, a_lo, a_hi,
+ * bias_lo, bias_hi], C at ud 4-5; one group per row:
+ * c[g*cols+j] = a[g*cols+j] + bias[j]. */
+pai_status_t
+pai_host_kernel_t4_biasadd(void *ctx, const uint32_t user_data[16],
+                           uint32_t threads_x, uint32_t group_x) {
+  const uint32_t *h = (const uint32_t *)(uintptr_t)pai_ud64(user_data, 2);
+  const float *a = (const float *)(uintptr_t)pai_ud64(h, 2);
+  const float *bias = (const float *)(uintptr_t)pai_ud64(h, 4);
+  float *c = (float *)(uintptr_t)pai_ud64(user_data, 4);
+  uint32_t cols = h[0];
+
+  (void)ctx;
+  (void)threads_x;
+
+  for (uint32_t g = 0; g < group_x; g++) {
+    for (uint32_t j = 0; j < cols; j++) {
+      c[g * cols + j] = a[g * cols + j] + bias[j];
+    }
+  }
+  return PAI_OK;
+}
+
+/* T4 matmul (G48): header at ud 2-3 [K, N, a_lo, a_hi, b_lo, b_hi],
+ * C at ud 4-5; one group per row:
+ * c[i*N+j] = sum_k a[i*K+k] * b[k*N+j]. */
+pai_status_t
+pai_host_kernel_t4_matmul(void *ctx, const uint32_t user_data[16],
+                          uint32_t threads_x, uint32_t group_x) {
+  const uint32_t *h = (const uint32_t *)(uintptr_t)pai_ud64(user_data, 2);
+  const float *a = (const float *)(uintptr_t)pai_ud64(h, 2);
+  const float *b = (const float *)(uintptr_t)pai_ud64(h, 4);
+  float *c = (float *)(uintptr_t)pai_ud64(user_data, 4);
+  uint32_t kdim = h[0];
+  uint32_t n = h[1];
+
+  (void)ctx;
+  (void)threads_x;
+
+  for (uint32_t i = 0; i < group_x; i++) {
+    const float *row = a + i * kdim;
+    for (uint32_t j = 0; j < n; j++) {
+      float acc = 0.0f;
+      for (uint32_t k = 0; k < kdim; k++) {
+        acc += row[k] * b[k * n + j];
+      }
+      c[i * n + j] = acc;
+    }
+  }
+  return PAI_OK;
+}

@@ -285,6 +285,30 @@
 #define PAI_FSAXPY_THREADS 1u
 #define PAI_FSAXPY_CODE_WORDS 26u
 #define PAI_FSAXPY_K 0.5f
+
+/* G42-G48: T4 serial float op kernels (pai_t4_ops.inc).
+ * Elementwise (G42-G46): packed (a,b) pairs, C[g] per group.
+ * Biasadd (G47): header [cols, pad, a_lo, a_hi, bias_lo, bias_hi],
+ *   C[g*cols+j] = a[g*cols+j] + bias[j], rows = groups.
+ * Matmul (G48): header [K, N, a_lo, a_hi, b_lo, b_hi],
+ *   C[i*N+j] = sum_k a[i*K+k] * b[k*N+j], rows = groups. */
+#define PAI_T4_RSRC2 PAI_ADD1D_RSRC2
+#define PAI_T4_THREADS 1u
+#define PAI_T4_ADD1D_OFF 0u
+#define PAI_T4_ADD1D_WORDS 24u
+#define PAI_T4_SUB1D_OFF 24u
+#define PAI_T4_SUB1D_WORDS 24u
+#define PAI_T4_MUL1D_OFF 48u
+#define PAI_T4_MUL1D_WORDS 24u
+#define PAI_T4_RELU_OFF 72u
+#define PAI_T4_RELU_WORDS 24u
+#define PAI_T4_CLIP_OFF 96u
+#define PAI_T4_CLIP_WORDS 26u
+#define PAI_T4_BIASADD_OFF 122u
+#define PAI_T4_BIASADD_WORDS 49u
+#define PAI_T4_MATMUL_OFF 171u
+#define PAI_T4_MATMUL_WORDS 66u
+#define PAI_T4_CODE_WORDS 237u
 #define PAI_G35_WORDS 15u
 #define PAI_G32_WORDS 16u
 #define PAI_G25_VALUE 0xDEAD0001u
@@ -396,6 +420,7 @@ extern const uint32_t pai_mubufload37_code[];
 extern const uint32_t pai_fdot_serial_code[PAI_FDOT_CODE_WORDS];
 extern const uint32_t pai_fgemv_serial_code[PAI_FGEMV_CODE_WORDS];
 extern const uint32_t pai_fsaxpy_code[PAI_FSAXPY_CODE_WORDS];
+extern const uint32_t pai_t4_ops_code[PAI_T4_CODE_WORDS];
 extern const uint32_t pai_hbatch_code[];
 extern const uint32_t pai_hbatch2_code[];
 extern const uint32_t pai_hbatch3_code[PAI_H10_CODE_WORDS];

@@ -3396,6 +3396,237 @@ m0_exp_v0model(m0_ctx_t *ctx) {
     }
   }
 
+/* G42-G46: T4 serial float elementwise kernels - packed (a,b) pairs,
+   * C at s4:s5, TGID_X = element index, one thread per group. The
+   * e64 direct-SGPR forms validated in G35/G39/G41. */
+  {
+    static const uint32_t k_offs[5] = {PAI_T4_ADD1D_OFF, PAI_T4_SUB1D_OFF,
+                                       PAI_T4_MUL1D_OFF, PAI_T4_RELU_OFF,
+                                       PAI_T4_CLIP_OFF};
+    static const uint32_t k_lens[5] = {PAI_T4_ADD1D_WORDS, PAI_T4_SUB1D_WORDS,
+                                       PAI_T4_MUL1D_WORDS, PAI_T4_RELU_WORDS,
+                                       PAI_T4_CLIP_WORDS};
+    static const char *const k_names[5] = {"G42", "G43", "G44", "G45", "G46"};
+    static pai_host_kernel_fn const k_host[5] = {
+        pai_host_kernel_t4_add1d, pai_host_kernel_t4_sub1d,
+        pai_host_kernel_t4_mul1d, pai_host_kernel_t4_relu,
+        pai_host_kernel_t4_clip};
+    uint32_t n = 64u;
+    uint32_t *ab32 = (uint32_t *)ctx->a.cpu_addr;
+    uint32_t *c42 = (uint32_t *)ctx->c.cpu_addr;
+    uint32_t stream_len = 0;
+    float want[64];
+
+for (uint32_t variant = 0; variant < 5; variant++) {
+      int ok = 1;
+      uint64_t cpu_phys = 0;
+      uint32_t pde[4];
+      if (!host) {
+        pai_gpu_reset(gpu);
+      }
+      memset(c42, 0xCC, 64 * sizeof(uint32_t));
+      memcpy(ctx->code.cpu_addr, &pai_t4_ops_code[k_offs[variant]],
+             k_lens[variant] * sizeof(uint32_t));
+      pai_cpu_phys_of_va((uint64_t)(uintptr_t)ctx->code.cpu_addr, &cpu_phys);
+      pai_gvmspace_dump_pde_page(ctx->code.gpu_addr, pde);
+      PAI_LOG_INFO_(PAI_SUB_GPU,
+                    "[M0-%s] code cpu_phys=0x%llx gpu_pde=%08x %08x %08x %08x "
+                    "first=%08x\n",
+                    k_names[variant], (unsigned long long)cpu_phys, pde[0],
+                    pde[1], pde[2], pde[3], ((uint32_t *)ctx->code.cpu_addr)[0]);
+      if (host) {
+        pai_gpu_host_register_shader(gpu, ctx->code.gpu_addr, k_host[variant],
+                                     NULL);
+      }
+      for (uint32_t g = 0; g < n; g++) {
+        float av = 0.25f * (float)g;
+        float bv = 1.0f - 0.01f * (float)g;
+        memcpy(&ab32[2u * g], &av, 4);
+        memcpy(&ab32[2u * g + 1u], &bv, 4);
+        switch (variant) {
+        case 0:
+          want[g] = av + bv;
+          break;
+        case 1:
+          want[g] = av - bv;
+          break;
+        case 2:
+          want[g] = av * bv;
+          break;
+        case 3:
+          want[g] = av > 0.0f ? av : 0.0f;
+          break;
+        default:
+          want[g] = av < 0.0f ? 0.0f : (av > 1.0f ? 1.0f : av);
+          break;
+        }
+      }
+      pai_gpu_buffer_flush(ctx->gpu, &ctx->a);
+      pai_gpu_buffer_flush(ctx->gpu, &ctx->code);
+      ud[0] = 0;
+      ud[1] = 0;
+      ud[2] = (uint32_t)(ctx->a.gpu_addr & 0xFFFFFFFFu);
+      ud[3] = (uint32_t)(ctx->a.gpu_addr >> 32);
+      ud[4] = (uint32_t)(ctx->c.gpu_addr & 0xFFFFFFFFu);
+      ud[5] = (uint32_t)(ctx->c.gpu_addr >> 32);
+      ud[6] = 0;
+      m0_build_dispatch_stream(ctx, stream, M0_PM4_CAP, PAI_T4_RSRC2,
+                               PAI_T4_THREADS, n, ud, 7, &stream_len);
+      m0_run_gpu(ctx, stream, stream_len, c42, 64, 0xCC, k_names[variant]);
+      for (uint32_t g = 0; g < n && ok; g++) {
+        float gg;
+        memcpy(&gg, &c42[g], 4);
+        if (gg != want[g]) {
+          ok = 0;
+        }
+      }
+      PAI_LOG_INFO_(PAI_SUB_GPU, "[M0-%s] c[0..3] = %.4f %.4f %.4f %.4f\n",
+                    k_names[variant], (double)((float *)c42)[0],
+                    (double)((float *)c42)[1], (double)((float *)c42)[2],
+                    (double)((float *)c42)[3]);
+      m0_exp_report(k_names[variant], ok);
+    }
+  }
+
+  /* G47: T4 biasadd - C[g*cols+j] = a[g*cols+j] + bias[j], one group
+   * per row. Header at s2:s3: [cols, pad, a_lo, a_hi, bias_lo, bias_hi]. */
+  if (!host) {
+    pai_gpu_reset(gpu);
+  }
+  {
+    uint32_t rows = 8u, cols = 8u;
+    uint32_t *h47 = (uint32_t *)ctx->a.cpu_addr;
+    uint32_t *a47 = (uint32_t *)ctx->b.cpu_addr;
+    uint32_t *bias47 = h47 + 16;
+    uint32_t *c47 = (uint32_t *)ctx->c.cpu_addr;
+    uint32_t stream_len = 0;
+    int ok = 1;
+
+    memset(c47, 0xCC, 64 * sizeof(uint32_t));
+    memcpy(ctx->code.cpu_addr, &pai_t4_ops_code[PAI_T4_BIASADD_OFF],
+           PAI_T4_BIASADD_WORDS * sizeof(uint32_t));
+    if (host) {
+      pai_gpu_host_register_shader(gpu, ctx->code.gpu_addr,
+                                   pai_host_kernel_t4_biasadd, NULL);
+    }
+h47[0] = cols;
+    h47[1] = 0;
+    h47[2] = (uint32_t)(ctx->b.gpu_addr & 0xFFFFFFFFu);
+    h47[3] = (uint32_t)(ctx->b.gpu_addr >> 32);
+    h47[4] = (uint32_t)((ctx->a.gpu_addr + 64) & 0xFFFFFFFFu);
+    h47[5] = (uint32_t)((ctx->a.gpu_addr + 64) >> 32);
+    for (uint32_t j = 0; j < cols; j++) {
+      float bj = 0.5f + 0.25f * (float)j;
+      memcpy(&bias47[j], &bj, 4);
+    }
+    for (uint32_t i = 0; i < rows; i++) {
+      for (uint32_t j = 0; j < cols; j++) {
+        float av = 0.1f * (float)i + 0.01f * (float)j;
+        memcpy(&a47[i * cols + j], &av, 4);
+      }
+    }
+    pai_gpu_buffer_flush(ctx->gpu, &ctx->a);
+    pai_gpu_buffer_flush(ctx->gpu, &ctx->b);
+    pai_gpu_buffer_flush(ctx->gpu, &ctx->code);
+    ud[0] = 0;
+    ud[1] = 0;
+    ud[2] = (uint32_t)(ctx->a.gpu_addr & 0xFFFFFFFFu);
+    ud[3] = (uint32_t)(ctx->a.gpu_addr >> 32);
+    ud[4] = (uint32_t)(ctx->c.gpu_addr & 0xFFFFFFFFu);
+    ud[5] = (uint32_t)(ctx->c.gpu_addr >> 32);
+    ud[6] = 0;
+    m0_build_dispatch_stream(ctx, stream, M0_PM4_CAP, PAI_T4_RSRC2,
+                             PAI_T4_THREADS, rows, ud, 7, &stream_len);
+    m0_run_gpu(ctx, stream, stream_len, c47, 64, 0xCC, "G47");
+    for (uint32_t i = 0; i < rows && ok; i++) {
+      for (uint32_t j = 0; j < cols; j++) {
+        float gg;
+        float want = (0.1f * (float)i + 0.01f * (float)j) +
+                     (0.5f + 0.25f * (float)j);
+        memcpy(&gg, &c47[i * cols + j], 4);
+        if (gg != want) {
+          ok = 0;
+        }
+      }
+    }
+    PAI_LOG_INFO_(PAI_SUB_GPU, "[M0-G47] c[0..3] = %.4f %.4f %.4f %.4f\n",
+                  (double)((float *)c47)[0], (double)((float *)c47)[1],
+                  (double)((float *)c47)[2], (double)((float *)c47)[3]);
+    m0_exp_report("G47", ok);
+  }
+
+  /* G48: T4 matmul - C[i*N+j] = sum_k a[i*K+k] * b[k*N+j], one group
+   * per row. Header at s2:s3: [K, N, a_lo, a_hi, b_lo, b_hi]. */
+  if (!host) {
+    pai_gpu_reset(gpu);
+  }
+  {
+    uint32_t rows = 4u, kk = 16u, cols = 4u;
+    uint32_t *h48 = (uint32_t *)ctx->a.cpu_addr;
+    uint32_t *a48 = (uint32_t *)ctx->b.cpu_addr;
+    uint32_t *b48 = a48 + rows * kk;
+    uint32_t *c48 = (uint32_t *)ctx->c.cpu_addr;
+    uint32_t stream_len = 0;
+    int ok = 1;
+
+    memset(c48, 0xCC, 64 * sizeof(uint32_t));
+    memcpy(ctx->code.cpu_addr, &pai_t4_ops_code[PAI_T4_MATMUL_OFF],
+           PAI_T4_MATMUL_WORDS * sizeof(uint32_t));
+    if (host) {
+      pai_gpu_host_register_shader(gpu, ctx->code.gpu_addr,
+                                   pai_host_kernel_t4_matmul, NULL);
+    }
+h48[0] = kk;
+    h48[1] = cols;
+    h48[2] = (uint32_t)(ctx->b.gpu_addr & 0xFFFFFFFFu);
+    h48[3] = (uint32_t)(ctx->b.gpu_addr >> 32);
+    h48[4] = (uint32_t)((ctx->b.gpu_addr + rows * kk * 4) & 0xFFFFFFFFu);
+    h48[5] = (uint32_t)((ctx->b.gpu_addr + rows * kk * 4) >> 32);
+    for (uint32_t i = 0; i < rows; i++) {
+      for (uint32_t t = 0; t < kk; t++) {
+        float av = 0.5f + 0.1f * (float)i + 0.01f * (float)t;
+        memcpy(&a48[i * kk + t], &av, 4);
+      }
+    }
+    for (uint32_t t = 0; t < kk; t++) {
+      for (uint32_t j = 0; j < cols; j++) {
+        float bv = 1.0f - 0.02f * (float)t + 0.1f * (float)j;
+        memcpy(&b48[t * cols + j], &bv, 4);
+      }
+    }
+    pai_gpu_buffer_flush(ctx->gpu, &ctx->a);
+    pai_gpu_buffer_flush(ctx->gpu, &ctx->b);
+    pai_gpu_buffer_flush(ctx->gpu, &ctx->code);
+    ud[0] = 0;
+    ud[1] = 0;
+    ud[2] = (uint32_t)(ctx->a.gpu_addr & 0xFFFFFFFFu);
+    ud[3] = (uint32_t)(ctx->a.gpu_addr >> 32);
+    ud[4] = (uint32_t)(ctx->c.gpu_addr & 0xFFFFFFFFu);
+    ud[5] = (uint32_t)(ctx->c.gpu_addr >> 32);
+    ud[6] = 0;
+    m0_build_dispatch_stream(ctx, stream, M0_PM4_CAP, PAI_T4_RSRC2,
+                             PAI_T4_THREADS, rows, ud, 7, &stream_len);
+    m0_run_gpu(ctx, stream, stream_len, c48, 64, 0xCC, "G48");
+    for (uint32_t i = 0; i < rows && ok; i++) {
+      for (uint32_t j = 0; j < cols; j++) {
+        float want = 0.0f;
+        float gg;
+        for (uint32_t t = 0; t < kk; t++) {
+          want += (0.5f + 0.1f * (float)i + 0.01f * (float)t) *
+                  (1.0f - 0.02f * (float)t + 0.1f * (float)j);
+        }
+        memcpy(&gg, &c48[i * cols + j], 4);
+        if (gg != want) {
+          ok = 0;
+        }
+      }
+    }
+    PAI_LOG_INFO_(PAI_SUB_GPU, "[M0-G48] c[0..3] = %.4f %.4f %.4f %.4f\n",
+                  (double)((float *)c48)[0], (double)((float *)c48)[1],
+                  (double)((float *)c48)[2], (double)((float *)c48)[3]);
+    m0_exp_report("G48", ok);
+  }
+
   /* G17: load from the kernel's own acqrb VA - does ANY load complete,
    * or only our dmem pages hang? */
   if (!host) {

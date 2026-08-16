@@ -143,6 +143,10 @@ const uint32_t pai_fsaxpy_code[PAI_FSAXPY_CODE_WORDS] = {
 #include "gfx1013/pai_fsaxpy.inc"
 };
 
+const uint32_t pai_t4_ops_code[PAI_T4_CODE_WORDS] = {
+#include "gfx1013/pai_t4_ops.inc"
+};
+
 const uint32_t pai_hbatch_code[] = {
 #include "gfx1013/pai_hbatch.inc"
 };

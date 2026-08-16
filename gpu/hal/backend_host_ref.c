@@ -17,7 +17,9 @@
 #include <string.h>
 
 /* Host stubs for the PS5-only gvmspace diagnostics referenced by the
- * payload harness. No page tables exist on the host. */
+ * payload harness. No page tables exist on the host. The real
+ * implementations live in platform/ps5/gvmspace.c (PS5 build). */
+#ifndef PAI_PS5
 void
 pai_gvmspace_set_mode(int mode) {
   (void)mode;
@@ -43,6 +45,7 @@ pai_gvmspace_dump_phys(uint64_t phys, uint32_t words[4]) {
   (void)words;
   return 0;
 }
+#endif /* !PAI_PS5 */
 
 #define PAI_HOST_REG_SH_BASE 0x0200
 #define PAI_HOST_REG_SH_COUNT 0x0100
