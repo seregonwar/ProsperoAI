@@ -1231,7 +1231,56 @@ m0_exp_v0model(m0_ctx_t *ctx) {
       }
     }
   }
-  /* F5: shotgun - value in v0, v4, v5 at the store. */
+  /* F6 (vecscalar): THE MILESTONE — c[i] = (float)i + k vs CPU. */
+  if (!host) {
+    pai_gpu_reset(gpu);
+  }
+  {
+    float k = PAI_VECSCALAR_K;
+    float ref[PAI_EXP_THREADS_X];
+    uint64_t mismatch = 0;
+    memcpy(ctx->code.cpu_addr, pai_vecscalar_code,
+           PAI_VECSCALAR_CODE_WORDS * sizeof(uint32_t));
+    if (host) {
+      pai_gpu_host_register_shader(gpu, ctx->code.gpu_addr,
+                                   pai_host_kernel_fbatch, NULL);
+    }
+    ud[0] = 0;
+    ud[1] = 0;
+    ud[2] = (uint32_t)(ctx->c.gpu_addr & 0xFFFFFFFFu);
+    ud[3] = (uint32_t)(ctx->c.gpu_addr >> 32);
+    memcpy(&ud[4], &k, sizeof(k));
+    ud[5] = 0;
+    m0_build_dispatch_stream(ctx, stream, M0_PM4_CAP, PAI_VECSCALAR_RSRC2,
+                             PAI_EXP_THREADS_X, 1, ud, 6, &stream_len);
+    m0_run_gpu(ctx, stream, stream_len, c32, 128, 0xCC, "F6");
+
+    for (uint32_t i = 0; i < PAI_EXP_THREADS_X; i++) {
+      ref[i] = (float)i + k;
+    }
+    {
+      float *cf = (float *)ctx->c.cpu_addr;
+      pai_status_t cmp =
+          pai_ref_compare_f32(cf, ref, PAI_EXP_THREADS_X, 0.0f, 0.0f,
+                              &mismatch);
+      m0_exp_report("F6", cmp == PAI_OK);
+      if (cmp != PAI_OK) {
+        PAI_LOG_ERROR_(PAI_SUB_GPU, "[M0-F6] mismatch at %llu (gpu=%f "
+                       "want %f)\n",
+                       (unsigned long long)mismatch,
+                       mismatch < PAI_EXP_THREADS_X ? (double)cf[mismatch]
+                                                    : 0.0,
+                       mismatch < PAI_EXP_THREADS_X ? (double)ref[mismatch]
+                                                    : 0.0);
+        PAI_LOG_ERROR_(PAI_SUB_GPU, "[M0-F6] c[0..7] = %08x %08x %08x "
+                       "%08x %08x %08x %08x %08x\n",
+                       c32[0], c32[1], c32[2], c32[3], c32[4], c32[5],
+                       c32[6], c32[7]);
+      }
+    }
+  }
+
+  /* F5: shotgun — value in v0, v4, v5 at the store. */
   if (!host) {
     pai_gpu_reset(gpu);
   }

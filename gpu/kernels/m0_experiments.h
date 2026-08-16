@@ -104,6 +104,11 @@
 #define PAI_SHOTGUN_CODE_WORDS 14u
 #define PAI_SHOTGUN_VALUE 0x11112222u
 
+/* F6 (vecscalar): THE milestone kernel — c[i] = (float)i + k (s4). */
+#define PAI_VECSCALAR_RSRC2 0x0000000Cu
+#define PAI_VECSCALAR_CODE_WORDS 14u
+#define PAI_VECSCALAR_K 1.5f
+
 /* E31: loadstore with vaddr pairs 1 (v[2:3]) only. */
 #define PAI_LOADSTORE_GOLD_RSRC2 0x0000000Cu
 #define PAI_LOADSTORE_GOLD_CODE_WORDS 20u
@@ -149,6 +154,7 @@ extern const uint32_t pai_arith_code[PAI_ARITH_CODE_WORDS];
 extern const uint32_t pai_arith4_code[];
 extern const uint32_t pai_fbatch_code[];
 extern const uint32_t pai_shotgun_code[PAI_SHOTGUN_CODE_WORDS];
+extern const uint32_t pai_vecscalar_code[PAI_VECSCALAR_CODE_WORDS];
 extern const uint32_t pai_v0model_code[];
 extern const uint32_t pai_loadstore_gold_code[PAI_LOADSTORE_GOLD_CODE_WORDS];
 extern const uint32_t pai_loadstore_code[PAI_LOADSTORE_CODE_WORDS];
