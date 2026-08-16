@@ -167,6 +167,10 @@
 /* G22: SMEM load with the G15 store formula (pai_smemload_g15.inc). */
 #define PAI_G22_RSRC2 0x0000000Cu
 #define PAI_G22_CODE_WORDS 16u
+
+/* G23: SMEM->LDS staged vecadd, 32 elements/dispatch (pai_smemvecadd.inc). */
+#define PAI_G23_RSRC2 0x0000004Cu
+#define PAI_G23_CODE_WORDS 172u
 #define PAI_G19_VALUE 0xA5A5A5A5u
 #define PAI_G16_VALUE 0x12345678u
 
@@ -257,6 +261,7 @@ extern const uint32_t pai_smemload_code[PAI_G19_CODE_WORDS];
 extern const uint32_t pai_mubufload_clean_code[PAI_G20_CODE_WORDS];
 extern const uint32_t pai_mubufload_g15_code[PAI_G21_CODE_WORDS];
 extern const uint32_t pai_smemload_g15_code[PAI_G22_CODE_WORDS];
+extern const uint32_t pai_smemvecadd_code[PAI_G23_CODE_WORDS];
 extern const uint32_t pai_hbatch_code[];
 extern const uint32_t pai_hbatch2_code[];
 extern const uint32_t pai_hbatch3_code[PAI_H10_CODE_WORDS];

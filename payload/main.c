@@ -1857,6 +1857,59 @@ m0_exp_v0model(m0_ctx_t *ctx) {
     }
   }
 
+  /* G23: SMEM->LDS staged vecadd - 128 elements in 4 dispatches. */
+  if (!host) {
+    pai_gpu_reset(gpu);
+  }
+  {
+    uint32_t *a23 = (uint32_t *)ctx->a.cpu_addr;
+    uint32_t *b23 = (uint32_t *)ctx->b.cpu_addr;
+    uint32_t *c23 = (uint32_t *)ctx->c.cpu_addr;
+    memset(c23, 0xCC, 128 * sizeof(uint32_t));
+    for (uint32_t i = 0; i < PAI_VECADD_MAX_ELEMS; i++) {
+      a23[i] = 0x11110000u + i;
+      b23[i] = 0x00001111u + i;
+    }
+    memcpy(ctx->code.cpu_addr, pai_smemvecadd_code,
+           PAI_G23_CODE_WORDS * sizeof(uint32_t));
+    if (host) {
+      pai_gpu_host_register_shader(gpu, ctx->code.gpu_addr,
+                                   pai_host_kernel_g8, NULL);
+    }
+    for (uint32_t chunk = 0; chunk < 4; chunk++) {
+      ud[0] = 0;
+      ud[1] = 0;
+      ud[2] = (uint32_t)(ctx->a.gpu_addr & 0xFFFFFFFFu);
+      ud[3] = (uint32_t)(ctx->a.gpu_addr >> 32);
+      ud[4] = (uint32_t)(ctx->b.gpu_addr & 0xFFFFFFFFu);
+      ud[5] = (uint32_t)(ctx->b.gpu_addr >> 32);
+      ud[6] = (uint32_t)(ctx->c.gpu_addr & 0xFFFFFFFFu);
+      ud[7] = (uint32_t)(ctx->c.gpu_addr >> 32);
+      ud[8] = chunk * 32u;
+      ud[9] = 0;
+      m0_build_dispatch_stream(ctx, stream, M0_PM4_CAP, PAI_G23_RSRC2,
+                               PAI_EXP_THREADS_X, 1, ud, 10, &stream_len);
+      m0_run_gpu(ctx, stream, stream_len, c23 + chunk * 32, 32 * 4, 0xCC,
+                 "G23");
+    }
+    PAI_LOG_INFO_(PAI_SUB_GPU,
+                  "[M0-G23] c[0..15] = %08x %08x %08x %08x %08x %08x "
+                  "%08x %08x %08x %08x %08x %08x %08x %08x %08x %08x\n",
+                  c23[0], c23[1], c23[2], c23[3], c23[4], c23[5], c23[6],
+                  c23[7], c23[8], c23[9], c23[10], c23[11], c23[12], c23[13],
+                  c23[14], c23[15]);
+    {
+      int ok = 1;
+      for (uint32_t i = 0; i < 16; i++) {
+        if (c23[i] != (a23[i] + b23[i])) {
+          ok = 0;
+          break;
+        }
+      }
+      m0_exp_report("G23", ok);
+    }
+  }
+
   /* G17: load from the kernel's own acqrb VA - does ANY load complete,
    * or only our dmem pages hang? */
   if (!host) {

@@ -88,6 +88,9 @@ const uint32_t pai_mubufload_g15_code[PAI_G21_CODE_WORDS] = {
 const uint32_t pai_smemload_g15_code[PAI_G22_CODE_WORDS] = {
 #include "gfx1013/pai_smemload_g15.inc"
 };
+const uint32_t pai_smemvecadd_code[PAI_G23_CODE_WORDS] = {
+#include "gfx1013/pai_smemvecadd.inc"
+};
 
 const uint32_t pai_hbatch_code[] = {
 #include "gfx1013/pai_hbatch.inc"
