@@ -946,6 +946,38 @@ m0_exp_bisect(m0_ctx_t *ctx, const char *name, uint32_t off,
   return 0;
 }
 
+/* G-series: mutate the golden (executing) kernel toward my kernel, one
+ * step at a time, until execution breaks. The mutation step that kills
+ * it is the real difference. */
+static int
+m0_exp_golden_mutant(m0_ctx_t *ctx, const char *name, uint32_t store_word0,
+                     uint32_t store_word1) {
+  uint32_t stream[M0_PM4_CAP];
+  uint32_t stream_len;
+  uint32_t *dst32 = (uint32_t *)ctx->dst.cpu_addr;
+  uint32_t pattern[4] = {0xDEADBEEFu, 0x11223344u, 0x55667788u, 0x99AABBCCu};
+  uint32_t code[PAI_MEMSET16_CODE_WORDS];
+
+  memcpy(code, pai_memset16_code, sizeof(code));
+  if (store_word0 != 0) {
+    code[14] = store_word0; /* golden flat_store_dwordx4 word0 */
+  }
+  if (store_word1 != 0) {
+    code[15] = store_word1; /* golden flat_store_dwordx4 word1 */
+  }
+  memcpy(ctx->code.cpu_addr, code, sizeof(code));
+
+  m0_build_memset16_stream(ctx, stream, M0_PM4_CAP, ctx->dst.gpu_addr, 64,
+                           pattern, &stream_len);
+  m0_run_gpu(ctx, stream, stream_len, dst32, 64 * 16, 0x00, name);
+  PAI_LOG_INFO_(PAI_SUB_GPU,
+                "[M0-%s] dst[0..7] = %08x %08x %08x %08x %08x %08x %08x "
+                "%08x\n",
+                name, dst32[0], dst32[1], dst32[2], dst32[3], dst32[4],
+                dst32[5], dst32[6], dst32[7]);
+  return 0;
+}
+
 static int
 m0_stage_e(m0_ctx_t *ctx) {
   pai_gpu_device_t *gpu = ctx->gpu;
@@ -958,6 +990,26 @@ m0_stage_e(m0_ctx_t *ctx) {
 
   /* Safe experiments first: a hanging kernel can wedge the ring, so the
    * controls (unpatched llvm-mc encodings) run last. */
+  if (!host) {
+    pai_gpu_reset(gpu);
+  }
+  m0_exp_golden_mutant(ctx, "G1", 0, 0); /* golden verbatim */
+
+  if (!host) {
+    pai_gpu_reset(gpu);
+  }
+  m0_exp_golden_mutant(ctx, "G2", 0xDC780000u, 0); /* bit15 cleared */
+
+  if (!host) {
+    pai_gpu_reset(gpu);
+  }
+  m0_exp_golden_mutant(ctx, "G3", 0, 0x007D0604u); /* my vaddr/data regs */
+
+  if (!host) {
+    pai_gpu_reset(gpu);
+  }
+  m0_exp_golden_mutant(ctx, "G4", 0xDC780000u, 0x007D0604u); /* my store */
+
   if (!host) {
     pai_gpu_reset(gpu);
   }
