@@ -124,6 +124,7 @@ t4_biasadd:
 t4_matmul:
     s_load_dword s22, s[2:3], 0
     s_load_dword s23, s[2:3], 4
+    s_lshl_b32 s15, s23, 2
     s_add_u32 s18, s2, 8
     s_addc_u32 s19, s3, 0
     s_load_dword s26, s[18:19], 0
@@ -157,7 +158,7 @@ t4_matmul:
     v_add_f32_e64 v1, v1, v2
     s_add_u32 s26, s26, 4
     s_addc_u32 s27, s27, 0
-    s_add_u32 s28, s28, s23
+    s_add_u32 s28, s28, s15
     s_addc_u32 s29, s29, 0
     s_sub_u32 s31, s31, 1
     s_cmp_lg_u32 s31, 0

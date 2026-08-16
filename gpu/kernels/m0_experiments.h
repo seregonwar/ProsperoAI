@@ -307,8 +307,8 @@
 #define PAI_T4_BIASADD_OFF 122u
 #define PAI_T4_BIASADD_WORDS 49u
 #define PAI_T4_MATMUL_OFF 171u
-#define PAI_T4_MATMUL_WORDS 66u
-#define PAI_T4_CODE_WORDS 237u
+#define PAI_T4_MATMUL_WORDS 67u
+#define PAI_T4_CODE_WORDS 238u
 
 /* G49-G54: T4 serial integer op kernels (int_ops.s / pai_int_ops.inc).
  * Same ABI as the float T4 ops: packed (a,b) pairs, C[g] per group.
