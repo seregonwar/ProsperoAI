@@ -80,6 +80,28 @@ Final rules, all reproduced across F-batch experiments:
    The F2 formula check is the milestone evidence; the full
    c[i]=i+k kernel needs the per-thread ALU zeroing resolved.
 
+## Loads (CLOSED DIAGNOSIS - G16/G17, 2026-08-16)
+
+The loads do NOT return 0: every flat_load HANGS the wave AND the
+ring (the fence label never fires, all subsequent submits on that
+queue never execute = the M0-B FAIL chain). Proven by:
+
+- G16 (self-ref): store 0x12345678 to c[tid] - visible on the CPU.
+  load back the same address - the second store to c[tid+32] never
+  ran and the EOP label never fired. c[32..35] = the 0xCC fill.
+- G17 (acqrb-VA load): flat_load from the kernel own acqrb VA
+  (0x200F18000) - ALSO hangs. So the read path is broken for the
+  whole shader VM of our raw SUBMIT context, not just our dmem pages.
+- E31 (A->C copy) = no execution observed in every run = the same
+  hang, never a zero result. The historical loads-return-0 was the
+  pre-filled buffers being misread.
+
+Consistent with: stores are posted (never fault), loads block on the
+VM fault/return that never completes for the raw /dev/gc context on
+9.40. The kernel own GPU mappings (acqrb) hang too => the shader
+READ capability of our context is the missing piece, not the page
+tables.
+
 ## Loads (OPEN — the next hard problem)
 
 All vector/scalar loads return 0 on 9.40 in our dispatch config:
