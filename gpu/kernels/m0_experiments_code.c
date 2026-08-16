@@ -94,6 +94,9 @@ const uint32_t pai_smemvecadd_code[PAI_G23_CODE_WORDS] = {
 const uint32_t pai_smemload16_code[PAI_G24_CODE_WORDS] = {
 #include "gfx1013/pai_smemload16.inc"
 };
+const uint32_t pai_dsprobe_code[PAI_G25_CODE_WORDS] = {
+#include "gfx1013/pai_dsprobe.inc"
+};
 
 const uint32_t pai_hbatch_code[] = {
 #include "gfx1013/pai_hbatch.inc"

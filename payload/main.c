@@ -1944,6 +1944,36 @@ m0_exp_v0model(m0_ctx_t *ctx) {
     }
   }
 
+  /* G25: minimal LDS roundtrip - are the ds ops themselves broken? */
+  if (!host) {
+    pai_gpu_reset(gpu);
+  }
+  {
+    uint32_t *c25 = (uint32_t *)ctx->c.cpu_addr;
+    memcpy(ctx->code.cpu_addr, pai_dsprobe_code,
+           PAI_G25_CODE_WORDS * sizeof(uint32_t));
+    if (host) {
+      pai_gpu_host_register_shader(gpu, ctx->code.gpu_addr,
+                                   pai_host_kernel_g8, NULL);
+    }
+    ud[0] = 0;
+    ud[1] = 0;
+    ud[2] = (uint32_t)(ctx->c.gpu_addr & 0xFFFFFFFFu);
+    ud[3] = (uint32_t)(ctx->c.gpu_addr >> 32);
+    m0_build_dispatch_stream(ctx, stream, M0_PM4_CAP, PAI_G25_RSRC2,
+                             PAI_EXP_THREADS_X, 1, ud, 4, &stream_len);
+    m0_run_gpu(ctx, stream, stream_len, c25, 128, 0xCC, "G25");
+    PAI_LOG_INFO_(PAI_SUB_GPU,
+                  "[M0-G25] c[0..7] = %08x %08x %08x %08x %08x %08x "
+                  "%08x %08x\n",
+                  c25[0], c25[1], c25[2], c25[3], c25[4], c25[5], c25[6],
+                  c25[7]);
+    {
+      int ok = (c25[0] == PAI_G25_VALUE) && (c25[1] == PAI_G25_VALUE);
+      m0_exp_report("G25", ok);
+    }
+  }
+
   /* G17: load from the kernel's own acqrb VA - does ANY load complete,
    * or only our dmem pages hang? */
   if (!host) {

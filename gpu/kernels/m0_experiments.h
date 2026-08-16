@@ -175,6 +175,11 @@
 /* G24: s_load_dwordx16 alone (G23 hang bisection, pai_smemload16.inc). */
 #define PAI_G24_RSRC2 0x0000000Cu
 #define PAI_G24_CODE_WORDS 16u
+
+/* G25: minimal LDS roundtrip probe (pai_dsprobe.inc). */
+#define PAI_G25_RSRC2 0x0000004Cu
+#define PAI_G25_CODE_WORDS 22u
+#define PAI_G25_VALUE 0xDEAD0001u
 #define PAI_G19_VALUE 0xA5A5A5A5u
 #define PAI_G16_VALUE 0x12345678u
 
@@ -267,6 +272,7 @@ extern const uint32_t pai_mubufload_g15_code[PAI_G21_CODE_WORDS];
 extern const uint32_t pai_smemload_g15_code[PAI_G22_CODE_WORDS];
 extern const uint32_t pai_smemvecadd_code[PAI_G23_CODE_WORDS];
 extern const uint32_t pai_smemload16_code[PAI_G24_CODE_WORDS];
+extern const uint32_t pai_dsprobe_code[PAI_G25_CODE_WORDS];
 extern const uint32_t pai_hbatch_code[];
 extern const uint32_t pai_hbatch2_code[];
 extern const uint32_t pai_hbatch3_code[PAI_H10_CODE_WORDS];
