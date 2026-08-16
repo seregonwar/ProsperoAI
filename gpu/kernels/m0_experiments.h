@@ -231,6 +231,16 @@
  * RSRC2 = 6 user SGPRs (s0-s5) + the G25 LDS bit. */
 #define PAI_G27_RSRC2 0x0000004Cu
 #define PAI_G27_CODE_WORDS 26u
+
+/* G28-G30: float ALU v2 - cvt then add (pai_fbatch2.inc). */
+#define PAI_G28_RSRC2 0x0000000Cu
+#define PAI_G28_OFF 0u
+#define PAI_G28_WORDS 13u
+#define PAI_G29_OFF 13u
+#define PAI_G29_WORDS 14u
+#define PAI_G30_OFF 27u
+#define PAI_G30_WORDS 13u
+#define PAI_G2X_K 0.5f
 #define PAI_G25_VALUE 0xDEAD0001u
 #define PAI_G19_VALUE 0xA5A5A5A5u
 #define PAI_G16_VALUE 0x12345678u
@@ -331,6 +341,7 @@ extern const uint32_t pai_dsprobe_code[PAI_G25_CODE_WORDS];
 extern const uint32_t pai_lds_lanes_code[PAI_LDS_LANES_CODE_WORDS];
 extern const uint32_t pai_dsstaged_code[PAI_G26_CODE_WORDS];
 extern const uint32_t pai_dsstaged1_code[PAI_G27_CODE_WORDS];
+extern const uint32_t pai_fbatch2_code[];
 extern const uint32_t pai_hbatch_code[];
 extern const uint32_t pai_hbatch2_code[];
 extern const uint32_t pai_hbatch3_code[PAI_H10_CODE_WORDS];
