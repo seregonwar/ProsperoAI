@@ -198,17 +198,18 @@ Kernels (gfx1013, `t4_ops.s` / `int_ops.s`, host-ref mirrors in
 
 - float G42-G46 elementwise (add/sub/mul/relu/clip) — packed (a,b)
   pairs, one group per element, VALU float e64 direct-SGPR form;
-- G47 `biasadd` — header [cols, a, bias], one group per row;
-- G48 `matmul` — header [K, N, a, b], one group per row;
+- G47 `biasadd` — header [cols, a, bias], one group per cell;
+- G48 `matmul` — header [K, N, a, b], one group per cell;
 - G49-G54 integer — `add2d`/`sub1d`/`mul1d`/`relu`/`clip`/`matmul`
   u32, same serial pattern.
 
 New rules confirmed during T4/T4C:
 
 1. **Loop kernels dispatch one group per cell**: biasadd/matmul with a
-   single thread per group must loop over cells inside the kernel
-   (group_x = rows), not rely on thread-per-element dispatch — the
-   serial model walks the whole output per wave.
+   single thread per group take `group_x = rows*cols` and derive the
+   (row, col) pair from the group id with a subtraction loop (i = g/N,
+   j = g%N via repeated `s_sub`), not thread-per-element dispatch —
+   the serial model walks the whole output per wave.
 2. **Division-style loops need an unconditional branch-back**: the
    per-cell loop counter decrements with `s_sub` + unconditional
    `s_branch` back; a conditional exit on the counter produced
