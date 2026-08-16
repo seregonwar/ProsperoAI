@@ -67,6 +67,9 @@ const uint32_t pai_gbatch3_code[] = {
 const uint32_t pai_g15_code[PAI_G15_CODE_WORDS] = {
 #include "gfx1013/pai_g15.inc"
 };
+const uint32_t pai_selfref_code[PAI_G16_CODE_WORDS] = {
+#include "gfx1013/pai_selfref.inc"
+};
 
 const uint32_t pai_hbatch_code[] = {
 #include "gfx1013/pai_hbatch.inc"

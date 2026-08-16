@@ -137,6 +137,12 @@
 #define PAI_G15_RSRC2 0x0000000Cu
 #define PAI_G15_CODE_WORDS 14u
 
+/* G16: self-reference - store 0x12345678, load back, store the loaded
+ * value at +32 words (pai_selfref.inc). */
+#define PAI_G16_RSRC2 0x00000008u
+#define PAI_G16_CODE_WORDS 25u
+#define PAI_G16_VALUE 0x12345678u
+
 /* H1/H3: MUBUF loads with the OpenAGC raw T# (pai_hbatch.inc). */
 #define PAI_H1_OFF 0u
 #define PAI_H1_WORDS 15u
@@ -217,6 +223,7 @@ extern const uint32_t pai_gbatch_code[];
 extern const uint32_t pai_gbatch2_code[];
 extern const uint32_t pai_gbatch3_code[];
 extern const uint32_t pai_g15_code[PAI_G15_CODE_WORDS];
+extern const uint32_t pai_selfref_code[PAI_G16_CODE_WORDS];
 extern const uint32_t pai_hbatch_code[];
 extern const uint32_t pai_hbatch2_code[];
 extern const uint32_t pai_hbatch3_code[PAI_H10_CODE_WORDS];

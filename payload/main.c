@@ -1641,6 +1641,40 @@ m0_exp_v0model(m0_ctx_t *ctx) {
     }
   }
 
+  /* G16: self-reference - store 0x12345678 to c[tid], load it back,
+   * store the loaded value at c[tid+32]. Proves whether a load of a
+   * just-written address works (VM consistency). */
+  if (!host) {
+    pai_gpu_reset(gpu);
+  }
+  {
+    uint32_t *c16 = (uint32_t *)ctx->c.cpu_addr;
+    memset(c16, 0xCC, 128 * sizeof(uint32_t));
+    memcpy(ctx->code.cpu_addr, pai_selfref_code,
+           PAI_G16_CODE_WORDS * sizeof(uint32_t));
+    if (host) {
+      pai_gpu_host_register_shader(gpu, ctx->code.gpu_addr,
+                                   pai_host_kernel_g8, NULL);
+    }
+    ud[0] = 0;
+    ud[1] = 0;
+    ud[2] = (uint32_t)(ctx->c.gpu_addr & 0xFFFFFFFFu);
+    ud[3] = (uint32_t)(ctx->c.gpu_addr >> 32);
+    m0_build_dispatch_stream(ctx, stream, M0_PM4_CAP, PAI_G16_RSRC2,
+                             PAI_EXP_THREADS_X, 1, ud, 4, &stream_len);
+    m0_run_gpu(ctx, stream, stream_len, c16, 128, 0xCC, "G16");
+    PAI_LOG_INFO_(PAI_SUB_GPU,
+                  "[M0-G16] c[0..3] = %08x %08x %08x %08x  "
+                  "c[32..35] = %08x %08x %08x %08x\n",
+                  c16[0], c16[1], c16[2], c16[3], c16[32], c16[33], c16[34],
+                  c16[35]);
+    {
+      int ok = (c16[32] == PAI_G16_VALUE) && (c16[33] == PAI_G16_VALUE) &&
+               (c16[34] == PAI_G16_VALUE) && (c16[35] == PAI_G16_VALUE);
+      m0_exp_report("G16", ok);
+    }
+  }
+
   /* G13/G14: literal source probes + formal milestone fill. */
   {
     static const uint32_t g_offs[2] = {PAI_G13_OFF, PAI_G14_OFF};
@@ -1680,14 +1714,6 @@ m0_exp_v0model(m0_ctx_t *ctx) {
           }
         }
         m0_exp_report("G14", ok);
-
-        /* Locate the physical landing page of the GPU store (read-only
-         * scan through the direct map). */
-        if (!host) {
-          int n = pai_phys_scan(PAI_G14_VALUE, 0, 0x400000000ULL,
-                                0x200000ULL, 16);
-          PAI_LOG_INFO_(PAI_SUB_GPU, "[M0-G14] phys scan hits: %d\n", n);
-        }
       }
     }
   }
