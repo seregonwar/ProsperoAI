@@ -1,9 +1,10 @@
-# arith4.s — PAI-M0 experiment E45/E46
+# arith4.s — PAI-M0 experiment E47 (THE milestone kernel)
 #
-# Milestone arithmetic under the proven RSRC2 = 0x08 config
-# (4 user SGPRs: k at s0, C at s2:s3).
-# E45 arith4: v0 = v1 + s0 (v1 = tid via copy)
-# E46 arith4b: v0 = v0 + s0 (tid directly)
+# c[i] = (float)i + k for i < 32. RSRC2 0x08 config.
+# Rule learned on 9.40: VOP3 with mixed VGPR+SGPR operands reads the
+# VGPR as 0; VOP1 SGPR reads work. So k moves s0 -> v4 first, then the
+# add uses VGPR+VGPR.
+# User data: s0 = k, s1 = 0, s2:s3 = C.
 #
 # Assemble:
 #   llvm-mc -triple=amdgcn -mcpu=gfx1013 -filetype=obj arith4.s -o arith4.o
@@ -17,7 +18,8 @@ arith4:
     v_mov_b32 v1, v0
     v_mov_b32 v2, s2
     v_mov_b32 v3, s3
-    v_add_f32 v0, v1, s0
+    v_mov_b32 v4, s0
+    v_add_f32 v0, v1, v4
     v_lshlrev_b32 v1, 2, v1
     v_add_co_u32 v2, vcc_lo, v2, v1
     v_add_co_ci_u32 v3, vcc_lo, v3, 0, vcc_lo
@@ -27,7 +29,8 @@ arith4:
 arith4b:
     v_mov_b32 v2, s2
     v_mov_b32 v3, s3
-    v_add_f32 v0, v0, s0
+    v_mov_b32 v4, s0
+    v_add_f32 v0, v0, v4
     v_lshlrev_b32 v1, 2, v0
     v_add_co_u32 v2, vcc_lo, v2, v1
     v_add_co_ci_u32 v3, vcc_lo, v3, 0, vcc_lo
