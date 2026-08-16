@@ -99,6 +99,11 @@
 #define PAI_F4_OFF 41u
 #define PAI_F4_WORDS 16u
 
+/* F5: shotgun — value in v0, v4 and v5 at the same time. */
+#define PAI_SHOTGUN_RSRC2 0x00000008u
+#define PAI_SHOTGUN_CODE_WORDS 14u
+#define PAI_SHOTGUN_VALUE 0x11112222u
+
 /* E31: loadstore with vaddr pairs 1 (v[2:3]) only. */
 #define PAI_LOADSTORE_GOLD_RSRC2 0x0000000Cu
 #define PAI_LOADSTORE_GOLD_CODE_WORDS 20u
@@ -143,6 +148,7 @@ extern const uint32_t pai_mubufload_code[PAI_MUBUFLOAD_CODE_WORDS];
 extern const uint32_t pai_arith_code[PAI_ARITH_CODE_WORDS];
 extern const uint32_t pai_arith4_code[];
 extern const uint32_t pai_fbatch_code[];
+extern const uint32_t pai_shotgun_code[PAI_SHOTGUN_CODE_WORDS];
 extern const uint32_t pai_v0model_code[];
 extern const uint32_t pai_loadstore_gold_code[PAI_LOADSTORE_GOLD_CODE_WORDS];
 extern const uint32_t pai_loadstore_code[PAI_LOADSTORE_CODE_WORDS];

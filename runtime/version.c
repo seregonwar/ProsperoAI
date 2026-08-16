@@ -27,6 +27,8 @@ pai_status_str(pai_status_t status) {
     return "initialization failed";
   case PAI_ERR_INTERNAL:
     return "internal error";
+  case PAI_ERR_PROTOCOL:
+    return "protocol violation";
   default:
     return "unknown";
   }

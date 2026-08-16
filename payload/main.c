@@ -1231,6 +1231,30 @@ m0_exp_v0model(m0_ctx_t *ctx) {
       }
     }
   }
+  /* F5: shotgun - value in v0, v4, v5 at the store. */
+  if (!host) {
+    pai_gpu_reset(gpu);
+  }
+  {
+    memcpy(ctx->code.cpu_addr, pai_shotgun_code,
+           PAI_SHOTGUN_CODE_WORDS * sizeof(uint32_t));
+    if (host) {
+      pai_gpu_host_register_shader(gpu, ctx->code.gpu_addr,
+                                   pai_host_kernel_fbatch, NULL);
+    }
+    ud[0] = PAI_SHOTGUN_VALUE;
+    ud[1] = 0;
+    ud[2] = (uint32_t)(ctx->c.gpu_addr & 0xFFFFFFFFu);
+    ud[3] = (uint32_t)(ctx->c.gpu_addr >> 32);
+    m0_build_dispatch_stream(ctx, stream, M0_PM4_CAP, PAI_SHOTGUN_RSRC2,
+                             PAI_EXP_THREADS_X, 1, ud, 4, &stream_len);
+    m0_run_gpu(ctx, stream, stream_len, c32, 128, 0xCC, "F5");
+    PAI_LOG_INFO_(PAI_SUB_GPU, "[M0-F5] c[0..7] = %08x %08x %08x %08x "
+                  "%08x %08x %08x %08x\n",
+                  c32[0], c32[1], c32[2], c32[3], c32[4], c32[5], c32[6],
+                  c32[7]);
+  }
+
   /* F1-F4: dst-v0-broadcast workaround batch. */
   {
     float k = 1.5f;

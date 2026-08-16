@@ -11,6 +11,7 @@ include(cmake/pai_common.cmake)
 
 add_subdirectory(tensor)
 add_subdirectory(memory)
+add_subdirectory(protocol)
 add_subdirectory(diagnostics)
 add_subdirectory(profiler)
 add_subdirectory(cpu/reference)

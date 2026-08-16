@@ -22,6 +22,7 @@ typedef int32_t pai_status_t;
 #define PAI_ERR_IO           -7
 #define PAI_ERR_INIT         -8
 #define PAI_ERR_INTERNAL     -9
+#define PAI_ERR_PROTOCOL    -10 /* wire protocol violation (whitepaper §24) */
 
 const char *pai_status_str(pai_status_t status);
 

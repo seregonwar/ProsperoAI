@@ -1,0 +1,302 @@
+/*
+ * ProsperoAI — Prospero Protocol
+ *
+ * Message payload codecs (v0 formats). Payload formats are small and
+ * length-prefixed so receivers can validate every field; the frame
+ * header carries the correlation metadata (request/session ids).
+ */
+
+#include <protocol/protocol.h>
+
+#include <string.h>
+
+#define PAI_PROTO_ERROR_MSG_MAX 255u
+
+const char *
+pai_proto_msg_name(uint32_t msg_type) {
+  switch (msg_type) {
+  case PAI_PROTO_MSG_HELLO:        return "hello";
+  case PAI_PROTO_MSG_HELLO_ACK:    return "hello_ack";
+  case PAI_PROTO_MSG_HELLO_NACK:   return "hello_nack";
+  case PAI_PROTO_MSG_PING:         return "ping";
+  case PAI_PROTO_MSG_PONG:         return "pong";
+  case PAI_PROTO_MSG_ERROR:        return "error";
+  case PAI_PROTO_MSG_CLOSE:        return "close";
+  case PAI_PROTO_MSG_SESSION_CREATE:  return "session_create";
+  case PAI_PROTO_MSG_SESSION_CREATED: return "session_created";
+  case PAI_PROTO_MSG_SESSION_CLOSE:   return "session_close";
+  case PAI_PROTO_MSG_SESSION_CLOSED:  return "session_closed";
+  case PAI_PROTO_MSG_GENERATE:     return "generate";
+  case PAI_PROTO_MSG_ACCEPTED:     return "accepted";
+  case PAI_PROTO_MSG_TOKEN:        return "token";
+  case PAI_PROTO_MSG_COMPLETE:     return "complete";
+  case PAI_PROTO_MSG_STREAM_DATA:  return "stream_data";
+  case PAI_PROTO_MSG_STREAM_CLOSE: return "stream_close";
+  default:                         return "unknown";
+  }
+}
+
+static void
+put_le16(uint8_t *p, uint16_t v) {
+  p[0] = (uint8_t)(v & 0xFFu);
+  p[1] = (uint8_t)(v >> 8);
+}
+
+static void
+put_le32(uint8_t *p, uint32_t v) {
+  p[0] = (uint8_t)(v & 0xFFu);
+  p[1] = (uint8_t)((v >> 8) & 0xFFu);
+  p[2] = (uint8_t)((v >> 16) & 0xFFu);
+  p[3] = (uint8_t)(v >> 24);
+}
+
+static uint16_t
+get_le16(const uint8_t *p) {
+  return (uint16_t)(p[0] | ((uint16_t)p[1] << 8));
+}
+
+static uint32_t
+get_le32(const uint8_t *p) {
+  return (uint32_t)p[0] | ((uint32_t)p[1] << 8) | ((uint32_t)p[2] << 16) |
+         ((uint32_t)p[3] << 24);
+}
+
+/* ------------------------------------------------------------------ */
+/* caps / u32 pairs                                                    */
+/* ------------------------------------------------------------------ */
+
+pai_status_t
+pai_proto_msg_encode_caps(uint8_t *out, uint32_t cap, uint32_t caps,
+                          uint32_t *out_len) {
+  if (!out || !out_len || cap < PAI_PROTO_U32_PAIR_SIZE) {
+    return PAI_ERR_INVALID_ARG;
+  }
+  put_le32(out + 0, caps);
+  put_le32(out + 4, 0);
+  *out_len = PAI_PROTO_U32_PAIR_SIZE;
+  return PAI_OK;
+}
+
+pai_status_t
+pai_proto_msg_decode_caps(const uint8_t *payload, uint32_t len,
+                          uint32_t *out_caps) {
+  if (!payload || !out_caps || len < PAI_PROTO_U32_PAIR_SIZE) {
+    return PAI_ERR_PROTOCOL;
+  }
+  *out_caps = get_le32(payload + 0);
+  return PAI_OK;
+}
+
+pai_status_t
+pai_proto_msg_encode_u32(uint8_t *out, uint32_t cap, uint32_t value,
+                         uint32_t *out_len) {
+  if (!out || !out_len || cap < PAI_PROTO_U32_PAIR_SIZE) {
+    return PAI_ERR_INVALID_ARG;
+  }
+  put_le32(out + 0, value);
+  put_le32(out + 4, 0);
+  *out_len = PAI_PROTO_U32_PAIR_SIZE;
+  return PAI_OK;
+}
+
+pai_status_t
+pai_proto_msg_decode_u32(const uint8_t *payload, uint32_t len,
+                         uint32_t *out_value) {
+  if (!payload || !out_value || len < PAI_PROTO_U32_PAIR_SIZE) {
+    return PAI_ERR_PROTOCOL;
+  }
+  *out_value = get_le32(payload + 0);
+  return PAI_OK;
+}
+
+/* ------------------------------------------------------------------ */
+/* error                                                               */
+/* ------------------------------------------------------------------ */
+
+pai_status_t
+pai_proto_msg_encode_error(uint8_t *out, uint32_t cap, pai_status_t status,
+                           const char *msg, uint32_t *out_len) {
+  uint32_t msg_len = 0;
+  uint32_t total;
+
+  if (!out || !out_len) {
+    return PAI_ERR_INVALID_ARG;
+  }
+  if (msg) {
+    msg_len = (uint32_t)strlen(msg);
+    if (msg_len > PAI_PROTO_ERROR_MSG_MAX) {
+      msg_len = PAI_PROTO_ERROR_MSG_MAX;
+    }
+  }
+
+  total = 8u + msg_len;
+  if (cap < total) {
+    return PAI_ERR_INVALID_ARG;
+  }
+
+  put_le32(out + 0, (uint32_t)status);
+  put_le32(out + 4, msg_len);
+  if (msg_len > 0) {
+    memcpy(out + 8, msg, msg_len);
+  }
+  *out_len = total;
+  return PAI_OK;
+}
+
+pai_status_t
+pai_proto_msg_decode_error(const uint8_t *payload, uint32_t len,
+                           pai_status_t *out_status, char *out_msg,
+                           uint32_t msg_cap) {
+  uint32_t msg_len;
+
+  if (!payload || !out_status || len < 8u) {
+    return PAI_ERR_PROTOCOL;
+  }
+  *out_status = (pai_status_t)get_le32(payload + 0);
+  msg_len = get_le32(payload + 4);
+  if (msg_len > len - 8u) {
+    return PAI_ERR_PROTOCOL;
+  }
+  if (out_msg && msg_cap > 0) {
+    uint32_t n = msg_len < msg_cap - 1u ? msg_len : msg_cap - 1u;
+    memcpy(out_msg, payload + 8, n);
+    out_msg[n] = '\0';
+  }
+  return PAI_OK;
+}
+
+/* ------------------------------------------------------------------ */
+/* generate / token (u16 length + bytes)                               */
+/* ------------------------------------------------------------------ */
+
+static pai_status_t
+encode_u16_blob(uint8_t *out, uint32_t cap, const void *blob,
+                uint32_t blob_len, uint32_t *out_len) {
+  uint32_t total;
+
+  if (!out || !out_len) {
+    return PAI_ERR_INVALID_ARG;
+  }
+  if (blob_len > 0xFFFFu) {
+    return PAI_ERR_INVALID_ARG;
+  }
+  if (blob_len > 0 && !blob) {
+    return PAI_ERR_INVALID_ARG;
+  }
+
+  total = 2u + blob_len;
+  if (cap < total) {
+    return PAI_ERR_INVALID_ARG;
+  }
+
+  put_le16(out + 0, (uint16_t)blob_len);
+  if (blob_len > 0) {
+    memcpy(out + 2, blob, blob_len);
+  }
+  *out_len = total;
+  return PAI_OK;
+}
+
+static pai_status_t
+decode_u16_blob(const uint8_t *payload, uint32_t len, const uint8_t **out_blob,
+                uint32_t *out_blob_len) {
+  uint32_t blob_len;
+
+  if (!payload || !out_blob || !out_blob_len || len < 2u) {
+    return PAI_ERR_PROTOCOL;
+  }
+  blob_len = get_le16(payload + 0);
+  if (blob_len > len - 2u) {
+    return PAI_ERR_PROTOCOL;
+  }
+  *out_blob = payload + 2;
+  *out_blob_len = blob_len;
+  return PAI_OK;
+}
+
+pai_status_t
+pai_proto_msg_encode_generate(uint8_t *out, uint32_t cap, const char *prompt,
+                              uint32_t *out_len) {
+  if (!prompt) {
+    return PAI_ERR_INVALID_ARG;
+  }
+  return encode_u16_blob(out, cap, prompt, (uint32_t)strlen(prompt), out_len);
+}
+
+pai_status_t
+pai_proto_msg_decode_generate(const uint8_t *payload, uint32_t len,
+                              const char **out_prompt,
+                              uint32_t *out_prompt_len) {
+  return decode_u16_blob(payload, len, (const uint8_t **)out_prompt,
+                         out_prompt_len);
+}
+
+pai_status_t
+pai_proto_msg_encode_token(uint8_t *out, uint32_t cap, const uint8_t *token,
+                           uint32_t token_len, uint32_t *out_len) {
+  return encode_u16_blob(out, cap, token, token_len, out_len);
+}
+
+pai_status_t
+pai_proto_msg_decode_token(const uint8_t *payload, uint32_t len,
+                           const uint8_t **out_token,
+                           uint32_t *out_token_len) {
+  return decode_u16_blob(payload, len, out_token, out_token_len);
+}
+
+/* ------------------------------------------------------------------ */
+/* stream_data                                                         */
+/* ------------------------------------------------------------------ */
+
+pai_status_t
+pai_proto_msg_encode_stream_data(uint8_t *out, uint32_t cap, uint8_t kind,
+                                 uint32_t seq, const uint8_t *data,
+                                 uint32_t data_len, uint32_t *out_len) {
+  uint32_t total;
+
+  if (!out || !out_len) {
+    return PAI_ERR_INVALID_ARG;
+  }
+  if (data_len > 0 && !data) {
+    return PAI_ERR_INVALID_ARG;
+  }
+
+  total = 8u + data_len;
+  if (cap < total) {
+    return PAI_ERR_INVALID_ARG;
+  }
+
+  out[0] = kind;
+  out[1] = 0;
+  out[2] = 0;
+  out[3] = 0;
+  put_le32(out + 4, seq);
+  put_le32(out + 8, data_len);
+  if (data_len > 0) {
+    memcpy(out + 12, data, data_len);
+  }
+  *out_len = total;
+  return PAI_OK;
+}
+
+pai_status_t
+pai_proto_msg_decode_stream_data(const uint8_t *payload, uint32_t len,
+                                 uint8_t *out_kind, uint32_t *out_seq,
+                                 const uint8_t **out_data,
+                                 uint32_t *out_data_len) {
+  uint32_t data_len;
+
+  if (!payload || !out_kind || !out_seq || !out_data || !out_data_len ||
+      len < 12u) {
+    return PAI_ERR_PROTOCOL;
+  }
+  *out_kind = payload[0];
+  *out_seq = get_le32(payload + 4);
+  data_len = get_le32(payload + 8);
+  if (data_len > len - 12u) {
+    return PAI_ERR_PROTOCOL;
+  }
+  *out_data = payload + 12;
+  *out_data_len = data_len;
+  return PAI_OK;
+}

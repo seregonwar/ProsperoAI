@@ -4,6 +4,7 @@ set(PAI_TESTS
   test_pm4
   test_ref_ops
   test_hal_host
+  test_protocol
 )
 
 foreach(test_name ${PAI_TESTS})
@@ -13,6 +14,7 @@ foreach(test_name ${PAI_TESTS})
     pai_runtime
     pai_tensor
     pai_memory
+    pai_protocol
     pai_pm4
     pai_cpu_reference
     pai_gpu_hal

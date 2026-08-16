@@ -1,0 +1,5 @@
+/* Generated from shotgun.s by llvm-mc 18 (gfx1013). Do not edit. */
+    0x7E020300u, 0x7E040202u, 0x7E060203u, 0x7E080200u,
+    0x7E000200u, 0x340A0282u, 0xD70F6A02u, 0x00020B02u,
+    0xD5286A03u, 0x01A90103u, 0x7E0A0304u, 0xDC700000u,
+    0x007D0402u, 0xBF810000u,
