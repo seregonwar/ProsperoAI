@@ -170,7 +170,7 @@
 
 /* G23: SMEM->LDS staged vecadd, 32 elements/dispatch (pai_smemvecadd.inc). */
 #define PAI_G23_RSRC2 0x0000004Cu
-#define PAI_G23_CODE_WORDS 172u
+#define PAI_G23_CODE_WORDS 171u
 
 /* G24: s_load_dwordx16 alone (G23 hang bisection, pai_smemload16.inc). */
 #define PAI_G24_RSRC2 0x0000000Cu

@@ -115,7 +115,6 @@ smemvecadd:
     v_mov_b32 v1, 0x7c
     v_mov_b32 v2, s41
     ds_write_b32 v1, v2
-    s_barrier
     v_mov_b32 v4, v0
     v_lshlrev_b32 v4, 2, v4
     ds_read_b32 v6, v4
