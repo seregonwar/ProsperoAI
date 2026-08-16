@@ -1910,6 +1910,40 @@ m0_exp_v0model(m0_ctx_t *ctx) {
     }
   }
 
+  /* G24: s_load_dwordx16 alone - the G23 hang bisection. */
+  if (!host) {
+    pai_gpu_reset(gpu);
+  }
+  {
+    uint32_t *c24 = (uint32_t *)ctx->c.cpu_addr;
+    memcpy(ctx->code.cpu_addr, pai_smemload16_code,
+           PAI_G24_CODE_WORDS * sizeof(uint32_t));
+    if (host) {
+      pai_gpu_host_register_shader(gpu, ctx->code.gpu_addr,
+                                   pai_host_kernel_g8, NULL);
+    }
+    ud[0] = 0;
+    ud[1] = 0;
+    ud[2] = (uint32_t)(ctx->c.gpu_addr & 0xFFFFFFFFu);
+    ud[3] = (uint32_t)(ctx->c.gpu_addr >> 32);
+    ud[4] = (uint32_t)(ctx->c.gpu_addr & 0xFFFFFFFFu);
+    ud[5] = (uint32_t)(ctx->c.gpu_addr >> 32);
+    m0_build_dispatch_stream(ctx, stream, M0_PM4_CAP, PAI_G24_RSRC2,
+                             PAI_EXP_THREADS_X, 1, ud, 6, &stream_len);
+    m0_run_gpu(ctx, stream, stream_len, c24, 128, 0xA5, "G24");
+    PAI_LOG_INFO_(PAI_SUB_GPU,
+                  "[M0-G24] c[0..7] = %08x %08x %08x %08x %08x %08x "
+                  "%08x %08x\n",
+                  c24[0], c24[1], c24[2], c24[3], c24[4], c24[5], c24[6],
+                  c24[7]);
+    {
+      uint32_t want0 = PAI_G20_VALUE + 3u;
+      uint32_t want1 = PAI_G20_VALUE + 4u + 3u;
+      int ok = (c24[0] == want0) && (c24[1] == want1);
+      m0_exp_report("G24", ok);
+    }
+  }
+
   /* G17: load from the kernel's own acqrb VA - does ANY load complete,
    * or only our dmem pages hang? */
   if (!host) {
