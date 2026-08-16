@@ -3054,6 +3054,47 @@ m0_exp_v0model(m0_ctx_t *ctx) {
     }
   }
 
+  /* G33: the unlocked float form - SGPR scalar k via a VGPR mov. */
+  if (!host) {
+    pai_gpu_reset(gpu);
+  }
+  {
+    float *cf = (float *)ctx->c.cpu_addr;
+    float k = PAI_G2X_K;
+    memset(cf, 0xCC, 128 * sizeof(uint32_t));
+    memcpy(ctx->code.cpu_addr, pai_fbatch4_code,
+           PAI_G33_CODE_WORDS * sizeof(uint32_t));
+    if (host) {
+      pai_gpu_host_register_shader(gpu, ctx->code.gpu_addr,
+                                   pai_host_kernel_fbatch, NULL);
+    }
+    ud[0] = 0;
+    ud[1] = 0;
+    ud[2] = (uint32_t)(ctx->c.gpu_addr & 0xFFFFFFFFu);
+    ud[3] = (uint32_t)(ctx->c.gpu_addr >> 32);
+    memcpy(&ud[4], &k, sizeof(k));
+    ud[5] = 0;
+    m0_build_dispatch_stream(ctx, stream, M0_PM4_CAP, PAI_G33_RSRC2,
+                             PAI_EXP_THREADS_X, 1, ud, 6, &stream_len);
+    m0_run_gpu(ctx, stream, stream_len, cf, 128, 0xCC, "G33");
+    PAI_LOG_INFO_(PAI_SUB_GPU,
+                  "[M0-G33] c[0..7] = %.1f %.1f %.1f %.1f %.1f %.1f "
+                  "%.1f %.1f\n",
+                  (double)cf[0], (double)cf[1], (double)cf[2], (double)cf[3],
+                  (double)cf[4], (double)cf[5], (double)cf[6], (double)cf[7]);
+    {
+      int ok = 1;
+      for (uint32_t i = 0; i < 8; i++) {
+        float want = (float)(4 * i + 3) + k;
+        if (cf[i] != want) {
+          ok = 0;
+          break;
+        }
+      }
+      m0_exp_report("G33", ok);
+    }
+  }
+
   /* G17: load from the kernel's own acqrb VA - does ANY load complete,
    * or only our dmem pages hang? */
   if (!host) {
