@@ -149,6 +149,11 @@
 /* G18: G16 without any s_waitcnt (pai_selfref_nowait.inc). */
 #define PAI_G18_RSRC2 0x00000008u
 #define PAI_G18_CODE_WORDS 23u
+
+/* G19: SMEM scalar load probe (pai_smemload.inc). */
+#define PAI_G19_RSRC2 0x00000008u
+#define PAI_G19_CODE_WORDS 20u
+#define PAI_G19_VALUE 0xA5A5A5A5u
 #define PAI_G16_VALUE 0x12345678u
 
 /* H1/H3: MUBUF loads with the OpenAGC raw T# (pai_hbatch.inc). */
@@ -234,6 +239,7 @@ extern const uint32_t pai_g15_code[PAI_G15_CODE_WORDS];
 extern const uint32_t pai_selfref_code[PAI_G16_CODE_WORDS];
 extern const uint32_t pai_acqload_code[PAI_G17_CODE_WORDS];
 extern const uint32_t pai_selfref_nowait_code[PAI_G18_CODE_WORDS];
+extern const uint32_t pai_smemload_code[PAI_G19_CODE_WORDS];
 extern const uint32_t pai_hbatch_code[];
 extern const uint32_t pai_hbatch2_code[];
 extern const uint32_t pai_hbatch3_code[PAI_H10_CODE_WORDS];

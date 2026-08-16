@@ -1716,6 +1716,38 @@ m0_exp_v0model(m0_ctx_t *ctx) {
     }
   }
 
+  /* G19: SMEM scalar load of a CPU-written dword - does the scalar
+   * read path complete where the vector path hangs? */
+  if (!host) {
+    pai_gpu_reset(gpu);
+  }
+  {
+    uint32_t *c19 = (uint32_t *)ctx->c.cpu_addr;
+    memset(c19, 0xCC, 128 * sizeof(uint32_t));
+    c19[0] = PAI_G19_VALUE;
+    memcpy(ctx->code.cpu_addr, pai_smemload_code,
+           PAI_G19_CODE_WORDS * sizeof(uint32_t));
+    if (host) {
+      pai_gpu_host_register_shader(gpu, ctx->code.gpu_addr,
+                                   pai_host_kernel_g8, NULL);
+    }
+    ud[0] = 0;
+    ud[1] = 0;
+    ud[2] = (uint32_t)(ctx->c.gpu_addr & 0xFFFFFFFFu);
+    ud[3] = (uint32_t)(ctx->c.gpu_addr >> 32);
+    m0_build_dispatch_stream(ctx, stream, M0_PM4_CAP, PAI_G19_RSRC2,
+                             PAI_EXP_THREADS_X, 1, ud, 4, &stream_len);
+    m0_run_gpu(ctx, stream, stream_len, c19, 128, 0xCC, "G19");
+    PAI_LOG_INFO_(PAI_SUB_GPU,
+                  "[M0-G19] c[0] = %08x  c[64..67] = %08x %08x %08x %08x\n",
+                  c19[0], c19[64], c19[65], c19[66], c19[67]);
+    {
+      int ok = (c19[64] == PAI_G19_VALUE) && (c19[65] == PAI_G19_VALUE) &&
+               (c19[66] == PAI_G19_VALUE) && (c19[67] == PAI_G19_VALUE);
+      m0_exp_report("G19", ok);
+    }
+  }
+
   /* G17: load from the kernel's own acqrb VA - does ANY load complete,
    * or only our dmem pages hang? */
   if (!host) {
