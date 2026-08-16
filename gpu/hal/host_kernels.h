@@ -63,6 +63,18 @@ pai_status_t
 pai_host_kernel_store64_v0(void *ctx, const uint32_t user_data[16],
                            uint32_t threads_x, uint32_t group_x);
 
+/* copy_v0 / load_v1 (E34/E35): A at 2-3, C at 4-5. */
+pai_status_t pai_host_kernel_copy_v0(void *ctx, const uint32_t user_data[16],
+                                     uint32_t threads_x, uint32_t group_x);
+
+/* store_dw (E36): dst at 2-3. */
+pai_status_t pai_host_kernel_store_dw(void *ctx, const uint32_t user_data[16],
+                                      uint32_t threads_x, uint32_t group_x);
+
+/* vecadd_v0 (E37): A at 2-3, B at 4-5, C at 6-7. */
+pai_status_t pai_host_kernel_vecadd_v0(void *ctx, const uint32_t user_data[16],
+                                       uint32_t threads_x, uint32_t group_x);
+
 /* loadstore (E2): user_data 0-1 = A, 2-3 = C; c[i] = a[i]. */
 pai_status_t pai_host_kernel_loadstore(void *ctx, const uint32_t user_data[16],
                                        uint32_t threads_x, uint32_t group_x);

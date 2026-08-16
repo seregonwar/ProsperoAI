@@ -28,6 +28,10 @@ const uint32_t pai_store64_v0_code[PAI_STORE64_V0_CODE_WORDS] = {
 #include "gfx1013/pai_store64_v0.inc"
 };
 
+const uint32_t pai_v0model_code[] = {
+#include "gfx1013/pai_v0model.inc"
+};
+
 const uint32_t pai_loadstore_gold_code[PAI_LOADSTORE_GOLD_CODE_WORDS] = {
 #include "gfx1013/pai_loadstore_gold.inc"
 };

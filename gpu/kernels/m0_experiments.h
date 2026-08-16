@@ -59,6 +59,21 @@
 #define PAI_STORE64_V0_CODE_WORDS 13u
 #define PAI_STORE64_V0_VALUE 0x12345678u
 
+/* E34-E37: flat v0-broadcast model kernels (gfx1013/pai_v0model.inc). */
+#define PAI_COPY_V0_OFF 0u
+#define PAI_COPY_V0_WORDS 20u
+#define PAI_COPY_V0_RSRC2 0x0000000Cu
+#define PAI_LOAD_V1_OFF 20u
+#define PAI_LOAD_V1_WORDS 21u
+#define PAI_LOAD_V1_RSRC2 0x0000000Cu
+#define PAI_STORE_DW_OFF 41u
+#define PAI_STORE_DW_WORDS 13u
+#define PAI_STORE_DW_RSRC2 0x00000008u
+#define PAI_STORE_DW_VALUE 0xABCDDCBAu
+#define PAI_VECADD_V0_OFF 54u
+#define PAI_VECADD_V0_WORDS 29u
+#define PAI_VECADD_V0_RSRC2 0x00000010u
+
 /* E31: loadstore with vaddr pairs 1 (v[2:3]) only. */
 #define PAI_LOADSTORE_GOLD_RSRC2 0x0000000Cu
 #define PAI_LOADSTORE_GOLD_CODE_WORDS 20u
@@ -99,6 +114,7 @@ extern const uint32_t pai_store64_x4_code[PAI_STORE64_X4_CODE_WORDS];
 extern const uint32_t pai_store64_smem_code[PAI_STORE64_SMEM_CODE_WORDS];
 extern const uint32_t pai_store64_gold_code[PAI_STORE64_GOLD_CODE_WORDS];
 extern const uint32_t pai_store64_v0_code[PAI_STORE64_V0_CODE_WORDS];
+extern const uint32_t pai_v0model_code[];
 extern const uint32_t pai_loadstore_gold_code[PAI_LOADSTORE_GOLD_CODE_WORDS];
 extern const uint32_t pai_loadstore_code[PAI_LOADSTORE_CODE_WORDS];
 extern const uint32_t pai_bisect_code[];

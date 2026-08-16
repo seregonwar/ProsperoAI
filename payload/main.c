@@ -978,6 +978,179 @@ m0_exp_golden_mutant(m0_ctx_t *ctx, const char *name, uint32_t store_word0,
   return 0;
 }
 
+/* E34-E37: the flat v0-broadcast model — loads and the real vecadd. */
+static int
+m0_exp_v0model(m0_ctx_t *ctx) {
+  pai_gpu_device_t *gpu = ctx->gpu;
+  uint32_t stream[M0_PM4_CAP];
+  uint32_t stream_len;
+  uint32_t ud[8];
+  uint32_t *a32 = (uint32_t *)ctx->a.cpu_addr;
+  uint32_t *c32 = (uint32_t *)ctx->c.cpu_addr;
+  int host = pai_gpu_device_backend(gpu) == PAI_GPU_BACKEND_HOST_REF;
+
+  /* E34: copy via load->v0 + x4 broadcast store (execution proof). */
+  if (!host) {
+    pai_gpu_reset(gpu);
+  }
+  {
+    memcpy(ctx->code.cpu_addr, &pai_v0model_code[PAI_COPY_V0_OFF],
+           PAI_COPY_V0_WORDS * sizeof(uint32_t));
+    if (host) {
+      pai_gpu_host_register_shader(gpu, ctx->code.gpu_addr,
+                                   pai_host_kernel_copy_v0, NULL);
+    }
+    for (uint32_t i = 0; i < PAI_EXP_THREADS_X; i++) {
+      a32[i] = 0x34343434u + i;
+    }
+    ud[0] = 0;
+    ud[1] = 0;
+    ud[2] = (uint32_t)(ctx->a.gpu_addr & 0xFFFFFFFFu);
+    ud[3] = (uint32_t)(ctx->a.gpu_addr >> 32);
+    ud[4] = (uint32_t)(ctx->c.gpu_addr & 0xFFFFFFFFu);
+    ud[5] = (uint32_t)(ctx->c.gpu_addr >> 32);
+    m0_build_dispatch_stream(ctx, stream, M0_PM4_CAP, PAI_COPY_V0_RSRC2,
+                             PAI_EXP_THREADS_X, 1, ud, 6, &stream_len);
+    m0_run_gpu(ctx, stream, stream_len, c32, 128, 0xCC, "E34");
+    {
+      int ok = 1;
+      for (uint32_t i = 0; i < PAI_EXP_THREADS_X; i++) {
+        if (c32[i] != a32[i]) {
+          ok = 0;
+          break;
+        }
+      }
+      m0_exp_report("E34", ok);
+      if (!ok) {
+        PAI_LOG_ERROR_(PAI_SUB_GPU, "[M0-E34] c[0..7] = %08x %08x %08x "
+                       "%08x %08x %08x %08x %08x\n",
+                       c32[0], c32[1], c32[2], c32[3], c32[4], c32[5], c32[6],
+                       c32[7]);
+      }
+    }
+  }
+
+  /* E35: load into v1 (dst != v0 allowed?). */
+  if (!host) {
+    pai_gpu_reset(gpu);
+  }
+  {
+    memcpy(ctx->code.cpu_addr, &pai_v0model_code[PAI_LOAD_V1_OFF],
+           PAI_LOAD_V1_WORDS * sizeof(uint32_t));
+    if (host) {
+      pai_gpu_host_register_shader(gpu, ctx->code.gpu_addr,
+                                   pai_host_kernel_copy_v0, NULL);
+    }
+    ud[0] = 0;
+    ud[1] = 0;
+    ud[2] = (uint32_t)(ctx->a.gpu_addr & 0xFFFFFFFFu);
+    ud[3] = (uint32_t)(ctx->a.gpu_addr >> 32);
+    ud[4] = (uint32_t)(ctx->c.gpu_addr & 0xFFFFFFFFu);
+    ud[5] = (uint32_t)(ctx->c.gpu_addr >> 32);
+    m0_build_dispatch_stream(ctx, stream, M0_PM4_CAP, PAI_LOAD_V1_RSRC2,
+                             PAI_EXP_THREADS_X, 1, ud, 6, &stream_len);
+    m0_run_gpu(ctx, stream, stream_len, c32, 128, 0xCC, "E35");
+    {
+      int ok = 1;
+      for (uint32_t i = 0; i < PAI_EXP_THREADS_X; i++) {
+        if (c32[i] != a32[i]) {
+          ok = 0;
+          break;
+        }
+      }
+      m0_exp_report("E35", ok);
+    }
+  }
+
+  /* E36: single-dword store broadcasts v0 too? */
+  if (!host) {
+    pai_gpu_reset(gpu);
+  }
+  {
+    memcpy(ctx->code.cpu_addr, &pai_v0model_code[PAI_STORE_DW_OFF],
+           PAI_STORE_DW_WORDS * sizeof(uint32_t));
+    if (host) {
+      pai_gpu_host_register_shader(gpu, ctx->code.gpu_addr,
+                                   pai_host_kernel_store_dw, NULL);
+    }
+    ud[0] = 0;
+    ud[1] = 0;
+    ud[2] = (uint32_t)(ctx->dst.gpu_addr & 0xFFFFFFFFu);
+    ud[3] = (uint32_t)(ctx->dst.gpu_addr >> 32);
+    m0_build_dispatch_stream(ctx, stream, M0_PM4_CAP, PAI_STORE_DW_RSRC2,
+                             PAI_EXP_THREADS_X, 1, ud, 4, &stream_len);
+    m0_run_gpu(ctx, stream, stream_len, (uint32_t *)ctx->dst.cpu_addr, 128,
+               0x00, "E36");
+    {
+      uint32_t *d = (uint32_t *)ctx->dst.cpu_addr;
+      int ok = 1;
+      for (uint32_t i = 0; i < PAI_EXP_THREADS_X; i++) {
+        if (d[i] != PAI_STORE_DW_VALUE) {
+          ok = 0;
+          break;
+        }
+      }
+      m0_exp_report("E36", ok);
+      if (!ok) {
+        PAI_LOG_ERROR_(PAI_SUB_GPU, "[M0-E36] dst[0..7] = %08x %08x %08x "
+                       "%08x %08x %08x %08x %08x\n",
+                       d[0], d[1], d[2], d[3], d[4], d[5], d[6], d[7]);
+      }
+    }
+  }
+
+  /* E37: THE MILESTONE — vecadd through the v0 model. */
+  if (!host) {
+    pai_gpu_reset(gpu);
+  }
+  {
+    memcpy(ctx->code.cpu_addr, &pai_v0model_code[PAI_VECADD_V0_OFF],
+           PAI_VECADD_V0_WORDS * sizeof(uint32_t));
+    if (host) {
+      pai_gpu_host_register_shader(gpu, ctx->code.gpu_addr,
+                                   pai_host_kernel_vecadd_v0, NULL);
+    }
+    for (uint32_t i = 0; i < PAI_EXP_THREADS_X; i++) {
+      a32[i] = 0x3F000000u + i * 0x200000u; /* floats ~0.5, 0.625... */
+    }
+    ud[0] = 0;
+    ud[1] = 0;
+    ud[2] = (uint32_t)(ctx->a.gpu_addr & 0xFFFFFFFFu);
+    ud[3] = (uint32_t)(ctx->a.gpu_addr >> 32);
+    ud[4] = (uint32_t)(ctx->b.gpu_addr & 0xFFFFFFFFu);
+    ud[5] = (uint32_t)(ctx->b.gpu_addr >> 32);
+    ud[6] = (uint32_t)(ctx->c.gpu_addr & 0xFFFFFFFFu);
+    ud[7] = (uint32_t)(ctx->c.gpu_addr >> 32);
+    {
+      float *bf = (float *)ctx->b.cpu_addr;
+      for (uint32_t i = 0; i < PAI_EXP_THREADS_X; i++) {
+        bf[i] = 0.25f * (float)(i % 5);
+      }
+    }
+    m0_build_dispatch_stream(ctx, stream, M0_PM4_CAP, PAI_VECADD_V0_RSRC2,
+                             PAI_EXP_THREADS_X, 1, ud, 8, &stream_len);
+    m0_run_gpu(ctx, stream, stream_len, c32, 128, 0xCC, "E37");
+    {
+      float *af = (float *)ctx->a.cpu_addr;
+      float *bf = (float *)ctx->b.cpu_addr;
+      float *cf = (float *)ctx->c.cpu_addr;
+      int ok = 1;
+      for (uint32_t i = 0; i < PAI_EXP_THREADS_X; i++) {
+        float want = af[i] + bf[i];
+        if (cf[i] != want) {
+          ok = 0;
+          PAI_LOG_ERROR_(PAI_SUB_GPU, "[M0-E37] c[%u] = %f want %f\n", i,
+                         (double)cf[i], (double)want);
+          break;
+        }
+      }
+      m0_exp_report("E37", ok);
+    }
+  }
+
+  return 0;
+}
+
 static int
 m0_stage_e(m0_ctx_t *ctx) {
   pai_gpu_device_t *gpu = ctx->gpu;
@@ -987,6 +1160,9 @@ m0_stage_e(m0_ctx_t *ctx) {
   PAI_LOG_INFO_(PAI_SUB_GPU,
                 "[M0-E] order: safe (patched/proven) first, controls last; "
                 "gc reset between experiments\n");
+
+  /* E34-E37: the flat v0-broadcast model (loads + vecadd milestone). */
+  m0_exp_v0model(ctx);
 
   /* E32: v0-broadcast store hypothesis. */
   if (!host) {
