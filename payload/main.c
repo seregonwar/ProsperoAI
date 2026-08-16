@@ -3095,6 +3095,58 @@ m0_exp_v0model(m0_ctx_t *ctx) {
     }
   }
 
+  /* G34/G35: SGPR scalar into the float add. */
+  if (!host) {
+    pai_gpu_reset(gpu);
+  }
+  {
+    static const uint32_t g_offs[2] = {PAI_G34_OFF, PAI_G35_OFF};
+    static const uint32_t g_lens[2] = {PAI_G34_WORDS, PAI_G35_WORDS};
+    static const char *const g_names[2] = {"G34", "G35"};
+    float *cf = (float *)ctx->c.cpu_addr;
+    float k = PAI_G2X_K;
+
+    for (uint32_t variant = 0; variant < 2; variant++) {
+      const char *name = g_names[variant];
+      if (!host) {
+        pai_gpu_reset(gpu);
+      }
+      memset(cf, 0xCC, 128 * sizeof(uint32_t));
+      memcpy(ctx->code.cpu_addr, &pai_fbatch5_code[g_offs[variant]],
+             g_lens[variant] * sizeof(uint32_t));
+      if (host) {
+        pai_gpu_host_register_shader(gpu, ctx->code.gpu_addr,
+                                     pai_host_kernel_fbatch, NULL);
+      }
+      ud[0] = 0;
+      ud[1] = 0;
+      ud[2] = (uint32_t)(ctx->c.gpu_addr & 0xFFFFFFFFu);
+      ud[3] = (uint32_t)(ctx->c.gpu_addr >> 32);
+      memcpy(&ud[4], &k, sizeof(k));
+      ud[5] = 0;
+      m0_build_dispatch_stream(ctx, stream, M0_PM4_CAP, PAI_G33_RSRC2,
+                               PAI_EXP_THREADS_X, 1, ud, 6, &stream_len);
+      m0_run_gpu(ctx, stream, stream_len, cf, 128, 0xCC, name);
+      PAI_LOG_INFO_(PAI_SUB_GPU,
+                    "[M0-%s] c[0..7] = %.1f %.1f %.1f %.1f %.1f %.1f "
+                    "%.1f %.1f\n",
+                    name, (double)cf[0], (double)cf[1], (double)cf[2],
+                    (double)cf[3], (double)cf[4], (double)cf[5], (double)cf[6],
+                    (double)cf[7]);
+      {
+        int ok = 1;
+        for (uint32_t i = 0; i < 8; i++) {
+          float want = (float)(4 * i + 3) + k;
+          if (cf[i] != want) {
+            ok = 0;
+            break;
+          }
+        }
+        m0_exp_report(name, ok);
+      }
+    }
+  }
+
   /* G17: load from the kernel's own acqrb VA - does ANY load complete,
    * or only our dmem pages hang? */
   if (!host) {

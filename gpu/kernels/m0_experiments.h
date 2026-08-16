@@ -250,6 +250,12 @@
 /* G33: the unlocked float form - SGPR scalar via a VGPR (pai_fbatch4.inc). */
 #define PAI_G33_RSRC2 0x0000000Cu
 #define PAI_G33_CODE_WORDS 16u
+
+/* G34/G35: SGPR scalar into the float add (pai_fbatch5.inc). */
+#define PAI_G34_OFF 0u
+#define PAI_G34_WORDS 17u
+#define PAI_G35_OFF 17u
+#define PAI_G35_WORDS 15u
 #define PAI_G32_WORDS 16u
 #define PAI_G25_VALUE 0xDEAD0001u
 #define PAI_G19_VALUE 0xA5A5A5A5u
@@ -354,6 +360,7 @@ extern const uint32_t pai_dsstaged1_code[PAI_G27_CODE_WORDS];
 extern const uint32_t pai_fbatch2_code[];
 extern const uint32_t pai_fbatch3_code[];
 extern const uint32_t pai_fbatch4_code[PAI_G33_CODE_WORDS];
+extern const uint32_t pai_fbatch5_code[];
 extern const uint32_t pai_hbatch_code[];
 extern const uint32_t pai_hbatch2_code[];
 extern const uint32_t pai_hbatch3_code[PAI_H10_CODE_WORDS];
