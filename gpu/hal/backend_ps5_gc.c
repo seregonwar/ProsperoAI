@@ -447,7 +447,7 @@ pai_gc_shutdown(pai_gpu_device_t *device) {
 
 static uint64_t
 pai_gc_aux_va(pai_gpu_device_t *device) {
-  pai_gc_state_t *st = (pai_gc_state_t *)device->state;
+  pai_ps5_gc_state_t *st = (pai_ps5_gc_state_t *)device->state;
   return st ? (uint64_t)(uintptr_t)st->acqrb : 0ULL;
 }
 
