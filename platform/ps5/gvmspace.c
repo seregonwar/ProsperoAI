@@ -74,7 +74,9 @@ pai_gvm_write_phys(pai_gvmspace_ctx_t *g, uint64_t phys, uint64_t value) {
   if (!g->dmap_base) {
     return -1;
   }
-  return kernel_copyin(&value, g->dmap_base + (intptr_t)phys, 8) != 0;
+  /* kernel_setlong: the kpipe's dedicated kernel write primitive (the
+   * generic kernel_copyin faults on the direct-map region). */
+  return kernel_setlong(g->dmap_base + (intptr_t)phys, value) != 0;
 }
 
 /* Is `value` a plausible GPU page-table entry? */
@@ -419,7 +421,7 @@ pai_gvmspace_repair(uint64_t gpu_va, uint64_t phys) {
                 (unsigned long long)e2, (unsigned long long)new_pde,
                 (unsigned long long)g_ref_pde);
 
-  if (kernel_copyin(&new_pde, pde_addr, 8) != 0) {
+  if (kernel_setlong(pde_addr, new_pde) != 0) {
     PAI_LOG_ERROR_(PAI_SUB_GPU, "gvm repair: PDE write failed\n");
     return PAI_ERR_CAPABILITY;
   }
