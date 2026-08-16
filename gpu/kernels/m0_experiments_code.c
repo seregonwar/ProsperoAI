@@ -80,6 +80,10 @@ const uint32_t pai_hbatch3_code[PAI_H10_CODE_WORDS] = {
 #include "gfx1013/pai_hbatch3.inc"
 };
 
+const uint32_t pai_hbatch4_code[PAI_H11_CODE_WORDS] = {
+#include "gfx1013/pai_hbatch4.inc"
+};
+
 const uint32_t pai_v0model_code[] = {
 #include "gfx1013/pai_v0model.inc"
 };

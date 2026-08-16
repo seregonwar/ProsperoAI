@@ -1280,6 +1280,49 @@ m0_exp_v0model(m0_ctx_t *ctx) {
     }
   }
 
+  /* H11: SMEM load with proven sbase s[2:3] — in-place on A. */
+  if (!host) {
+    pai_gpu_reset(gpu);
+  }
+  {
+    uint32_t *a32 = (uint32_t *)ctx->a.cpu_addr;
+    uint32_t a0;
+    a32[0] = 0x55550000u;
+    for (uint32_t i = 1; i < PAI_EXP_THREADS_X; i++) {
+      a32[i] = 0x55550000u + i;
+    }
+    a0 = a32[0];
+    memcpy(ctx->code.cpu_addr, pai_hbatch4_code,
+           PAI_H11_CODE_WORDS * sizeof(uint32_t));
+    if (host) {
+      pai_gpu_host_register_shader(gpu, ctx->code.gpu_addr,
+                                   pai_host_kernel_g7, NULL);
+    }
+    ud[0] = 0;
+    ud[1] = 0;
+    ud[2] = (uint32_t)(ctx->a.gpu_addr & 0xFFFFFFFFu);
+    ud[3] = (uint32_t)(ctx->a.gpu_addr >> 32);
+    m0_build_dispatch_stream(ctx, stream, M0_PM4_CAP, PAI_H11_RSRC2,
+                             PAI_EXP_THREADS_X, 1, ud, 4, &stream_len);
+    m0_run_gpu(ctx, stream, stream_len, a32, 128, 0xEE, "H11");
+    PAI_LOG_INFO_(PAI_SUB_GPU, "[M0-H11] A[0..15] = %08x %08x %08x %08x "
+                  "%08x %08x %08x %08x %08x %08x %08x %08x %08x %08x "
+                  "%08x %08x\n",
+                  a32[0], a32[1], a32[2], a32[3], a32[4], a32[5], a32[6],
+                  a32[7], a32[8], a32[9], a32[10], a32[11], a32[12], a32[13],
+                  a32[14], a32[15]);
+    {
+      int ok = 1;
+      for (uint32_t i = 0; i < 8; i++) {
+        if (a32[i] != a0 + (i << 2) + 3u) {
+          ok = 0;
+          break;
+        }
+      }
+      m0_exp_report("H11", ok);
+    }
+  }
+
   /* H10: SMEM scalar load feeding the store — c[i] = A[0] + 4i + 3. */
   if (!host) {
     pai_gpu_reset(gpu);
