@@ -188,6 +188,41 @@ DingDong submission path on the created queue.
   Apache-2.0) is useful for register/layout rules, not for an LDS
   RSRC2 dump.
 
+## T4 serial kernel family (G42-G54, 2026-08-16)
+
+Hardware run 004416 (console 9021): **G42-G48 float + G49-G54 integer
+= 13/13 PASS**, CPU-reference-checked through the deploy loop.
+
+Kernels (gfx1013, `t4_ops.s` / `int_ops.s`, host-ref mirrors in
+`gpu/hal/host_kernels.c`):
+
+- float G42-G46 elementwise (add/sub/mul/relu/clip) — packed (a,b)
+  pairs, one group per element, VALU float e64 direct-SGPR form;
+- G47 `biasadd` — header [cols, a, bias], one group per row;
+- G48 `matmul` — header [K, N, a, b], one group per row;
+- G49-G54 integer — `add2d`/`sub1d`/`mul1d`/`relu`/`clip`/`matmul`
+  u32, same serial pattern.
+
+New rules confirmed during T4/T4C:
+
+1. **Loop kernels dispatch one group per cell**: biasadd/matmul with a
+   single thread per group must loop over cells inside the kernel
+   (group_x = rows), not rely on thread-per-element dispatch — the
+   serial model walks the whole output per wave.
+2. **Division-style loops need an unconditional branch-back**: the
+   per-cell loop counter decrements with `s_sub` + unconditional
+   `s_branch` back; a conditional exit on the counter produced
+   incorrect iteration counts on silicon.
+3. **Float accumulation compare is tolerance-based**: G48 matmul
+   accumulates 16 terms with `v_add_f32` (serial order) against a
+   host serial sum — compared with `pai_ref_compare_f32` at 1e-6
+   (relative+absolute), not bit-exact.
+4. **G48 b k-stride is N*4 bytes** (row-major [k][N]); an earlier
+   version advanced `b` by N bytes (fix `a06439b`, `s15 = s23 << 2`).
+5. Float elementwise/biasadd/matmul were validated on HW only after
+   the float ALU e64 rules from G35/G39/G40/G41 (see MILESTONE
+   below): direct SGPR operands, VGPR+VGPR accumulator, dst != v0.
+
 ## Toolchain
 
 - llvm-mc 18 (Windows, ps5-payload-sdk/tools/llvm18/bin) assembles
@@ -211,8 +246,10 @@ DingDong submission path on the created queue.
 
 - Working: bootstrap, jailbreak, /data logging, lifecycle listener,
   notify, DMA, fence, dispatch, SMEM loads, integer ALU, stores,
-  add1d / SAXPY / serial dot / serial GEMV on the G22 path.
-- Open (do not block M1 closeout): MUBUF T# / flat loads, float ALU
-  quirk, lane 8+ exec mask, LDS (M1C) pending AGC CS blob @ 0x213.
+  add1d / SAXPY / serial dot / serial GEMV on the G22 path; float ALU
+  (G35/G39/G40/G41); T4 serial kernel family G42-G54 float + integer
+  (13/13, run 004416).
+- Open (do not block M1 closeout): MUBUF T# / flat loads, lane 8+
+  exec mask, LDS (M1C) pending AGC CS blob @ 0x213.
 
 

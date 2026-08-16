@@ -265,12 +265,13 @@ Kernel inventory (already validated on hardware in PAI-M1):
 | `dot_serial_u32` | reduction via serial accumulation | VALIDATED (correctness) |
 | `gemv_serial_u32` | per-row serial dot | VALIDATED (256×1024) |
 
-Phase 1 adds, on the same serial pattern:
+Phase 1 adds, on the same serial pattern (all **HW-VALIDATED**, run
+004416, console 9021):
 
-- `mul1d`, `sub1d`, `relu_u32` (max with 0), `clip_u32`;
-- `add2d` (elementwise sum of two vectors);
-- `matmul_u32` = generalized `gemv_serial_u32` (blocked: rows ×
-  k-chunks, i32 accumulator);
+- float G42-G48: `add1d`, `sub1d`, `mul1d`, `relu`, `clip`, `biasadd`,
+  `matmul` (VALU float, e64 direct-SGPR form);
+- integer G49-G54: `add2d_u32`, `sub1d_u32`, `mul1d_u32`, `relu_u32`,
+  `clip_u32`, `matmul_u32`.
 - `softmax_u32` (serial max → exp-free integer approximation for the
   exit test, or CPU-side softmax — see §10).
 
@@ -370,6 +371,12 @@ Pass criteria:
 
 This test becomes the regression gate for every later kernel change.
 
+Current state (2026-08-16): the harness (`toolchain/mlp_test.c`)
+passes the CPU-ref leg — executor-vtable `y` matches a double
+oracle, the eager registry `matmul_f32` matches `W1·x`, and the T6
+profile is plausible. The GPU/host-ref leg is wired in the same file
+and runs on the console deploy loop once T7 A-leg lands.
+
 ---
 
 ## 11. Blocked Work and Unlock Paths
@@ -395,25 +402,40 @@ kernel vtable.
 1. **T1 — dtype/quant metadata** (tensor/dtype.c): quant descriptor
    struct, accumulator dtype field, tests. **DONE (2026-08-16)** —
    `sdk/include/pai/quant.h`, `pai_dtype_accumulator`, tests green
-   (host + sanitized).
+   (commit `c574ef6`).
 2. **T2 — planner v1** (memory/planner.c): lifetime first-fit, GPU
    arena alignment, weight pinning, budget check, tests.
+   **DONE** — `cee180b`.
 3. **T3 — CPU reference ops** (cpu/reference): the §8.3 op set with
    deterministic implementations + tolerance helpers.
-4. **T4 — serial GPU kernels** (gpu/kernels/gfx1013): mul1d, sub1d,
-   relu_u32, clip_u32, add2d, matmul_u32; each with a host-ref
-   mirror; hardware-validated through the deploy loop.
-5. **T5 — op registry + static plan executor** (graph/, scheduler/):
-   the topological plan, the kernel vtable, the eager fallback.
+   **DONE** — `74a5747`.
+4. **T4 — serial GPU kernels** (gpu/kernels/gfx1013): float
+   G42-G48 (add/sub/mul/relu/clip/biasadd/matmul) + integer
+   G49-G54 (add2d/sub1d/mul1d/relu/clip/matmul_u32), each with a
+   host-ref mirror; hardware-validated through the deploy loop.
+   **DONE** — `00ca501` (G42-G48), `6c7f151` (G49-G54),
+   `af22896` (T4C HW validation run 004416: 13/13 PASS, console
+   9021).
+5. **T5 — op registry + static plan executor** (graph/, scheduler/,
+   runtime/): the topological plan, the kernel vtable, the eager
+   fallback. **DONE** — `e1ca2b3` (`pai_ops` registry, 30 ops;
+   `pai_kernel_select` / `pai_sched_execute_vtable`;
+   `pai_sched_execute_hooked` per-step hook).
 6. **T6 — profiler** (profiler/): the three timers, the plan profile
-   log, the replay hash.
-7. **T7 — synthetic MLP harness** (payload or a new binary): the exit
-   test of §10, run on hardware + host + CI.
+   log, the replay hash. **DONE** — `e1ca2b3` (`profiler/profile.*`,
+   FNV-1a replay hash, `pai_profile_run_plan`).
+7. **T7 — synthetic MLP harness** (`toolchain/mlp_test.c`, exit test
+   of §10): CPU-ref leg DONE (`e1ca2b3`, registered in ctest); GPU
+   serial + host-ref differential leg in progress (console 9021).
 8. **T8 — docs**: update the whitepaper §40 (Phase 1 checkboxes), the
    empirics notes with every new kernel rule discovered during T4.
+   **DONE (2026-08-16)** — this document + `notes/re/940-gpu-empirics.md`
+   + whitepaper §40.
 
 Suggested order: T1, T2, T3 (host-green, no hardware) → T4 (hardware
-loop) → T5, T6 → T7 (exit test) → T8.
+loop) → T5, T6 → T7 (exit test) → T8. All executed in that order;
+T1-T6 closed, T7 in progress (B leg done, A leg on the console), T8
+closed.
 
 ---
 
@@ -422,15 +444,21 @@ loop) → T5, T6 → T7 (exit test) → T8.
 Phase 1 is complete when:
 
 - [ ] the synthetic MLP runs end-to-end on the PS5 GPU backend and
-      agrees with the CPU reference (tolerance per §10);
+      agrees with the CPU reference (tolerance per §10) — **pending
+      T7 A-leg (console 9021)**; kernels G42-G54 individually
+      validated 13/13 (HW run 004416);
 - [ ] the same plan runs on the host-ref interpreter with identical
-      results (CI green);
-- [ ] the planner produces a valid allocation for the MLP without
-      runtime allocation in the hot path;
-- [ ] the profile log is emitted and machine-readable;
-- [ ] every new GPU kernel rule discovered during T4 is recorded in
-      `notes/re/940-gpu-empirics.md`;
-- [ ] the whitepaper roadmap §40 Phase 1 checklist is updated.
+      results (CI green) — **pending T7 A-leg**; per-kernel host-ref
+      mirrors green (`test_hal_host`);
+- [x] the planner produces a valid allocation for the MLP without
+      runtime allocation in the hot path — `mlp_test` runs the full
+      plan through `pai_graph_memory_plan`;
+- [x] the profile log is emitted and machine-readable — T6
+      (`pai_profile_run_plan`), printed by `mlp_test`;
+- [x] every new GPU kernel rule discovered during T4 is recorded in
+      `notes/re/940-gpu-empirics.md` — §"T4 serial kernel family";
+- [x] the whitepaper roadmap §40 Phase 1 checklist is updated —
+      §40 "Phase 1 — Tensor Runtime" status.
 
 Non-goals (explicitly deferred): quantization kernels, KV cache,
 autotuning, kernel IR codegen, the MUBUF/float/LDS unlocks.

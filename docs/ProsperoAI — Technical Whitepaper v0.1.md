@@ -1726,10 +1726,26 @@ gfx1013 LDS sizing rules but does not ship such a blob. G25 probes
 with OpenAGC-minimum 1 KiB (`RSRC2=0x1000C`) still return zero from
 LDS on 9.40.
 
+**PAI-M2 / Phase 1 tensor runtime — IN PROGRESS (2026-08-16).**
+The float ALU is unlocked (`v_cvt_f32_i32`, `v_add_f32_e64`,
+`v_mul_f32_e64`, direct-SGPR e64 form, validated G35/G39/G40/G41)
+and the full T4 serial kernel family is hardware-validated 13/13 on
+run 004416 (console 9021):
+
+| Family | Kernels | Status |
+|--------|---------|--------|
+| T4 float (G42-G48) | add1d/sub1d/mul1d/relu/clip/biasadd/matmul | VALIDATED |
+| T4 integer (G49-G54) | add2d/sub1d/mul1d/relu/clip/matmul u32 | VALIDATED |
+
+Work breakdown T1-T6 closed (dtype/quant metadata, planner v1, CPU
+reference ops, serial GPU kernels, op registry + kernel vtable +
+static plan executor, profiler); T7 (MLP 8→16→8 exit test) harness
++ CPU-ref leg green on host, GPU/host-ref differential leg in flight;
+T8 (docs) closed.
+
 Open gates before Phase 1 / PAI-M2 work should prioritize:
 
 - MUBUF / flat vector loads (T# still unresolved; flat loads hang);
-- float ALU (per-thread `v_add_f32` with `dst != v0` returns 0);
 - LDS unlock via the AGC blob above;
 - wave-parallel dispatch beyond the serial `NUM_THREAD_X=1` group model.
 
