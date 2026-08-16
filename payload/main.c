@@ -1280,6 +1280,41 @@ m0_exp_v0model(m0_ctx_t *ctx) {
     }
   }
 
+  /* G9-G12: store data source probes (raw dumps, no formula check). */
+  {
+    static const uint32_t g_offs[4] = {PAI_G9_OFF, PAI_G10_OFF, PAI_G11_OFF,
+                                       PAI_G12_OFF};
+    static const uint32_t g_lens[4] = {PAI_G9_WORDS, PAI_G10_WORDS,
+                                       PAI_G11_WORDS, PAI_G12_WORDS};
+    static const char *const g_names[4] = {"G9", "G10", "G11", "G12"};
+
+    for (uint32_t variant = 0; variant < 4; variant++) {
+      const char *name = g_names[variant];
+      if (!host) {
+        pai_gpu_reset(gpu);
+      }
+      memcpy(ctx->code.cpu_addr, &pai_gbatch2_code[g_offs[variant]],
+             g_lens[variant] * sizeof(uint32_t));
+      if (host) {
+        pai_gpu_host_register_shader(gpu, ctx->code.gpu_addr,
+                                     pai_host_kernel_g7, NULL);
+      }
+      ud[0] = 0;
+      ud[1] = 0;
+      ud[2] = (uint32_t)(ctx->c.gpu_addr & 0xFFFFFFFFu);
+      ud[3] = (uint32_t)(ctx->c.gpu_addr >> 32);
+      m0_build_dispatch_stream(ctx, stream, M0_PM4_CAP, PAI_ARITH4_RSRC2,
+                               PAI_EXP_THREADS_X, 1, ud, 4, &stream_len);
+      m0_run_gpu(ctx, stream, stream_len, c32, 128, 0xCC, name);
+      PAI_LOG_INFO_(PAI_SUB_GPU, "[M0-%s] c[0..15] = %08x %08x %08x %08x "
+                    "%08x %08x %08x %08x %08x %08x %08x %08x %08x %08x "
+                    "%08x %08x\n",
+                    name, c32[0], c32[1], c32[2], c32[3], c32[4], c32[5],
+                    c32[6], c32[7], c32[8], c32[9], c32[10], c32[11], c32[12],
+                    c32[13], c32[14], c32[15]);
+    }
+  }
+
   /* G7/G8: x4 per-thread broadcast + integer arithmetic. */
   {
     static const uint32_t g_offs[2] = {PAI_G7_OFF, PAI_G8_OFF};
