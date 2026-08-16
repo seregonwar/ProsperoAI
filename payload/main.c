@@ -1242,6 +1242,126 @@ m0_exp_loads_arith(m0_ctx_t *ctx) {
   return 0;
 }
 
+/* E40: register scan — which VGPR holds the per-thread id?
+ * Template kernel: value = addr index = vK; c[i] == i iff vK == tid. */
+static int
+m0_exp_regscan(m0_ctx_t *ctx) {
+  pai_gpu_device_t *gpu = ctx->gpu;
+  uint32_t stream[M0_PM4_CAP];
+  uint32_t stream_len;
+  uint32_t ud[4];
+  uint32_t *c32 = (uint32_t *)ctx->c.cpu_addr;
+  int host = pai_gpu_device_backend(gpu) == PAI_GPU_BACKEND_HOST_REF;
+
+  for (uint32_t k = 0; k <= 10; k++) {
+    static const uint32_t template_words[12] = {
+        0x7E020300u, /* w0:  v_mov_b32 v1, vK   (patched) */
+        0x34080682u, /* w1:  v_lshlrev_b32 v1, 2, v1 */
+        0x7E040202u, /* w2:  v_mov_b32 v2, s2 */
+        0x7E060203u, /* w3:  v_mov_b32 v3, s3 */
+        0xD70F6A02u, /* w4:  v_add_co_u32 v2, vcc_lo, v2, v1 */
+        0x00020502u, /* w5:  (operand) */
+        0xD5286A03u, /* w6:  v_add_co_ci_u32 v3, vcc_lo, v3, 0, vcc_lo */
+        0x01A90103u, /* w7:  (operand) */
+        0x7E000300u, /* w8:  v_mov_b32 v0, vK   (patched) */
+        0xDC700000u, /* w9:  flat_store_dword v[2:3], v4 */
+        0x007D0404u, /* w10: (operand) */
+        0xBF810000u, /* w11: s_endpgm */
+    };
+    char name[8];
+    uint32_t code[12];
+    int ok;
+
+    if (!host) {
+      pai_gpu_reset(gpu);
+    }
+    snprintf(name, sizeof(name), "E40%c", (char)('a' + k));
+    memcpy(code, template_words, sizeof(code));
+    code[0] |= k; /* v_mov v1, vK */
+    code[8] |= k; /* v_mov v0, vK */
+    memcpy(ctx->code.cpu_addr, code, sizeof(code));
+    if (host) {
+      /* Host: emulate "c[i] = value of reg K" = k for all i. */
+      pai_gpu_host_register_shader(gpu, ctx->code.gpu_addr,
+                                   pai_host_kernel_store_dw, NULL);
+      for (uint32_t i = 0; i < PAI_EXP_THREADS_X; i++) {
+        ((uint32_t *)ctx->c.cpu_addr)[i] = k; /* pre-check trick below */
+      }
+    }
+    ud[0] = 0;
+    ud[1] = 0;
+    ud[2] = (uint32_t)(ctx->c.gpu_addr & 0xFFFFFFFFu);
+    ud[3] = (uint32_t)(ctx->c.gpu_addr >> 32);
+    m0_build_dispatch_stream(ctx, stream, M0_PM4_CAP, 0x00000008u,
+                             PAI_EXP_THREADS_X, 1, ud, 4, &stream_len);
+    m0_run_gpu(ctx, stream, stream_len, c32, 128, 0xEE, name);
+
+    ok = 1;
+    for (uint32_t i = 0; i < PAI_EXP_THREADS_X; i++) {
+      if (c32[i] != i) {
+        ok = 0;
+        break;
+      }
+    }
+    PAI_LOG_INFO_(PAI_SUB_GPU, "[M0-%s] v%d == tid? %s (c[0..3] = %08x "
+                  "%08x %08x %08x)\n",
+                  name, k, ok ? "YES" : "no", c32[0], c32[1], c32[2], c32[3]);
+  }
+  return 0;
+}
+
+/* E39c: arith with v9 and the golden register config (64 threads,
+ * RSRC2 0x92, TGID_X_EN). */
+static int
+m0_exp_arith_golden_cfg(m0_ctx_t *ctx) {
+  pai_gpu_device_t *gpu = ctx->gpu;
+  uint32_t stream[M0_PM4_CAP];
+  uint32_t stream_len;
+  uint32_t ud[9];
+  uint32_t *c32 = (uint32_t *)ctx->c.cpu_addr;
+  int host = pai_gpu_device_backend(gpu) == PAI_GPU_BACKEND_HOST_REF;
+
+  if (!host) {
+    pai_gpu_reset(gpu);
+  }
+
+  memcpy(ctx->code.cpu_addr, pai_arith_code,
+         PAI_ARITH_CODE_WORDS * sizeof(uint32_t));
+  if (host) {
+    pai_gpu_host_register_shader(gpu, ctx->code.gpu_addr,
+                                 pai_host_kernel_arith, NULL);
+  }
+
+  ud[0] = 0;
+  ud[1] = 0;
+  ud[2] = (uint32_t)(ctx->c.gpu_addr & 0xFFFFFFFFu);
+  ud[3] = (uint32_t)(ctx->c.gpu_addr >> 32);
+  ud[4] = 0x3FC00000u; /* 1.5f */
+  ud[5] = 0;
+  ud[6] = 0;
+  ud[7] = 0;
+  ud[8] = 0;
+  m0_build_dispatch_stream(ctx, stream, M0_PM4_CAP, PAI_MEMSET16_RSRC2,
+                           PAI_MEMSET16_THREADS_X, 1, ud, 9, &stream_len);
+  m0_run_gpu(ctx, stream, stream_len, c32, 256, 0xCC, "E39c");
+
+  {
+    float *cf = (float *)ctx->c.cpu_addr;
+    int ok = 1;
+    for (uint32_t i = 0; i < 64; i++) {
+      float want = (float)i + 1.5f;
+      if (cf[i] != want) {
+        ok = 0;
+        PAI_LOG_ERROR_(PAI_SUB_GPU, "[M0-E39c] c[%u] = %f want %f\n", i,
+                       (double)cf[i], (double)want);
+        break;
+      }
+    }
+    m0_exp_report("E39c", ok);
+  }
+  return 0;
+}
+
 static int
 m0_stage_e(m0_ctx_t *ctx) {
   pai_gpu_device_t *gpu = ctx->gpu;
@@ -1251,6 +1371,10 @@ m0_stage_e(m0_ctx_t *ctx) {
   PAI_LOG_INFO_(PAI_SUB_GPU,
                 "[M0-E] order: safe (patched/proven) first, controls last; "
                 "gc reset between experiments\n");
+
+  /* E40: scan VGPRs for the per-thread id. E39c: golden config arith. */
+  m0_exp_regscan(ctx);
+  m0_exp_arith_golden_cfg(ctx);
 
   /* E38/E39: MUBUF loads + the arithmetic milestone. */
   m0_exp_loads_arith(ctx);
