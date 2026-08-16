@@ -39,6 +39,7 @@
 
 #define AGC_GC_IOCTL_SUBMIT_16  0xC0108102u /* nr=0x02, RW, 16 bytes */
 #define AGC_GC_IOCTL_CONTEXT_QUERY 0xC004812Eu /* nr=0x2e, R, 4 bytes */
+#define AGC_GC_IOCTL_QUEUE_CREATE 0xC0408121u /* nr=0x21, RW, 64 bytes */
 
 /* GPU register space (OpenAGC agc_ioctl.h, SPRX-confirmed): mapped on
  * the gc fd when the context query reports an uninitialized context
@@ -81,10 +82,29 @@ typedef struct pai_ps5_gc_state {
   uint32_t ctx_caps;
   uint32_t submissions;
   void *mmio;
+  void *acqrb;
+  void *eop_fifo;
   pai_gpu_buffer_t *cb_buf;
   pai_gpu_buffer_t *trailer_buf;
   uint32_t cb_words;
 } pai_ps5_gc_state_t;
+
+/* QUEUE_CREATE arg (OpenAGC driver_prospero.c, SPRX layout):
+ * 0x00 magics/token, 0x10 pipe_id u64, 0x18 caller_arg, 0x20 mmio_base,
+ * 0x28 queue_id/flags, 0x30 ring_addr, 0x38 ring_size. */
+typedef struct {
+  uint32_t magic1;
+  uint32_t magic2;
+  uint32_t magic3;
+  uint32_t token;
+  uint64_t pipe_id;
+  uint64_t caller_arg;
+  uint64_t mmio_base;
+  uint32_t queue_id;
+  uint32_t flags;
+  uint64_t ring_addr;
+  uint64_t ring_size;
+} pai_gc_queue_create_arg_t;
 
 static void
 pai_gc_sleep_us(uint64_t us) {
@@ -321,6 +341,46 @@ pai_gc_init(pai_gpu_device_t *device) {
         PAI_LOG_INFO_(PAI_SUB_GPU, "gc context query (post-mmap): caps=0x%08x\n",
                       query);
       }
+    }
+  }
+
+  /* Driver-style context bring-up: ACQRB + EOP FIFO flexible-memory
+   * regions and the authenticated special queue (SPRX magic tokens).
+   * The queue is the missing piece for the shader read path. */
+  if (sceKernelMapNamedSystemFlexibleMemory(&st->acqrb, 0x1E0000, 0x33, 0,
+                                            "SceGnmACQRB") != 0 ||
+      sceKernelMapNamedSystemFlexibleMemory(&st->eop_fifo, 0x3C000, 0x33, 0,
+                                            "SceGnmEopFifo") != 0) {
+    PAI_LOG_WARN_(PAI_SUB_GPU,
+                  "gc internal memory allocation failed; shader loads may "
+                  "not work\n");
+  } else {
+    pai_gc_queue_create_arg_t qarg;
+    uint64_t acqrb_va = (uint64_t)(uintptr_t)st->acqrb;
+    uint64_t eop_va = (uint64_t)(uintptr_t)st->eop_fifo;
+    int qret;
+
+    memset(&qarg, 0, sizeof(qarg));
+    qarg.magic1 = 0xaf1e80b7u;
+    qarg.magic2 = 0x8b4cdd90u;
+    qarg.magic3 = 0x99f68d6cu;
+    qarg.token = 0xe5fcc174u;
+    qarg.pipe_id = 0xcu;
+    qarg.caller_arg = acqrb_va + 0x1CC000; /* queue metadata */
+    qarg.mmio_base = (uint64_t)(uintptr_t)st->mmio;
+    qarg.ring_addr = eop_va + 0x39000;
+    qarg.ring_size = 0x1000;
+
+    qret = ioctl(st->fd, AGC_GC_IOCTL_QUEUE_CREATE, &qarg);
+    if (qret != 0) {
+      PAI_LOG_WARN_(PAI_SUB_GPU,
+                    "gc queue create failed (errno %d); shader loads may "
+                    "not work\n",
+                    errno);
+    } else {
+      PAI_LOG_INFO_(PAI_SUB_GPU,
+                    "gc special queue created (acqrb=0x%llx eop=0x%llx)\n",
+                    (unsigned long long)acqrb_va, (unsigned long long)eop_va);
     }
   }
 
