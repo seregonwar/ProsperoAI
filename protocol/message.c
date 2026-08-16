@@ -261,7 +261,8 @@ pai_proto_msg_encode_stream_data(uint8_t *out, uint32_t cap, uint8_t kind,
     return PAI_ERR_INVALID_ARG;
   }
 
-  total = 8u + data_len;
+  /* 1 kind + 3 reserved + 4 seq + 4 data_len + data. */
+  total = 12u + data_len;
   if (cap < total) {
     return PAI_ERR_INVALID_ARG;
   }

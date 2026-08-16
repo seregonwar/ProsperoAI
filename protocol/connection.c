@@ -52,12 +52,15 @@ put_le64(uint8_t *p, uint64_t v) {
 /* lifecycle                                                           */
 /* ------------------------------------------------------------------ */
 
+static void conn_reset_phase(pai_proto_conn_t *conn);
+
 static void
 conn_set_closed(pai_proto_conn_t *conn, uint32_t reason) {
   if (conn->state == PAI_PROTO_STATE_CLOSED) {
     return;
   }
   conn->state = PAI_PROTO_STATE_CLOSED;
+  conn_reset_phase(conn); /* drop any half-received frame (idempotent) */
   conn->transport.close(conn->transport.ctx);
   if (conn->callbacks.on_close) {
     conn->callbacks.on_close(conn->user, reason);
@@ -118,6 +121,10 @@ conn_send_unchecked(pai_proto_conn_t *conn, const pai_proto_frame_t *frame) {
   pai_status_t st;
 
   if (frame->payload_len > PAI_PROTO_MAX_PAYLOAD) {
+    return PAI_ERR_INVALID_ARG;
+  }
+  if (frame->flags & PAI_PROTO_FLAG_COMPRESSED) {
+    /* Reserved in v0 — must not be emitted (matches frame_encode). */
     return PAI_ERR_INVALID_ARG;
   }
 
@@ -332,6 +339,12 @@ conn_handle_stream(pai_proto_conn_t *conn, const pai_proto_frame_t *frame) {
   int idx;
   pai_status_t st;
   int terminal = frame->flags & PAI_PROTO_FLAG_STREAM_END ? 1 : 0;
+
+  /* Streams are correlated by request id; id 0 is connection-level. */
+  if ((frame->flags & PAI_PROTO_FLAG_STREAM_START) &&
+      frame->request_id == 0) {
+    return PAI_ERR_PROTOCOL;
+  }
 
   if (frame->flags & PAI_PROTO_FLAG_STREAM_START) {
     st = stream_begin(conn, frame->request_id);
@@ -721,17 +734,19 @@ pai_proto_conn_poll(pai_proto_conn_t *conn, uint32_t *out_frames) {
       if (conn->payload_filled < conn->pending.payload_len) {
         break; /* wait for more bytes */
       }
-
-      st = pai_proto_frame_validate(conn->header_buf, conn->payload_buf);
-      if (st != PAI_OK) {
-        PAI_LOG_ERROR_(PAI_SUB_PROTO, "frame CRC mismatch\n");
-        conn_set_closed(conn, PAI_PROTO_CLOSE_PROTOCOL);
-        result = PAI_ERR_PROTOCOL;
-        break;
-      }
     }
 
-    /* Phase 3: dispatch the complete frame. */
+    /* Phase 3: integrity check + dispatch. The CRC covers the header
+     * and payload, so it is validated for every frame — including
+     * zero-payload ones (e.g. PING). */
+    st = pai_proto_frame_validate(conn->header_buf, conn->payload_buf);
+    if (st != PAI_OK) {
+      PAI_LOG_ERROR_(PAI_SUB_PROTO, "frame CRC mismatch\n");
+      conn_set_closed(conn, PAI_PROTO_CLOSE_PROTOCOL);
+      result = PAI_ERR_PROTOCOL;
+      break;
+    }
+
     conn->pending.payload = conn->payload_buf;
     st = conn->state == PAI_PROTO_STATE_OPEN
              ? conn_handle_open(conn, &conn->pending)

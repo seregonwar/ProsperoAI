@@ -1,5 +1,7 @@
 #include "test.h"
 
+#include <string.h>
+
 #include <ref_ops.h>
 
 #include <math.h>
@@ -59,6 +61,171 @@ TEST_MAIN_BEGIN()
   for (int i = 0; i < 16; i++) {
     CHECK_EQ_UINT(out[i], pat[i % 4]);
   }
+}
+
+{
+  /* vecmul element-wise */
+  float a[4] = {1, -2, 3, 0.5f};
+  float b[4] = {4, 5, -1, 2};
+  float c[4];
+  CHECK(pai_ref_vecmul_f32(a, b, c, 4) == PAI_OK);
+  CHECK(fabsf(c[0] - 4.0f) < 1e-6f);
+  CHECK(fabsf(c[1] - -10.0f) < 1e-6f);
+  CHECK(fabsf(c[2] - -3.0f) < 1e-6f);
+  CHECK(fabsf(c[3] - 1.0f) < 1e-6f);
+  CHECK(pai_ref_vecmul_f32(NULL, b, c, 4) == PAI_ERR_INVALID_ARG);
+}
+
+{
+  /* relu: negatives clamp to 0 */
+  float a[6] = {-2, -0.5f, 0, 0.25f, 3, -1e-3f};
+  float c[6];
+  CHECK(pai_ref_relu_f32(a, c, 6) == PAI_OK);
+  for (int i = 0; i < 6; i++) {
+    CHECK(fabsf(c[i] - (a[i] > 0 ? a[i] : 0.0f)) < 1e-7f);
+  }
+}
+
+{
+  /* softmax: non-negative, sums to 1, order preserved */
+  float a[5] = {1.0f, 2.0f, 3.0f, 4.0f, 5.0f};
+  float c[5];
+  float sum = 0;
+  CHECK(pai_ref_softmax_f32(a, c, 5) == PAI_OK);
+  for (int i = 0; i < 5; i++) {
+    CHECK(c[i] >= 0.0f && c[i] <= 1.0f);
+    sum += c[i];
+  }
+  CHECK(fabsf(sum - 1.0f) < 1e-6f);
+  CHECK(c[4] > c[3] && c[3] > c[2]);
+  /* numerically stable: large magnitudes do not overflow */
+  float big[3] = {1000.0f, 1000.5f, 1001.0f};
+  CHECK(pai_ref_softmax_f32(big, c, 3) == PAI_OK);
+  CHECK(fabsf(c[0] + c[1] + c[2] - 1.0f) < 1e-6f);
+  CHECK(pai_ref_softmax_f32(a, c, 0) == PAI_ERR_INVALID_ARG);
+}
+
+{
+  /* rmsnorm vs direct formula */
+  float a[4] = {1, 2, 3, 4};
+  float c[4];
+  double acc = 0;
+  CHECK(pai_ref_rmsnorm_f32(a, c, 4, 0.0f) == PAI_OK);
+  for (int i = 0; i < 4; i++) {
+    acc += (double)a[i] * (double)a[i];
+  }
+  for (int i = 0; i < 4; i++) {
+    float expect = a[i] / sqrtf((float)(acc / 4.0) + 1e-5f);
+    CHECK(fabsf(c[i] - expect) < 1e-6f);
+  }
+}
+
+{
+  /* layernorm with gamma/beta vs direct formula */
+  float a[4] = {1, 2, 3, 4};
+  float g[4] = {2, 2, 2, 2};
+  float b[4] = {1, 1, 1, 1};
+  float c[4];
+  double sum = 0, sumsq = 0;
+  float mean, inv_std;
+  CHECK(pai_ref_layernorm_f32(a, c, 4, g, b, 0.0f) == PAI_OK);
+  for (int i = 0; i < 4; i++) {
+    sum += a[i];
+    sumsq += (double)a[i] * a[i];
+  }
+  mean = (float)(sum / 4.0);
+  inv_std = 1.0f / sqrtf((float)(sumsq / 4.0 - (double)mean * mean) + 1e-5f);
+  for (int i = 0; i < 4; i++) {
+    float expect = (a[i] - mean) * inv_std * g[i] + b[i];
+    CHECK(fabsf(c[i] - expect) < 1e-5f);
+  }
+  /* gamma/beta optional */
+  CHECK(pai_ref_layernorm_f32(a, c, 4, NULL, NULL, 0.0f) == PAI_OK);
+}
+
+{
+  /* concat ordering */
+  float a[2] = {1, 2};
+  float b[3] = {3, 4, 5};
+  float c[5];
+  CHECK(pai_ref_concat_f32(a, b, c, 2, 3) == PAI_OK);
+  for (int i = 0; i < 5; i++) {
+    CHECK(fabsf(c[i] - (float)(i + 1)) < 1e-6f);
+  }
+}
+
+{
+  /* silu: x / (1 + e^-x) */
+  float a[4] = {0.0f, 1.0f, -1.0f, 2.0f};
+  float c[4];
+  CHECK(pai_ref_silu_f32(a, c, 4) == PAI_OK);
+  CHECK(fabsf(c[0] - 0.0f) < 1e-6f);
+  CHECK(fabsf(c[1] - (1.0f / (1.0f + expf(-1.0f)))) < 1e-6f);
+  CHECK(fabsf(c[2] - (-1.0f / (1.0f + expf(1.0f)))) < 1e-6f);
+  CHECK(fabsf(c[3] - (2.0f / (1.0f + expf(-2.0f)))) < 1e-6f);
+}
+
+{
+  /* rmsnorm with gamma: out[i] = a[i] * gamma[i] / sqrt(mean(a^2)+eps).
+   * a = {1,1,1,1}: rms = 1, so out = gamma (eps is negligible). */
+  float a[4] = {1, 1, 1, 1};
+  float g[4] = {1, 2, 3, 4};
+  float c[4];
+  CHECK(pai_ref_rmsnorm_gamma_f32(a, c, 4, g, 1e-9f) == PAI_OK);
+  for (int i = 0; i < 4; i++) {
+    CHECK(fabsf(c[i] - g[i]) < 1e-5f);
+  }
+  /* a = {3, 4}: mean = 12.5, rms = 1/sqrt(12.5) ~ 0.282843. */
+  {
+    float a2[2] = {3, 4};
+    float g2[2] = {1, 1};
+    float c2[2];
+    float rms = 1.0f / sqrtf(12.5f);
+    CHECK(pai_ref_rmsnorm_gamma_f32(a2, c2, 2, g2, 1e-9f) == PAI_OK);
+    CHECK(fabsf(c2[0] - 3.0f * rms) < 1e-6f);
+    CHECK(fabsf(c2[1] - 4.0f * rms) < 1e-6f);
+  }
+}
+
+{
+  /* rope position-major: 2 heads, hd=4, seq=2, r2=2. Row layout is
+   * [p*heads + h], so position comes from row/heads. Rotary pairs are
+   * (i, i+r2) per llama.cpp: (0,2) and (1,3). cos/sin tables for
+   * p=0: (c=1,s=0), p=1: (c=0,s=1). */
+  float cos_t[4] = {1, 1, 0, 0}; /* p0: c=1; p1: c=0 */
+  float sin_t[4] = {0, 0, 1, 1}; /* p0: s=0; p1: s=1 */
+  float x[16] = {1, 3, 2, 4,    /* p0h0: pairs (1,2),(3,4) */
+                 5, 7, 6, 8,    /* p0h1 */
+                 10, 30, 20, 40, /* p1h0: pairs (10,20),(30,40) */
+                 50, 70, 60, 80}; /* p1h1 */
+  float c[16];
+  CHECK(pai_ref_rope_f32(x, 4, 4, 2, 2, cos_t, sin_t, 2, c) == PAI_OK);
+  /* p0 (c=1, s=0): identity. */
+  CHECK(fabsf(c[0] - 1.0f) < 1e-6f);
+  CHECK(fabsf(c[1] - 3.0f) < 1e-6f);
+  CHECK(fabsf(c[2] - 2.0f) < 1e-6f);
+  CHECK(fabsf(c[3] - 4.0f) < 1e-6f);
+  /* p1 (c=0, s=1): (x0*c - x1*s, x0*s + x1*c) = (-x1, x0). */
+  CHECK(fabsf(c[8] - (-20.0f)) < 1e-6f);
+  CHECK(fabsf(c[9] - (-40.0f)) < 1e-6f);
+  CHECK(fabsf(c[10] - 10.0f) < 1e-6f);
+  CHECK(fabsf(c[11] - 30.0f) < 1e-6f);
+  CHECK(fabsf(c[12] - (-60.0f)) < 1e-6f);
+  CHECK(fabsf(c[13] - (-80.0f)) < 1e-6f);
+  CHECK(fabsf(c[14] - 50.0f) < 1e-6f);
+  CHECK(fabsf(c[15] - 70.0f) < 1e-6f);
+}
+
+{
+  /* copy, including aliasing */
+  float a[4] = {1, 2, 3, 4};
+  float c[4];
+  CHECK(pai_ref_copy_f32(a, c, 4) == PAI_OK);
+  for (int i = 0; i < 4; i++) {
+    CHECK(fabsf(c[i] - a[i]) < 1e-7f);
+  }
+  CHECK(pai_ref_copy_f32(a, a, 4) == PAI_OK);
+  CHECK(fabsf(a[2] - 3.0f) < 1e-7f);
 }
 
 TEST_MAIN_END()

@@ -9,6 +9,14 @@
 /* ------------------------------------------------------------------ */
 
 static void
+put_le32_test(uint8_t *p, uint32_t v) {
+  p[0] = (uint8_t)v;
+  p[1] = (uint8_t)(v >> 8);
+  p[2] = (uint8_t)(v >> 16);
+  p[3] = (uint8_t)(v >> 24);
+}
+
+static void
 pump(pai_proto_conn_t *a, pai_proto_conn_t *b, int iters) {
   uint32_t frames = 0;
   for (int i = 0; i < iters; i++) {
@@ -227,6 +235,52 @@ close_observer(void *user, uint32_t reason) {
   c->reason = reason;
 }
 
+/* ------------------------------------------------------------------ */
+/* callbacks for the STREAM_DATA telemetry test                        */
+/* ------------------------------------------------------------------ */
+
+typedef struct stream_server {
+  int begin_count;
+  int end_count;
+  uint8_t kinds[8];
+  uint32_t seqs[8];
+  uint8_t bytes[8];
+  uint32_t ndata;
+  int ok;
+} stream_server_t;
+
+static void
+stream_on_begin(void *user, uint64_t request_id, uint64_t session_id) {
+  stream_server_t *s = (stream_server_t *)user;
+  s->begin_count++;
+  (void)request_id;
+  (void)session_id;
+}
+
+static void
+stream_on_data(void *user, uint64_t request_id, uint64_t session_id,
+               uint8_t kind, uint32_t seq, const uint8_t *data, uint32_t len) {
+  stream_server_t *s = (stream_server_t *)user;
+  (void)request_id;
+  (void)session_id;
+  if (len != 1 || s->ndata >= 8) {
+    s->ok = 0;
+    return;
+  }
+  s->kinds[s->ndata] = kind;
+  s->seqs[s->ndata] = seq;
+  s->bytes[s->ndata] = data[0];
+  s->ndata++;
+}
+
+static void
+stream_on_end(void *user, uint64_t request_id, uint64_t session_id) {
+  stream_server_t *s = (stream_server_t *)user;
+  s->end_count++;
+  (void)request_id;
+  (void)session_id;
+}
+
 TEST_MAIN_BEGIN()
 
 /* ------------------------------------------------------------------ */
@@ -348,25 +402,25 @@ TEST_MAIN_BEGIN()
 {
   uint8_t buf[256];
   uint32_t len = 0;
+  uint32_t caps = 0;
+  uint32_t v = 0;
+  uint8_t kind = 0;
+  uint32_t seq = 0;
+  const uint8_t *data = NULL;
+  uint32_t dlen = 0;
 
   /* caps round-trip */
   CHECK(pai_proto_msg_encode_caps(buf, sizeof(buf), 0x27u, &len) == PAI_OK);
   CHECK_EQ_UINT(len, PAI_PROTO_U32_PAIR_SIZE);
-  {
-    uint32_t caps = 0;
-    CHECK(pai_proto_msg_decode_caps(buf, len, &caps) == PAI_OK);
-    CHECK_EQ_UINT(caps, 0x27u);
-  }
+  CHECK(pai_proto_msg_decode_caps(buf, len, &caps) == PAI_OK);
+  CHECK_EQ_UINT(caps, 0x27u);
   CHECK(pai_proto_msg_decode_caps(buf, 4, &caps) == PAI_ERR_PROTOCOL);
 
   /* u32 (nack/close reason) round-trip */
   CHECK(pai_proto_msg_encode_u32(buf, sizeof(buf), PAI_PROTO_NACK_VERSION,
                                  &len) == PAI_OK);
-  {
-    uint32_t v = 0;
-    CHECK(pai_proto_msg_decode_u32(buf, len, &v) == PAI_OK);
-    CHECK_EQ_UINT(v, PAI_PROTO_NACK_VERSION);
-  }
+  CHECK(pai_proto_msg_decode_u32(buf, len, &v) == PAI_OK);
+  CHECK_EQ_UINT(v, PAI_PROTO_NACK_VERSION);
   CHECK(pai_proto_msg_decode_u32(buf, 4, &v) == PAI_ERR_PROTOCOL);
 
   /* error round-trip with message */
@@ -427,18 +481,12 @@ TEST_MAIN_BEGIN()
                                          PAI_PROTO_STREAM_TELEMETRY, 9,
                                          (const uint8_t *)"abc", 3,
                                          &len) == PAI_OK);
-  {
-    uint8_t kind = 0;
-    uint32_t seq = 0;
-    const uint8_t *data = NULL;
-    uint32_t dlen = 0;
-    CHECK(pai_proto_msg_decode_stream_data(buf, len, &kind, &seq, &data,
-                                           &dlen) == PAI_OK);
-    CHECK_EQ_UINT(kind, PAI_PROTO_STREAM_TELEMETRY);
-    CHECK_EQ_UINT(seq, 9);
-    CHECK_EQ_UINT(dlen, 3);
-    CHECK(memcmp(data, "abc", 3) == 0);
-  }
+  CHECK(pai_proto_msg_decode_stream_data(buf, len, &kind, &seq, &data,
+                                         &dlen) == PAI_OK);
+  CHECK_EQ_UINT(kind, PAI_PROTO_STREAM_TELEMETRY);
+  CHECK_EQ_UINT(seq, 9);
+  CHECK_EQ_UINT(dlen, 3);
+  CHECK(memcmp(data, "abc", 3) == 0);
   CHECK(pai_proto_msg_decode_stream_data(buf, 4, &kind, &seq, &data, &dlen) ==
         PAI_ERR_PROTOCOL);
 
@@ -472,15 +520,16 @@ TEST_MAIN_BEGIN()
   CHECK_EQ_UINT(got, 2);
   CHECK(a.recv(a.ctx, buf, 2, &got) == PAI_OK);
   CHECK_EQ_UINT(got, 2);
-  CHECK_EQ_UINT(((uint8_t *)buf)[0], 'w');
+  CHECK_EQ_UINT(((uint8_t *)buf)[0], 'r'); /* second chunk "rl" */
 
-  /* close: peer sees EOF, sends fail */
-  a.close(a.ctx);
-  CHECK(b.recv(b.ctx, buf, 2, &got) == PAI_OK);
+  /* close: the peer drains what is left, then sees EOF; sends fail */
+  b.close(b.ctx);
+  CHECK(a.recv(a.ctx, buf, 2, &got) == PAI_OK);
   CHECK_EQ_UINT(got, 1); /* remaining 'd' */
-  CHECK(b.recv(b.ctx, buf, 2, &got) == PAI_ERR_IO);
+  CHECK_EQ_UINT(((uint8_t *)buf)[0], 'd');
+  CHECK(a.recv(a.ctx, buf, 2, &got) == PAI_ERR_IO);
   CHECK_EQ_UINT(got, 0);
-  CHECK(b.send(b.ctx, "x", 1) == PAI_ERR_IO);
+  CHECK(a.send(a.ctx, "x", 1) == PAI_ERR_IO);
 
   pai_proto_pipe_pair_destroy(pair);
 }
@@ -577,7 +626,17 @@ TEST_MAIN_BEGIN()
     f.payload_len = plen;
     CHECK(pai_proto_frame_encode(&f, wire, sizeof(wire), &n) == PAI_OK);
   }
+  /* Patch the version byte and recompute the CRC so the frame is
+   * otherwise valid — a version-mismatch must be answered with NACK,
+   * not dropped as a CRC error. */
   wire[4] = 1; /* major 1 */
+  {
+    uint32_t crc = pai_proto_crc32_init();
+    crc = pai_proto_crc32_upd(crc, wire, 32);
+    crc = pai_proto_crc32_upd(crc, wire + PAI_PROTO_HEADER_SIZE,
+                              PAI_PROTO_U32_PAIR_SIZE);
+    put_le32_test(wire + 32, pai_proto_crc32_fin(crc));
+  }
   CHECK(ta.send(ta.ctx, wire, n) == PAI_OK);
 
   CHECK(pai_proto_conn_poll(&server, &frames) == PAI_OK);
@@ -652,7 +711,7 @@ TEST_MAIN_BEGIN()
   pai_proto_conn_t client, server;
   pai_proto_pipe_pair_t *pair = NULL;
   pai_proto_transport_t ta, tb;
-  pai_proto_callbacks_t cb;
+  pai_proto_callbacks_t cbc, cbs;
   ping_client_t pc;
   uint32_t frames = 0;
 
@@ -661,12 +720,14 @@ TEST_MAIN_BEGIN()
   pai_proto_pipe_endpoint(pair, 0, &ta);
   pai_proto_pipe_endpoint(pair, 1, &tb);
 
-  memset(&cb, 0, sizeof(cb));
-  cb.on_hello = accept_hello;
+  memset(&cbc, 0, sizeof(cbc));
+  cbc.on_message = ping_on_message;
+  memset(&cbs, 0, sizeof(cbs));
+  cbs.on_hello = accept_hello;
   CHECK(pai_proto_conn_init(&client, PAI_PROTO_ROLE_CLIENT,
-                            PAI_PROTO_CAP_KNOWN, &ta, NULL, NULL) == PAI_OK);
+                            PAI_PROTO_CAP_KNOWN, &ta, &cbc, &pc) == PAI_OK);
   CHECK(pai_proto_conn_init(&server, PAI_PROTO_ROLE_SERVER,
-                            PAI_PROTO_CAP_KNOWN, &tb, &cb, NULL) == PAI_OK);
+                            PAI_PROTO_CAP_KNOWN, &tb, &cbs, NULL) == PAI_OK);
 
   CHECK(pai_proto_conn_start(&client) == PAI_OK);
   pump(&client, &server, 8);
@@ -873,6 +934,265 @@ TEST_MAIN_BEGIN()
 
   (void)frames;
   pai_proto_conn_destroy(&client);
+  pai_proto_conn_destroy(&server);
+  pai_proto_pipe_pair_destroy(pair);
+}
+
+/* ------------------------------------------------------------------ */
+/* STREAM_DATA telemetry over a connection (§24 async streams)         */
+/* ------------------------------------------------------------------ */
+
+{
+  pai_proto_conn_t client, server;
+  pai_proto_pipe_pair_t *pair = NULL;
+  pai_proto_transport_t ta, tb;
+  pai_proto_callbacks_t cbc, cbs;
+  stream_server_t ss;
+  uint32_t frames = 0;
+
+  memset(&ss, 0, sizeof(ss));
+  ss.ok = 1;
+  CHECK(pai_proto_pipe_pair_create(&pair) == PAI_OK);
+  pai_proto_pipe_endpoint(pair, 0, &ta);
+  pai_proto_pipe_endpoint(pair, 1, &tb);
+
+  memset(&cbs, 0, sizeof(cbs));
+  cbs.on_hello = accept_hello;
+  cbs.on_stream_begin = stream_on_begin;
+  cbs.on_stream_data = stream_on_data;
+  cbs.on_stream_end = stream_on_end;
+  memset(&cbc, 0, sizeof(cbc));
+
+  CHECK(pai_proto_conn_init(&client, PAI_PROTO_ROLE_CLIENT,
+                            PAI_PROTO_CAP_STREAMS | PAI_PROTO_CAP_TELEMETRY,
+                            &ta, &cbc, NULL) == PAI_OK);
+  CHECK(pai_proto_conn_init(&server, PAI_PROTO_ROLE_SERVER,
+                            PAI_PROTO_CAP_KNOWN, &tb, &cbs, &ss) == PAI_OK);
+
+  CHECK(pai_proto_conn_start(&client) == PAI_OK);
+  pump(&client, &server, 8);
+  CHECK(pai_proto_conn_state(&client) == PAI_PROTO_STATE_OPEN);
+
+  /* three STREAM_DATA chunks: START ... (middle) ... END */
+  {
+    uint8_t pay[32];
+    uint32_t plen = 0;
+    uint32_t seqs[3] = {1, 2, 3};
+    const char *chunks[3] = {"a", "b", "c"};
+    for (uint32_t i = 0; i < 3; i++) {
+      uint32_t flags = 0;
+      if (i == 0) {
+        flags |= PAI_PROTO_FLAG_STREAM_START;
+      }
+      if (i == 2) {
+        flags |= PAI_PROTO_FLAG_STREAM_END;
+      }
+      CHECK(pai_proto_msg_encode_stream_data(pay, sizeof(pay),
+                                             PAI_PROTO_STREAM_TELEMETRY,
+                                             seqs[i],
+                                             (const uint8_t *)chunks[i], 1,
+                                             &plen) == PAI_OK);
+      CHECK(pai_proto_conn_send_raw(&client, PAI_PROTO_MSG_STREAM_DATA, flags,
+                                    500, 0, pay, plen) == PAI_OK);
+    }
+  }
+
+  pump(&client, &server, 8);
+
+  CHECK_EQ_UINT(ss.begin_count, 1);
+  CHECK_EQ_UINT(ss.end_count, 1);
+  CHECK_EQ_UINT(ss.ndata, 3);
+  CHECK_EQ_UINT(ss.ok, 1);
+  CHECK_EQ_UINT(ss.kinds[0], PAI_PROTO_STREAM_TELEMETRY);
+  CHECK_EQ_UINT(ss.seqs[0], 1);
+  CHECK_EQ_UINT(ss.bytes[0], 'a');
+  CHECK_EQ_UINT(ss.seqs[1], 2);
+  CHECK_EQ_UINT(ss.bytes[1], 'b');
+  CHECK_EQ_UINT(ss.seqs[2], 3);
+  CHECK_EQ_UINT(ss.bytes[2], 'c');
+
+  (void)frames;
+  pai_proto_conn_destroy(&client);
+  pai_proto_conn_destroy(&server);
+  pai_proto_pipe_pair_destroy(pair);
+}
+
+/* ------------------------------------------------------------------ */
+/* stream protocol errors close the connection                         */
+/* ------------------------------------------------------------------ */
+
+{
+  pai_proto_conn_t client, server;
+  pai_proto_pipe_pair_t *pair = NULL;
+  pai_proto_transport_t ta, tb;
+  pai_proto_callbacks_t cbc, cbs;
+  uint32_t frames = 0;
+
+  CHECK(pai_proto_pipe_pair_create(&pair) == PAI_OK);
+  pai_proto_pipe_endpoint(pair, 0, &ta);
+  pai_proto_pipe_endpoint(pair, 1, &tb);
+
+  memset(&cbs, 0, sizeof(cbs));
+  cbs.on_hello = accept_hello;
+  memset(&cbc, 0, sizeof(cbc));
+
+  CHECK(pai_proto_conn_init(&client, PAI_PROTO_ROLE_CLIENT,
+                            PAI_PROTO_CAP_KNOWN, &ta, &cbc, NULL) == PAI_OK);
+  CHECK(pai_proto_conn_init(&server, PAI_PROTO_ROLE_SERVER,
+                            PAI_PROTO_CAP_KNOWN, &tb, &cbs, NULL) == PAI_OK);
+
+  CHECK(pai_proto_conn_start(&client) == PAI_OK);
+  pump(&client, &server, 8);
+  CHECK(pai_proto_conn_state(&client) == PAI_PROTO_STATE_OPEN);
+
+  /* STREAM_DATA without STREAM_START -> protocol violation */
+  {
+    uint8_t pay[32];
+    uint32_t plen = 0;
+    CHECK(pai_proto_msg_encode_stream_data(pay, sizeof(pay),
+                                           PAI_PROTO_STREAM_LOG, 1,
+                                           (const uint8_t *)"x", 1,
+                                           &plen) == PAI_OK);
+    CHECK(pai_proto_conn_send_raw(&client, PAI_PROTO_MSG_STREAM_DATA, 0, 600,
+                                  0, pay, plen) == PAI_OK);
+  }
+
+  CHECK(pai_proto_conn_poll(&server, &frames) == PAI_ERR_PROTOCOL);
+  CHECK(pai_proto_conn_state(&server) == PAI_PROTO_STATE_CLOSED);
+
+  pai_proto_conn_destroy(&client);
+  pai_proto_conn_destroy(&server);
+  pai_proto_pipe_pair_destroy(pair);
+}
+
+{
+  pai_proto_conn_t client, server;
+  pai_proto_pipe_pair_t *pair = NULL;
+  pai_proto_transport_t ta, tb;
+  pai_proto_callbacks_t cbc, cbs;
+  uint32_t frames = 0;
+
+  CHECK(pai_proto_pipe_pair_create(&pair) == PAI_OK);
+  pai_proto_pipe_endpoint(pair, 0, &ta);
+  pai_proto_pipe_endpoint(pair, 1, &tb);
+
+  memset(&cbs, 0, sizeof(cbs));
+  cbs.on_hello = accept_hello;
+  memset(&cbc, 0, sizeof(cbc));
+
+  CHECK(pai_proto_conn_init(&client, PAI_PROTO_ROLE_CLIENT,
+                            PAI_PROTO_CAP_KNOWN, &ta, &cbc, NULL) == PAI_OK);
+  CHECK(pai_proto_conn_init(&server, PAI_PROTO_ROLE_SERVER,
+                            PAI_PROTO_CAP_KNOWN, &tb, &cbs, NULL) == PAI_OK);
+
+  CHECK(pai_proto_conn_start(&client) == PAI_OK);
+  pump(&client, &server, 8);
+  CHECK(pai_proto_conn_state(&client) == PAI_PROTO_STATE_OPEN);
+
+  /* double STREAM_START on the same request id -> protocol violation */
+  {
+    uint8_t pay[32];
+    uint32_t plen = 0;
+    for (int i = 0; i < 2; i++) {
+      CHECK(pai_proto_msg_encode_stream_data(pay, sizeof(pay),
+                                             PAI_PROTO_STREAM_LOG, 1,
+                                             (const uint8_t *)"x", 1,
+                                             &plen) == PAI_OK);
+      CHECK(pai_proto_conn_send_raw(&client, PAI_PROTO_MSG_STREAM_DATA,
+                                    PAI_PROTO_FLAG_STREAM_START, 700, 0, pay,
+                                    plen) == PAI_OK);
+    }
+  }
+
+  /* Both frames are buffered; the first poll dispatches the valid
+   * STREAM_START and then rejects the double start. */
+  CHECK(pai_proto_conn_poll(&server, &frames) == PAI_ERR_PROTOCOL);
+  CHECK(pai_proto_conn_state(&server) == PAI_PROTO_STATE_CLOSED);
+
+  pai_proto_conn_destroy(&client);
+  pai_proto_conn_destroy(&server);
+  pai_proto_pipe_pair_destroy(pair);
+}
+
+/* ------------------------------------------------------------------ */
+/* corrupted frame through the connection -> PAI_ERR_PROTOCOL          */
+/* ------------------------------------------------------------------ */
+
+{
+  pai_proto_conn_t client, server;
+  pai_proto_pipe_pair_t *pair = NULL;
+  pai_proto_transport_t ta, tb;
+  pai_proto_callbacks_t cbc, cbs;
+  uint8_t wire[64];
+  uint32_t n = 0;
+  uint32_t frames = 0;
+
+  CHECK(pai_proto_pipe_pair_create(&pair) == PAI_OK);
+  pai_proto_pipe_endpoint(pair, 0, &ta);
+  pai_proto_pipe_endpoint(pair, 1, &tb);
+
+  memset(&cbs, 0, sizeof(cbs));
+  cbs.on_hello = accept_hello;
+  memset(&cbc, 0, sizeof(cbc));
+
+  CHECK(pai_proto_conn_init(&client, PAI_PROTO_ROLE_CLIENT,
+                            PAI_PROTO_CAP_KNOWN, &ta, &cbc, NULL) == PAI_OK);
+  CHECK(pai_proto_conn_init(&server, PAI_PROTO_ROLE_SERVER,
+                            PAI_PROTO_CAP_KNOWN, &tb, &cbs, NULL) == PAI_OK);
+
+  CHECK(pai_proto_conn_start(&client) == PAI_OK);
+  pump(&client, &server, 8);
+  CHECK(pai_proto_conn_state(&client) == PAI_PROTO_STATE_OPEN);
+
+  /* Send a valid PING with a corrupted byte (CRC must catch it). */
+  {
+    pai_proto_frame_t f;
+    memset(&f, 0, sizeof(f));
+    f.msg_type = PAI_PROTO_MSG_PING;
+    f.request_id = 1;
+    CHECK(pai_proto_frame_encode(&f, wire, sizeof(wire), &n) == PAI_OK);
+  }
+  wire[8] ^= 0xFF; /* corrupt msg_type -> CRC mismatch */
+  CHECK(ta.send(ta.ctx, wire, n) == PAI_OK);
+
+  CHECK(pai_proto_conn_poll(&server, &frames) == PAI_ERR_PROTOCOL);
+  CHECK(pai_proto_conn_state(&server) == PAI_PROTO_STATE_CLOSED);
+
+  pai_proto_conn_destroy(&client);
+  pai_proto_conn_destroy(&server);
+  pai_proto_pipe_pair_destroy(pair);
+}
+
+/* ------------------------------------------------------------------ */
+/* session registry helpers                                            */
+/* ------------------------------------------------------------------ */
+
+{
+  pai_proto_conn_t server;
+  pai_proto_pipe_pair_t *pair = NULL;
+  pai_proto_transport_t tb;
+  uint64_t id1 = 0, id2 = 0;
+
+  CHECK(pai_proto_pipe_pair_create(&pair) == PAI_OK);
+  pai_proto_pipe_endpoint(pair, 1, &tb);
+
+  CHECK(pai_proto_conn_init(&server, PAI_PROTO_ROLE_SERVER,
+                            PAI_PROTO_CAP_SESSIONS, &tb, NULL, NULL) ==
+        PAI_OK);
+
+  CHECK(pai_proto_conn_session_open(&server, &id1) == PAI_OK);
+  CHECK(pai_proto_conn_session_open(&server, &id2) == PAI_OK);
+  CHECK_EQ_UINT(id1, 1);
+  CHECK_EQ_UINT(id2, 2);
+  CHECK(pai_proto_conn_session_active(&server, id1));
+  CHECK(pai_proto_conn_session_active(&server, id2));
+  CHECK(!pai_proto_conn_session_active(&server, 0));
+  CHECK(!pai_proto_conn_session_active(&server, 99));
+
+  pai_proto_conn_session_close(&server, id1);
+  CHECK(!pai_proto_conn_session_active(&server, id1));
+  CHECK(pai_proto_conn_session_active(&server, id2));
+
   pai_proto_conn_destroy(&server);
   pai_proto_pipe_pair_destroy(pair);
 }

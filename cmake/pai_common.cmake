@@ -50,3 +50,16 @@ function(pai_define_library target)
   )
   set_target_properties(${target} PROPERTIES POSITION_INDEPENDENT_CODE ON)
 endfunction()
+
+# Host executables can hold large fixed-capacity graph/IR structs on the
+# stack (1024-value caps make pai_graph_t ~232 KB; debug builds give
+# every local its own slot, so a few locals can exceed the default 1 MB
+# reserve). Raise the reserved stack for such targets. Handles both the
+# clang-cl (MSVC) and clang-GNU-driver + lld-link host toolchains.
+function(pai_enable_big_stack target)
+  if(MSVC)
+    target_link_options(${target} PRIVATE /STACK:8388608)
+  elseif(WIN32)
+    target_link_options(${target} PRIVATE "-Wl,/STACK:8388608")
+  endif()
+endfunction()
