@@ -36,6 +36,8 @@
 #define AGC_GC_IOCTL_SUBMIT_16  0xC0108102u /* nr=0x02, RW, 16 bytes */
 #define AGC_GC_IOCTL_CONTEXT_QUERY 0xC004812Eu /* nr=0x2e, R, 4 bytes */
 #define AGC_GC_IOCTL_QUEUE_CREATE 0xC0408121u /* nr=0x21, RW, 64 bytes */
+#define AGC_GC_IOCTL_MAKESYSMAP 0xC0088109u /* nr=0x09, RW, 8 bytes:
+                                             * in: CPU VA, out: GPU VA */
 
 /* GPU register space (SPRX-confirmed): mapped on the gc fd when the
  * context query reports an uninitialized context (caps lower 16 == 0). */
@@ -115,8 +117,10 @@ pai_gc_now_ns(void) {
 }
 
 static pai_status_t
-pai_gc_alloc_dmem(pai_gpu_buffer_t *buffer, uint64_t size, const char *name,
-                  uint64_t *out_phys, int mem_type) {
+pai_gc_alloc_dmem(pai_gpu_device_t *device, pai_gpu_buffer_t *buffer,
+                  uint64_t size, const char *name, uint64_t *out_phys,
+                  int mem_type) {
+  pai_ps5_gc_state_t *st = (pai_ps5_gc_state_t *)device->state;
   off_t phys = 0;
   void *va = NULL;
   int r;
@@ -156,6 +160,19 @@ pai_gc_alloc_dmem(pai_gpu_buffer_t *buffer, uint64_t size, const char *name,
   if (out_phys) {
     *out_phys = (uint64_t)phys;
   }
+
+  /* Register the buffer in the GPU address space (MAKESYSMAP). The
+   * kernel assigns the GPU VA; without this the shader read path
+   * faults and hangs the ring on 9.40. */
+  {
+    uint64_t gpu_va = (uint64_t)(uintptr_t)va;
+    if (ioctl(st->fd, AGC_GC_IOCTL_MAKESYSMAP, &gpu_va) == 0 && gpu_va) {
+      buffer->gpu_addr = gpu_va;
+    } else {
+      PAI_LOG_WARN_(PAI_SUB_GPU,
+                    "MAKESYSMAP(%s) failed; shader reads may hang\n", name);
+    }
+  }
   return PAI_OK;
 }
 
@@ -170,7 +187,7 @@ pai_gc_buffer_alloc(pai_gpu_device_t *device, pai_gpu_buffer_t *buffer,
 
   /* Direct memory gives us the physical address, which the GPU
    * page-table repair needs. */
-  st = pai_gc_alloc_dmem(buffer, size, "pai-gpu", &phys,
+  st = pai_gc_alloc_dmem(device, buffer, size, "pai-gpu", &phys,
                          (flags & PAI_GPU_BUF_GARLIC) ? 3 : 1);
   if (st != PAI_OK) {
     return st;
@@ -401,16 +418,16 @@ pai_gc_init(pai_gpu_device_t *device) {
 
   st->cb_buf = (pai_gpu_buffer_t *)calloc(1, sizeof(*st->cb_buf));
   if (!st->cb_buf ||
-      pai_gc_alloc_dmem(st->cb_buf, PAI_GC_CB_BUF_SIZE, "pai-cb", NULL,
-                        1) != PAI_OK) {
+      pai_gc_alloc_dmem(device, st->cb_buf, PAI_GC_CB_BUF_SIZE, "pai-cb",
+                        NULL, 1) != PAI_OK) {
     return PAI_ERR_NOMEM;
   }
 
   /* 16-dword NOP trailer: forces the ring to run the final descriptor. */
   trailer = (pai_gpu_buffer_t *)calloc(1, sizeof(*trailer));
   if (!trailer ||
-      pai_gc_alloc_dmem(trailer, PAI_GPU_ALLOC_ALIGN, "pai-trailer", NULL,
-                        1) !=
+      pai_gc_alloc_dmem(device, trailer, PAI_GPU_ALLOC_ALIGN,
+                        "pai-trailer", NULL, 1) !=
           PAI_OK) {
     return PAI_ERR_NOMEM;
   }
