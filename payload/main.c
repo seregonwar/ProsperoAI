@@ -1280,6 +1280,49 @@ m0_exp_v0model(m0_ctx_t *ctx) {
     }
   }
 
+  /* H4-H6: T# candidates with the proven-executing E38 kernel shape. */
+  {
+    static const uint32_t t_candidates[3] = {
+        0x31014FACu, /* OpenAGC raw */
+        0x00080688u, /* dst_sel 0-3, elem 4B, format 0 */
+        0x20002000u, /* GNM classic raw */
+    };
+    static const char *const t_names[3] = {"H4", "H5", "H6"};
+    uint32_t *a32 = (uint32_t *)ctx->a.cpu_addr;
+
+    for (uint32_t i = 0; i < PAI_EXP_THREADS_X; i++) {
+      a32[i] = 0x22220000u + i;
+    }
+
+    for (uint32_t variant = 0; variant < 3; variant++) {
+      const char *name = t_names[variant];
+      if (!host) {
+        pai_gpu_reset(gpu);
+      }
+      memcpy(ctx->code.cpu_addr, &pai_hbatch_code[PAI_H1_OFF],
+             PAI_H1_WORDS * sizeof(uint32_t));
+      if (host) {
+        pai_gpu_host_register_shader(gpu, ctx->code.gpu_addr,
+                                     pai_host_kernel_h1, NULL);
+      }
+      ud[0] = (uint32_t)(ctx->a.gpu_addr & 0xFFFFFFFFu);
+      ud[1] = (uint32_t)(ctx->a.gpu_addr >> 32);
+      ud[2] = 4096u;
+      ud[3] = t_candidates[variant];
+      ud[4] = (uint32_t)(ctx->c.gpu_addr & 0xFFFFFFFFu);
+      ud[5] = (uint32_t)(ctx->c.gpu_addr >> 32);
+      m0_build_dispatch_stream(ctx, stream, M0_PM4_CAP, PAI_H1_RSRC2,
+                               PAI_EXP_THREADS_X, 1, ud, 6, &stream_len);
+      m0_run_gpu(ctx, stream, stream_len, c32, 128 * 4, 0xCC, name);
+      PAI_LOG_INFO_(PAI_SUB_GPU, "[M0-%s] c[0..15] = %08x %08x %08x %08x "
+                    "%08x %08x %08x %08x %08x %08x %08x %08x %08x %08x "
+                    "%08x %08x\n",
+                    name, c32[0], c32[1], c32[2], c32[3], c32[4], c32[5],
+                    c32[6], c32[7], c32[8], c32[9], c32[10], c32[11], c32[12],
+                    c32[13], c32[14], c32[15]);
+    }
+  }
+
   /* H1/H3: MUBUF loads with the OpenAGC raw T# — the load breakthrough. */
   {
     static const uint32_t h_offs[2] = {PAI_H1_OFF, PAI_H3_OFF};
