@@ -89,6 +89,16 @@
 #define PAI_ARITH4B_OFF 13u
 #define PAI_ARITH4B_WORDS 12u
 
+/* F1-F4: dst-v0-broadcast workaround batch (gfx1013/pai_fbatch.inc). */
+#define PAI_F1_OFF 0u
+#define PAI_F1_WORDS 14u
+#define PAI_F2_OFF 14u
+#define PAI_F2_WORDS 13u
+#define PAI_F3_OFF 27u
+#define PAI_F3_WORDS 15u
+#define PAI_F4_OFF 41u
+#define PAI_F4_WORDS 16u
+
 /* E31: loadstore with vaddr pairs 1 (v[2:3]) only. */
 #define PAI_LOADSTORE_GOLD_RSRC2 0x0000000Cu
 #define PAI_LOADSTORE_GOLD_CODE_WORDS 20u
@@ -132,6 +142,7 @@ extern const uint32_t pai_store64_v0_code[PAI_STORE64_V0_CODE_WORDS];
 extern const uint32_t pai_mubufload_code[PAI_MUBUFLOAD_CODE_WORDS];
 extern const uint32_t pai_arith_code[PAI_ARITH_CODE_WORDS];
 extern const uint32_t pai_arith4_code[];
+extern const uint32_t pai_fbatch_code[];
 extern const uint32_t pai_v0model_code[];
 extern const uint32_t pai_loadstore_gold_code[PAI_LOADSTORE_GOLD_CODE_WORDS];
 extern const uint32_t pai_loadstore_code[PAI_LOADSTORE_CODE_WORDS];

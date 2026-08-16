@@ -40,6 +40,10 @@ const uint32_t pai_arith4_code[] = {
 #include "gfx1013/pai_arith4.inc"
 };
 
+const uint32_t pai_fbatch_code[] = {
+#include "gfx1013/pai_fbatch.inc"
+};
+
 const uint32_t pai_v0model_code[] = {
 #include "gfx1013/pai_v0model.inc"
 };

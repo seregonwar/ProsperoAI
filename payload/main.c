@@ -209,8 +209,9 @@ m0_run_gpu(m0_ctx_t *ctx, uint32_t *stream, uint32_t stream_len,
                       "[%s] data changed but label did not fire (fence=%s): "
                       "stream executed\n",
                       stage, fence_names[fence]);
-        return 0;
-      }
+
+  return 0;
+}
     }
 
     PAI_LOG_WARN_(PAI_SUB_GPU,
@@ -1230,6 +1231,86 @@ m0_exp_v0model(m0_ctx_t *ctx) {
       }
     }
   }
+  /* F1-F4: dst-v0-broadcast workaround batch. */
+  {
+    float k = 1.5f;
+    uint32_t k_bits;
+    memcpy(&k_bits, &k, sizeof(k_bits));
+
+    for (uint32_t variant = 0; variant < 4; variant++) {
+      static const uint32_t offs[4] = {PAI_F1_OFF, PAI_F2_OFF, PAI_F3_OFF,
+                                       PAI_F4_OFF};
+      static const uint32_t lens[4] = {PAI_F1_WORDS, PAI_F2_WORDS,
+                                       PAI_F3_WORDS, PAI_F4_WORDS};
+      static const char *const names[4] = {"F1", "F2", "F3", "F4"};
+      uint32_t off = offs[variant];
+      uint32_t words = lens[variant];
+      const char *name = names[variant];
+
+      if (!host) {
+        pai_gpu_reset(gpu);
+      }
+      memcpy(ctx->code.cpu_addr, &pai_fbatch_code[off],
+             words * sizeof(uint32_t));
+      if (host) {
+        pai_gpu_host_register_shader(gpu, ctx->code.gpu_addr,
+                                     pai_host_kernel_arith, NULL);
+      }
+      ud[0] = k_bits;
+      ud[1] = 0;
+      ud[2] = (uint32_t)(ctx->c.gpu_addr & 0xFFFFFFFFu);
+      ud[3] = (uint32_t)(ctx->c.gpu_addr >> 32);
+      m0_build_dispatch_stream(ctx, stream, M0_PM4_CAP, PAI_ARITH4_RSRC2,
+                               PAI_EXP_THREADS_X, 1, ud, 4, &stream_len);
+      m0_run_gpu(ctx, stream, stream_len, c32, 128, 0xCC, name);
+
+      if (variant == 1) {
+        /* F2 control: v0 stays tid -> c[i] == i as bits */
+        int ok = 1;
+        for (uint32_t i = 0; i < PAI_EXP_THREADS_X; i++) {
+          if (c32[i] != i) {
+            ok = 0;
+            break;
+          }
+        }
+        m0_exp_report(name, ok);
+        PAI_LOG_INFO_(PAI_SUB_GPU, "[M0-%s] c[0..7] = %08x %08x %08x %08x "
+                      "%08x %08x %08x %08x\n",
+                      name, c32[0], c32[1], c32[2], c32[3], c32[4], c32[5],
+                      c32[6], c32[7]);
+      } else if (variant == 3) {
+        /* F4: integer add -> c[i] == i + k_bits */
+        int ok = 1;
+        for (uint32_t i = 0; i < PAI_EXP_THREADS_X; i++) {
+          if (c32[i] != i + k_bits) {
+            ok = 0;
+            break;
+          }
+        }
+        m0_exp_report(name, ok);
+        if (!ok) {
+          PAI_LOG_ERROR_(PAI_SUB_GPU, "[M0-%s] c[0..7] = %08x %08x %08x "
+                         "%08x %08x %08x %08x %08x\n",
+                         name, c32[0], c32[1], c32[2], c32[3], c32[4], c32[5],
+                         c32[6], c32[7]);
+        }
+      } else {
+        /* F1/F3: float add -> c[i] == (float)i + k */
+        float *cf = (float *)ctx->c.cpu_addr;
+        int ok = 1;
+        for (uint32_t i = 0; i < PAI_EXP_THREADS_X; i++) {
+          float want = (float)i + k;
+          if (cf[i] != want) {
+            ok = 0;
+            PAI_LOG_ERROR_(PAI_SUB_GPU, "[M0-%s] c[%u] = %f want %f\n",
+                           name, i, (double)cf[i], (double)want);
+            break;
+          }
+        }
+        m0_exp_report(name, ok);
+      }
+    }
+  }
 
   return 0;
 }
@@ -1418,10 +1499,10 @@ m0_exp_arith_golden_cfg(m0_ctx_t *ctx) {
 
   memcpy(ctx->code.cpu_addr, pai_arith_code,
          PAI_ARITH_CODE_WORDS * sizeof(uint32_t));
-  if (host) {
-    pai_gpu_host_register_shader(gpu, ctx->code.gpu_addr,
-                                 pai_host_kernel_arith, NULL);
-  }
+      if (host) {
+        pai_gpu_host_register_shader(gpu, ctx->code.gpu_addr,
+                                     pai_host_kernel_fbatch, NULL);
+      }
 
   ud[0] = 0;
   ud[1] = 0;
