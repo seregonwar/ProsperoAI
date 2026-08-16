@@ -58,9 +58,7 @@ typedef struct imp_model {
   uint32_t num_tokens;
 } imp_model_t;
 
-/* ------------------------------------------------------------------ */
-/* Line/token helpers                                                  */
-/* ------------------------------------------------------------------ */
+/* Line/token helpers */
 
 static char *
 skip_ws(char *p) {
@@ -217,9 +215,7 @@ basename_of(const char *path) {
   return b != NULL ? b + 1 : path;
 }
 
-/* ------------------------------------------------------------------ */
-/* Parser                                                              */
-/* ------------------------------------------------------------------ */
+/* Parser */
 
 static int
 parse_value_line(char **pp, imp_model_t *m) {
@@ -281,8 +277,7 @@ parse_value_line(char **pp, imp_model_t *m) {
 }
 
 /* Append comma-separated ids from tok to the current in/out list. The
- * list may span multiple tokens (e.g. "1, 2" tokenizes as "1," "2"), so
- * ids accumulate at the current offset. */
+ * list may span multiple tokens ("1, 2" tokenizes as "1," "2"). */
 static int
 op_append_tok(imp_op_t *op, int outputs, const char *tok) {
   uint32_t *dst = outputs ? op->out : op->in;
@@ -459,9 +454,7 @@ parse_model(const char *buf, imp_model_t *m) {
   return 0;
 }
 
-/* ------------------------------------------------------------------ */
-/* Weight loading + quantization                                       */
-/* ------------------------------------------------------------------ */
+/* Weight loading + quantization */
 
 static uint64_t
 value_numel(const imp_value_t *v) {
@@ -545,9 +538,7 @@ free_weights(imp_model_t *m) {
   }
 }
 
-/* ------------------------------------------------------------------ */
-/* Import                                                              */
-/* ------------------------------------------------------------------ */
+/* Import */
 
 static pai_status_t
 build_container(const imp_model_t *m, const pai_import_options_t *opts,

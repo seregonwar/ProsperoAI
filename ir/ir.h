@@ -1,32 +1,15 @@
 /*
  * ProsperoAI — Prospero IR (whitepaper §10.1) and Kernel IR (§10.2)
  *
- * Prospero IR is the graph-level intermediate representation produced by
- * model import and consumed by the graph compiler:
+ * Graph-level IR between model import and the graph compiler:
+ * tensors, shapes, dtypes, quantization metadata (§15), operators,
+ * memory alignment and device constraints — hardware-aware but not
+ * PS5-kernel-specific. Serializes to a flat little-endian blob (magic
+ * + version + counts + CRC-32 + value/op records) that can be embedded
+ * in .pai containers or transferred over the protocol (§20/§24).
  *
- *   Model -> Prospero IR -> graph passes -> execution plan
- *
- * It describes tensors, shapes, datatypes, quantization metadata (§15),
- * operators, dependencies, memory properties (alignment) and device
- * placement constraints. It is hardware-aware enough to optimize, but
- * not PS5-kernel-specific.
- *
- * The IR is deliberately standalone: it depends only on the public SDK
- * (dtype/tensor) and the protocol CRC (reused for blob integrity). The
- * graph <-> IR conversion helpers live in ir_graph.c and bridge the
- * higher-level pai_graph layer.
- *
- * Serialization: a compact flat little-endian blob (magic + version +
- * counts + CRC-32 + fixed-size value records + variable-size op
- * records). This blob is the portable in-memory form of an IR program:
- * the same layout can be embedded in .pai containers and transferred
- * over the Prospero Protocol (§20/§24).
- *
- * Kernel IR (§10.2) is the lower level below fusion: computational
- * units close enough to GPU execution to permit tiling, vector-width
- * selection, layout specialization and workgroup configuration. The
- * kir/ part ships the descriptor + builder + a naive per-op lowering;
- * fusion and shape specialization are later passes.
+ * Kernel IR (§10.2) is the lower level below fusion; the kir/ part
+ * ships descriptor + builder + a naive per-op lowering.
  */
 
 #ifndef PAI_IR_H
@@ -48,10 +31,8 @@ extern "C" {
 
 struct pai_graph; /* forward: conversion helpers accept graph layer types */
 
-/* ------------------------------------------------------------------ */
-/* IR op kinds (mirrors the graph op set; conversion lives in         */
-/* ir_graph.c).                                                       */
-/* ------------------------------------------------------------------ */
+/* IR op kinds (mirrors the graph op set; conversion lives in
+ * ir_graph.c). */
 
 typedef enum pai_ir_op_kind {
   PAI_IR_OP_NONE = 0,
@@ -75,9 +56,7 @@ typedef enum pai_ir_op_kind {
   PAI_IR_OP_KIND_COUNT,
 } pai_ir_op_kind_t;
 
-/* ------------------------------------------------------------------ */
-/* Value categories and device placement constraints (§10.1)          */
-/* ------------------------------------------------------------------ */
+/* Value categories and device placement constraints (§10.1). */
 
 typedef enum pai_ir_value_kind {
   PAI_IR_VALUE_ACTIVATION = 0, /* intermediate tensor                  */
@@ -95,10 +74,8 @@ typedef enum pai_ir_device {
   PAI_IR_DEVICE_COUNT,
 } pai_ir_device_t;
 
-/* ------------------------------------------------------------------ */
-/* Quantization metadata (§15) — the runtime is quantization-agnostic: */
-/* these fields describe the scheme, never imply a fixed list.         */
-/* ------------------------------------------------------------------ */
+/* Quantization metadata (§15) — describes the scheme; the runtime is
+ * quantization-agnostic (no fixed scheme list). */
 
 typedef enum pai_ir_quant_repr {
   PAI_IR_QUANT_REPR_F32 = 0,
@@ -244,7 +221,7 @@ uint32_t pai_ir_encoded_size(const pai_ir_program_t *prog);
 pai_status_t pai_ir_encode(const pai_ir_program_t *prog, uint8_t *out,
                            uint32_t cap, uint32_t *out_nbytes);
 
-/* Validates magic, version, counts, CRC and record bounds. Corrupted
+/* Validates magic, version, counts, CRC and record bounds; corrupted
  * or truncated blobs yield PAI_ERR_PROTOCOL. */
 pai_status_t pai_ir_decode(const uint8_t *data, uint32_t nbytes,
                            pai_ir_program_t *out);

@@ -100,9 +100,8 @@ pai_model_open_blob(const uint8_t *blob, uint32_t nbytes,
     goto fail;
   }
 
-  /* Rebuild the compute graph and its static memory plan. Sessions
-   * re-execute the plan every generation step, so weights must stay
-   * resident: use the persistent variant (§16). */
+  /* Rebuild graph + static memory plan. Weights must stay resident
+   * across generation steps: use the persistent variant (§16). */
   st = pai_ir_to_graph(&model->ir, &model->graph);
   if (st != PAI_OK) {
     goto fail;
@@ -150,10 +149,6 @@ const char *
 pai_model_name(const pai_model_t *model) {
   return model != NULL ? model->name : NULL;
 }
-
-/* ------------------------------------------------------------------ */
-/* Sessions                                                            */
-/* ------------------------------------------------------------------ */
 
 static uint64_t
 next_pow2_u64(uint64_t v) {
@@ -212,11 +207,10 @@ pai_session_init(pai_model_t *model, pai_session_t **out_session) {
     return PAI_ERR_NOMEM;
   }
 
-  /* Load canonical weights into their planned offsets. Quantized
-   * tensors (IR quant metadata present, §15) are dequantized to f32 in
-   * the region: the reference executor is f32-only, so the session
-   * keeps quantized storage on disk/container and f32 execution state
-   * in the region. */
+  /* Load canonical weights into planned offsets. Quantized tensors
+   * (§15) are dequantized to f32: the reference executor is f32-only,
+   * so quantized storage stays in the container and f32 state in the
+   * region. */
   for (i = 0; i < model->num_tensors; i++) {
     const pai_pai_tensor_t *t = &model->manifest[i];
     const pai_graph_value_t *v = graph_value(&model->graph, t->value_id);
@@ -427,7 +421,6 @@ pai_session_generate(pai_session_t *session, const char *prompt,
         break; /* context exhausted: stop generating */
       }
 
-      /* One-hot the whole current context. */
       memset(in, 0, (size_t)in_value->size_bytes);
       for (i = 0; i < seq_len; i++) {
         if (ids[i] >= vocab) {
@@ -476,7 +469,6 @@ pai_session_generate(pai_session_t *session, const char *prompt,
       uint32_t sampled = cur;
       uint32_t text_n = 0;
 
-      /* Feed the current token as a one-hot input. */
       if (cur >= vocab) {
         free(ids);
         return PAI_ERR_MISMATCH; /* token id outside the model's vocab */
@@ -520,17 +512,13 @@ pai_session_generate(pai_session_t *session, const char *prompt,
   return PAI_OK;
 }
 
-/* ------------------------------------------------------------------ */
-/* Embeddings (Phase 9 seed, §26 /v1/embeddings)                      */
-/* ------------------------------------------------------------------ */
+/* Embeddings (§26 /v1/embeddings) */
 
 /*
- * Locate the token-embedding parameter: the operand of the first
- * GEMM/GEMV/MATMUL op that also consumes the graph input. Reports the
- * layout: row-major (matrix [vocab, dim], embedding = row) when
- * shape[0] == vocab (GGUF adapter, native k-major) or column-major
- * (matrix [dim, vocab], embedding = column, e.g. the importer DSL).
- * Returns the value id, or 0 when the model has no embedding table.
+ * Locate the token-embedding parameter: the non-input operand of the
+ * first GEMM/GEMV/MATMUL consuming the graph input. Layout is
+ * row-major [vocab, dim] (GGUF adapter) or column-major [dim, vocab]
+ * (importer DSL). Returns the value id, or 0 when there is none.
  */
 static uint32_t
 find_embed_param(const pai_model_t *model, int *out_row_major,
@@ -585,8 +573,8 @@ find_embed_param(const pai_model_t *model, int *out_row_major,
   return 0;
 }
 
-/* Load the canonical weight blob of a value as f32 (dequantizing when
- * the container stores it quantized). Caller frees *out. */
+/* Load a value's canonical weight blob as f32 (dequantizing when
+ * stored quantized). Caller frees *out. */
 static pai_status_t
 load_value_f32(const pai_model_t *model, uint32_t value_id, float **out,
                uint64_t *out_n) {

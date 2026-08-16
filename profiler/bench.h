@@ -1,10 +1,5 @@
-/*
- * ProsperoAI — profiler
- *
- * Minimal timing/benchmark primitives feeding the PAI-M0 harness
- * (whitepaper §30/§31). Grows into the full profiling subsystem in
- * later phases.
- */
+/* ProsperoAI — minimal timing/benchmark primitives feeding the PAI-M0
+ * harness (whitepaper §30/§31); grows into the full profiler later. */
 
 #ifndef PAI_PROFILER_BENCH_H
 #define PAI_PROFILER_BENCH_H

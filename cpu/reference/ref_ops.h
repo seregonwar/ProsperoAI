@@ -1,10 +1,7 @@
 /*
- * ProsperoAI — CPU reference backend
- *
- * Deliberately simple reference implementations used as the correctness
- * oracle for optimized CPU/GPU backends (whitepaper §37).
- *
- * Everything here favors clarity over performance.
+ * ProsperoAI — CPU reference backend.
+ * Deliberately simple implementations; the correctness oracle for the
+ * optimized CPU/GPU backends (whitepaper §37). Clarity over speed.
  */
 
 #ifndef PAI_CPU_REFERENCE_H

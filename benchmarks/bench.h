@@ -1,11 +1,9 @@
 /*
- * ProsperoAI — benchmark harness (whitepaper §31)
- *
- * Reproducible benchmarking helpers: a monotonic nanosecond clock and
- * statistical summaries. Benchmarks validate correctness before
- * accepting performance numbers, run warmup iterations, and report
- * min/median over the measured samples (median is robust against
- * scheduler noise; min approximates the uncongested cost).
+ * ProsperoAI — benchmark harness (whitepaper §31): monotonic ns clock
+ * and statistical summaries. Benchmarks validate correctness before
+ * accepting numbers, run warmups, and report min/median over measured
+ * samples (median is robust against scheduler noise; min approximates
+ * the uncongested cost).
  */
 
 #ifndef PAI_BENCH_H

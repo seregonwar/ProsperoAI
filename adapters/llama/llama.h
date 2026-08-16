@@ -1,21 +1,12 @@
 /*
- * ProsperoAI — LLaMA-family adapter (whitepaper §9.3)
- *
- * Translates a llama.cpp GGUF file (LLaMA-2/3, Mistral architectures)
- * into a native `.pai` container: architecture metadata -> a faithful
- * LLaMA compute graph (RMSNorm, QKV projections, causal multi-head
- * attention, RoPE, SiLU-gated MLP, residuals, LM head) -> optional
- * quantization (§15) -> PAI packaging (§20).
- *
- * The generated graph runs through the reference executor in
- * sequence mode: the container input is a [context, vocab] one-hot
- * sequence and the output is per-position logits (whitepaper §9 note:
- * v0 recomputes attention over the full context each step rather than
- * maintaining an incremental KV cache; O(seq^2) is correct but not
- * fast, and KV-cache reuse is a later milestone).
- *
- * Host-side tooling only; the reader can be dropped once the Desktop
- * toolchain matures.
+ * ProsperoAI — LLaMA-family adapter (whitepaper §9.3).
+ * Translates a llama.cpp GGUF file (LLaMA-2/3, Mistral) into a native
+ * `.pai` container: faithful LLaMA graph (RMSNorm, QKV projections,
+ * causal multi-head attention, RoPE, SiLU-gated MLP, residuals, LM
+ * head) -> optional quantization (§15) -> PAI packaging (§20).
+ * v0 runs in sequence mode, recomputing attention over the full
+ * context each step (O(seq^2); incremental KV cache is a later
+ * milestone). Host-side tooling only.
  */
 
 #ifndef PAI_ADAPTERS_LLAMA_H

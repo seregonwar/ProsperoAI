@@ -1,12 +1,9 @@
 /*
- * ProsperoAI — memory subsystem
- *
- * Static memory planner (whitepaper §16). Compiled graphs let tensor
- * lifetimes be known ahead of execution, so buffers can be reused when
- * lifetimes do not overlap. The planner consumes a set of allocation
- * requests with step-based lifetimes and produces a single contiguous
- * region layout with reuse, mirroring what the GPU allocator later
- * carves out of device memory.
+ * ProsperoAI — static memory planner (whitepaper §16). Compiled graphs
+ * make tensor lifetimes known ahead of execution, so buffers are reused
+ * when lifetimes do not overlap: step-based allocation requests become
+ * a single contiguous region layout with reuse, mirroring what the GPU
+ * allocator later carves out of device memory.
  */
 
 #ifndef PAI_MEMORY_PLANNER_H
@@ -46,9 +43,7 @@ typedef struct pai_mem_plan {
 void pai_mem_planner_init(pai_mem_planner_t *planner);
 
 /*
- * Register an allocation. start/end are execution steps; the region is
- * live for start <= step < end. Returns PAI_ERR_INVALID_ARG for bad
- * sizes/align/lifetimes and PAI_ERR_NOMEM when the table is full.
+ * Register an allocation: live for start <= step < end.
  */
 pai_status_t pai_mem_planner_add(pai_mem_planner_t *planner, uint64_t size,
                                  uint64_t align, uint64_t start, uint64_t end);

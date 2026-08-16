@@ -1,20 +1,11 @@
 /*
- * ProsperoAI — optimized CPU backend (whitepaper §6/§12, §37)
- *
- * SIMD-accelerated operators for the Zen 2-class CPU of the PS5 and
- * host builds, with runtime dispatch:
- *
- *   portable  -> SSE2 (x86-64 baseline) -> AVX2 + FMA (when detected)
- *
- * The reference backend (cpu/reference) remains the correctness oracle:
- * every optimized operator here must be validated differentially
- * against its reference twin (§37). Semantics are identical to the
- * reference twins (same argument order, same return codes); only the
- * execution differs.
- *
- * The AVX2 implementations are compiled with function-level target
- * attributes, so no extra CMake targets or -march flags are required;
- * the runtime check keeps them off machines without AVX2/FMA.
+ * ProsperoAI — optimized CPU backend (whitepaper §6/§12, §37).
+ * SIMD operators for the Zen 2-class PS5 CPU and host builds, with
+ * runtime dispatch: portable -> SSE2 (x86-64 baseline) -> AVX2 + FMA
+ * (when detected). The reference backend stays the correctness oracle:
+ * every optimized op must be validated differentially against its
+ * reference twin (§37); semantics and return codes are identical.
+ * AVX2 paths use function-level target attributes (no -march needed).
  */
 
 #ifndef PAI_CPU_OPTIMIZED_H
@@ -42,9 +33,7 @@ uint32_t pai_opt_features(void);
 /* Name of the active implementation tier for diagnostics. */
 const char *pai_opt_backend_name(void);
 
-/* ------------------------------------------------------------------ */
-/* Element-wise ops (same semantics as pai_ref_*_f32)                  */
-/* ------------------------------------------------------------------ */
+/* Element-wise ops (same semantics as pai_ref_*_f32) */
 
 /* c[i] = a[i] + b[i] */
 pai_status_t pai_opt_vecadd_f32(const float *a, const float *b, float *c,
@@ -63,9 +52,7 @@ pai_status_t pai_opt_relu_f32(const float *a, float *c, uint64_t n);
 /* Single-row softmax. */
 pai_status_t pai_opt_softmax_f32(const float *a, float *c, uint64_t n);
 
-/* ------------------------------------------------------------------ */
-/* Dense ops                                                           */
-/* ------------------------------------------------------------------ */
+/* Dense ops */
 
 /* c = a * b, row-major: a[m x k], b[k x n], c[m x n]. */
 pai_status_t pai_opt_gemm_f32(uint64_t m, uint64_t n, uint64_t k,

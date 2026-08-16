@@ -1,8 +1,6 @@
 /*
- * ProsperoAI — public SDK
- *
- * Status codes shared by every PAI API. The high-level API (pai/api.h)
- * guarantees ABI stability; these codes are part of that contract.
+ * ProsperoAI — public SDK: status codes shared by every PAI API, part
+ * of the ABI-stable contract of pai/api.h.
  */
 
 #ifndef PAI_ERROR_H

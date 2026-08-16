@@ -1,10 +1,9 @@
 /*
- * ProsperoAI — host reference GPU backend
+ * ProsperoAI — host reference GPU backend.
  *
- * A PM4 interpreter that executes the exact command streams the PS5
- * backend submits, over identity-mapped host buffers. Used to develop
- * and validate the whole submission path without hardware, and as a
- * second correctness oracle next to cpu/reference (whitepaper §36/§37).
+ * PM4 interpreter running the exact streams the PS5 backend submits,
+ * over identity-mapped host buffers: develops and validates the whole
+ * submission path without hardware.
  */
 
 #include <hal/hal.h>

@@ -1,12 +1,9 @@
 /*
- * ProsperoAI — quantization (§15, §10.1 metadata)
- *
- * The runtime is quantization-agnostic: this module implements the v0
- * reference schemes (symmetric, per-group scale) and expresses them with
- * the same metadata the Prospero IR carries (pai_ir_quant_t): bit
- * width, signedness and group size. The Desktop toolchain chooses the
- * scheme per tensor (§15); the model loader dequantizes canonical
- * weights back to f32 on the reference path.
+ * ProsperoAI — quantization (§15, §10.1 metadata).
+ * The runtime is quantization-agnostic; this module implements the v0
+ * reference schemes (symmetric, per-group scale) using the metadata the
+ * Prospero IR carries (pai_ir_quant_t). The model loader dequantizes
+ * canonical weights back to f32 on the reference path.
  *
  * v0 schemes:
  *
@@ -60,27 +57,20 @@ uint64_t pai_quant_weights_bytes(uint64_t n, const pai_quant_scheme_t *scheme);
 uint64_t pai_quant_scale_bytes(uint64_t n, const pai_quant_scheme_t *scheme);
 
 /*
- * Quantize n f32 elements into out_q (pai_quant_value_bytes bytes) and
- * one f32 scale per group into out_scales (pai_quant_scale_bytes).
- * out_q and out_scales must not overlap src. Returns
- * PAI_ERR_INVALID_ARG on nulls, PAI_ERR_UNSUPPORTED on scheme.
+ * Quantize n f32 elements into out_q (values) and out_scales (one f32
+ * per group). out_q and out_scales must not overlap src.
  */
 pai_status_t pai_quantize_f32(const float *src, uint64_t n,
                               const pai_quant_scheme_t *scheme, int8_t *out_q,
                               float *out_scales, uint64_t *out_num_groups);
 
-/*
- * Dequantize a packed blob (values + scales, exactly as produced by
- * pai_quantize_f32) back to f32. out must not overlap q/scales.
- */
+/* Dequantize a packed blob (values + scales, as produced by
+ * pai_quantize_f32) back to f32. out must not overlap q/scales. */
 pai_status_t pai_dequantize_f32(const int8_t *q, const float *scales,
                                 uint64_t n, const pai_quant_scheme_t *scheme,
                                 float *out);
 
-/*
- * Error metrics between two f32 buffers (e.g. original vs dequantized):
- * max absolute error and RMSE. Returns PAI_ERR_INVALID_ARG on nulls.
- */
+/* Error metrics between two f32 buffers: max absolute error and RMSE. */
 pai_status_t pai_quant_error_f32(const float *a, const float *b, uint64_t n,
                                  float *out_max_abs, float *out_rmse);
 

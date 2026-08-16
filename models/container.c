@@ -1,9 +1,5 @@
-/*
- * ProsperoAI — shared `.pai` container builder (see container.h)
- *
- * Ported from the importer's packaging step so both the DSL importer
- * and the GGUF adapter produce containers through one code path.
- */
+/* Shared `.pai` container builder (see container.h): one packaging
+ * path for the DSL importer and the GGUF adapter. */
 
 #include "container.h"
 

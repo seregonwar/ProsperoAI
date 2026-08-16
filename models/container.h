@@ -1,13 +1,9 @@
 /*
- * ProsperoAI — shared `.pai` container builder (whitepaper §8/§20)
- *
- * Takes a graph description (value/tensor descriptors + ops), raw f32
- * weights, a tokenizer vocabulary and model metadata, and produces a
- * `.pai` container blob: graph reconstruction -> Prospero IR -> optional
- * quantization (§15) -> PAI packaging (§20).
- *
- * Both host import paths share this step: the text-description importer
- * (models/importer.c) and the GGUF/LLaMA adapter (adapters/llama/).
+ * ProsperoAI — shared `.pai` container builder (whitepaper §8/§20).
+ * Graph description + raw f32 weights + tokenizer + metadata -> `.pai`
+ * blob: graph reconstruction -> Prospero IR -> optional quantization
+ * (§15) -> PAI packaging (§20). Shared by the importer and the GGUF
+ * adapter.
  */
 
 #ifndef PAI_MODELS_CONTAINER_H

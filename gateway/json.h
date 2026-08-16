@@ -1,25 +1,11 @@
 /*
  * ProsperoAI — minimal JSON (gateway §26)
  *
- * A small, dependency-free JSON document model for the OpenAI-compatible
- * gateway: a DOM parser (node pool + string arena) and a writer
- * (growable buffer with proper escaping and number formatting). It is
- * deliberately strict (RFC 8259 shape) and bounded:
- *
- *   - maximum nesting depth PAI_JSON_MAX_DEPTH;
- *   - maximum node count PAI_JSON_MAX_NODES (DoS bound);
- *   - per-string length cap PAI_JSON_MAX_STRING;
- *
- * Objects store members as child (key, value) node pairs; keys are
- * copies held in the document's string arena. The parser rejects
- * trailing garbage, control characters in strings and malformed
- * numbers. \uXXXX escapes are decoded to UTF-8 including surrogate
- * pairs.
- *
- * The writer serializes the parsed tree back to text (round-trip for
- * tests) and provides the low-level pieces the gateway uses to build
- * responses: pai_json_wb_putf for formatting and pai_json_quote for
- * escaping user content.
+ * Strict RFC 8259 DOM parser (node pool + string arena) and a writer
+ * with proper escaping. Bounded: PAI_JSON_MAX_DEPTH, PAI_JSON_MAX_NODES
+ * (DoS bound), PAI_JSON_MAX_STRING. The writer serializes trees back to
+ * text and provides the pieces the gateway uses to build responses
+ * (pai_json_wb_putf, pai_json_quote).
  */
 
 #ifndef PAI_GATEWAY_JSON_H
@@ -59,11 +45,9 @@ typedef struct pai_json_doc {
                              empty or whitespace-only                    */
 } pai_json_doc_t;
 
-/*
- * Parse `nbytes` of JSON text. PAI_ERR_PROTOCOL on malformed input,
- * PAI_ERR_NOMEM when a size limit is exceeded. The document must be
- * destroyed with pai_json_destroy.
- */
+/* Parse `nbytes` of JSON text; PAI_ERR_PROTOCOL on malformed input,
+ * PAI_ERR_NOMEM when a size limit is exceeded. Destroy with
+ * pai_json_destroy. */
 pai_status_t pai_json_parse(pai_json_doc_t *doc, const char *text,
                             uint32_t nbytes);
 void pai_json_destroy(pai_json_doc_t *doc);

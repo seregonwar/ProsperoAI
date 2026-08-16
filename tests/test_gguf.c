@@ -11,9 +11,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-/* ------------------------------------------------------------------ */
-/* Minimal GGUF writer for test fixtures                               */
-/* ------------------------------------------------------------------ */
+/* Minimal GGUF writer for test fixtures */
 
 typedef struct gb {
   uint8_t *d;
@@ -185,9 +183,7 @@ build_gguf(const uint8_t *kvs, size_t kv_n, uint32_t kv_count,
   return 0;
 }
 
-/* ------------------------------------------------------------------ */
-/* Dequant unit helpers                                                */
-/* ------------------------------------------------------------------ */
+/* Dequant unit helpers */
 
 static void
 free_gguf(uint8_t *buf) {
@@ -252,9 +248,7 @@ check_dequant(const char *name, uint32_t type, uint64_t numel,
   free(got);
 }
 
-/* ------------------------------------------------------------------ */
-/* Dequant unit tests (hand-computed against llama.cpp formulas)       */
-/* ------------------------------------------------------------------ */
+/* Dequant unit tests (hand-computed against llama.cpp formulas) */
 
 static void
 test_dequant_types(void) {
@@ -564,9 +558,7 @@ test_dequant_types(void) {
   }
 }
 
-/* ------------------------------------------------------------------ */
-/* Reader edge cases                                                   */
-/* ------------------------------------------------------------------ */
+/* Reader edge cases */
 
 static void
 test_reader_errors(void) {
@@ -637,9 +629,7 @@ test_reader_errors(void) {
   }
 }
 
-/* ------------------------------------------------------------------ */
-/* Tiny LLaMA end-to-end                                               */
-/* ------------------------------------------------------------------ */
+/* Tiny LLaMA end-to-end */
 
 #define T_VOCAB 16
 #define T_EMBD 8

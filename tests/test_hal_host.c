@@ -120,9 +120,8 @@ TEST_MAIN_BEGIN()
     CHECK(memcmp(a.cpu_addr, c.cpu_addr, 1024) == 0);
   }
 
-  /* M0 experiment kernels: store_const / loadstore, dispatched through
-   * the same code buffer (exercises shader re-registration), plus
-   * encoding checks for the FLAT bit-15 patch targets. */
+  /* M0 kernels: store_const / loadstore through the shared code buffer
+   * (exercises shader re-registration) + FLAT bit-15 patch targets. */
   {
     pai_pm4_builder_t pb;
     uint32_t pm4[64];

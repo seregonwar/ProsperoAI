@@ -1,52 +1,21 @@
 /*
  * ProsperoAI — `.pai` Model Container (whitepaper §20)
  *
- * The native ProsperoAI model package: a portable model + a vehicle
- * for hardware-specific compiled assets. v0 implements the portable
- * sections; target slices and execution profiles are reserved placeholders.
+ * Portable model package: canonical sections (meta, manifest, weights,
+ * IR, tokenizer) plus reserved hardware slices (§21). Layout (all
+ * integers little-endian):
  *
- * Layout (all integers little-endian):
+ *   [0]   u32 magic 0x43494150 ("PAIC")   [4] u16 version 1
+ *   [6]   u16 flags 0                     [8] u32 num_sections
+ *   [12]  u32 crc32  over bytes [0,12) + section table + payloads
+ *   [16]  section table  num_sections x 16 bytes:
+ *           u32 type, u32 flags, u32 offset (from file start),
+ *           u32 size (payload bytes)
+ *   [16 + 16*num_sections] payloads
  *
- *   [0]    u32 magic           0x43494150 ("PAIC")
- *   [4]    u16 version         1
- *   [6]    u16 flags           0
- *   [8]    u32 num_sections
- *   [12]   u32 crc32           over bytes [0,12) + section table + all
- *                              section payloads
- *   [16]   section table       num_sections x 16 bytes:
- *                                u32 type
- *                                u32 flags
- *                                u32 offset   (from file start)
- *                                u32 size     (payload bytes)
- *   [16 + 16*num_sections]     section payloads (each 8-aligned)
- *
- * Sections (pai_pai_section_type):
- *   META       structured model metadata (name, family, context, ...)
- *   MANIFEST   tensor manifest: name -> value id, dtype, shape, offset
- *              into the WEIGHTS section (the canonical weights blob)
- *   WEIGHTS    canonical weights, raw bytes, referenced by the manifest
- *   IR         encoded Prospero IR blob (§10.1, pai_ir_encode format)
- *   TOKENIZER  serialized tokenizer blob (models/tokenizer.h)
- *   TARGET     PS5 target slice (packed tensors / kernel candidates) —
- *              reserved in v0, must be empty or opaque
- *   PROFILE    execution profiles (autotuning results) — reserved in v0
- *
- * The container is a portable model package (canonical sections) that
- * may later carry hardware slices, matching §21 (universal container
- * model / fat binary). Integrity: the file CRC plus per-section access
- * is validated on open; readers must never trust section payloads.
- *
- * The manifest payload format (v0):
- *   u32 count
- *   per entry:
- *     u16 name_len; u8 name[name_len]
- *     u32 value_id       (IR value id this tensor belongs to)
- *     u8  dtype          (pai_dtype_t)
- *     u8  rank
- *     u16 reserved
- *     u64 shape[6]
- *     u64 offset         (byte offset into WEIGHTS)
- *     u64 size_bytes
+ * Manifest payload (v0): u32 count; per entry: u16 name_len + name,
+ * u32 value_id, u8 dtype, u8 rank, u16 reserved, u64 shape[6],
+ * u64 offset (into WEIGHTS), u64 size_bytes.
  */
 
 #ifndef PAI_PAI_H
@@ -138,8 +107,7 @@ typedef struct pai_pai_builder {
 
 void pai_pai_builder_init(pai_pai_builder_t *builder);
 
-/* Attach a section payload (copied into the encoded blob). Returns
- * PAI_ERR_NOMEM when the section table is full. */
+/* Attach a section payload (copied into the encoded blob). */
 pai_status_t pai_pai_builder_add(pai_pai_builder_t *builder, uint32_t type,
                                  const void *data, uint32_t size);
 
@@ -182,8 +150,7 @@ pai_status_t pai_pai_manifest_decode(const uint8_t *data, uint32_t size,
                                      uint32_t max_tensors,
                                      uint32_t *out_count);
 
-/* Convenience: read a whole file into a malloc'd buffer (caller frees).
- * Returns PAI_ERR_IO on I/O failures. */
+/* Read a whole file into a malloc'd buffer (caller frees). */
 pai_status_t pai_pai_read_file(const char *path, uint8_t **out,
                                uint32_t *out_nbytes);
 

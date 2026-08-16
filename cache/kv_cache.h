@@ -1,19 +1,11 @@
 /*
- * ProsperoAI — KV Cache Manager (whitepaper §19)
- *
- * Per-session KV cache for transformer inference. A session owns one
- * cache sized from the model metadata (layers x kv bytes/token x
- * context); blocks are suballocated from a single buddy-managed region
- * (§16 GPU allocator foundation) so cache growth is cheap and
- * fragmentation stays low.
- *
- * v0 features implemented here:
- *   - per-session cache with buddy-backed block allocation;
- *   - prefix caching: a rolling FNV-1a hash of the token prefix is
- *     tracked per step, so a request reusing a previously seen prefix
- *     can skip recomputing it (prefix deduplication seed, §19);
- *   - cache quantization and spill hooks are reserved (fields + API
- *     stubs) and land with Phase 3/7.
+ * ProsperoAI — KV cache manager (whitepaper §19).
+ * Per-session cache sized from model metadata (layers x kv bytes/token
+ * x context); blocks are suballocated from a single buddy-managed
+ * region (§16) so growth is cheap and fragmentation stays low.
+ * v0: buddy-backed blocks + prefix caching (rolling FNV-1a hash lets a
+ * request reusing a seen prefix skip recomputing it, §19). Cache
+ * quantization and spill hooks are reserved for Phase 3/7.
  */
 
 #ifndef PAI_CACHE_KV_CACHE_H
@@ -87,8 +79,8 @@ uint64_t pai_kv_cache_capacity_bytes(const pai_kv_cache_t *cache);
 
 /*
  * Reserve `tokens` new positions, returning the starting position in
- * *out_pos (positions are appended monotonically). Returns
- * PAI_ERR_NOMEM when the region is exhausted.
+ * *out_pos (positions are appended monotonically). PAI_ERR_NOMEM when
+ * the region is exhausted.
  */
 pai_status_t pai_kv_cache_reserve(pai_kv_cache_t *cache, uint32_t tokens,
                                   uint32_t *out_pos);

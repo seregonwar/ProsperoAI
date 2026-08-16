@@ -1,8 +1,6 @@
 /*
- * ProsperoAI — GEMM benchmark (§31)
- *
+ * ProsperoAI — GEMM benchmark (§31).
  *   bench_gemm [M,N,K] [--iters N] [--warmup N]
- *
  * Validates correctness against the reference backend before accepting
  * performance numbers, then times the optimized path. Defaults:
  * 512,512,512, 10 iterations, 2 warmup runs.

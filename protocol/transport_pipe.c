@@ -1,14 +1,10 @@
 /*
  * ProsperoAI — Prospero Protocol
  *
- * In-memory pipe pair transport: two growable FIFO directions with
- * endpoint transport vtables. Side A's sends land in a_to_b, which is
- * what side B's recv drains; the reverse for b_to_a.
- *
- * This is the loopback transport for host tests and local development
- * (whitepaper §25: TCP and Local/Internal are initial transports; the
- * protocol itself is transport-independent). A TCP transport plugs in
- * with the same pai_proto_transport_t interface.
+ * In-memory pipe pair transport: two growable FIFO directions, one
+ * endpoint vtable per side. Loopback transport for host tests and
+ * local development (whitepaper §25: TCP and Local/Internal are the
+ * initial transports; the protocol itself is transport-independent).
  */
 
 #include <protocol/protocol.h>

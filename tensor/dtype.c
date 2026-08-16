@@ -1,10 +1,6 @@
-/*
- * ProsperoAI — tensor core
- *
- * dtype tables shared by the tensor descriptors and the CPU reference
- * backend. Quantization metadata (whitepaper §15) will layer on top of
- * these storage primitives without changing them.
- */
+/* ProsperoAI — dtype tables shared by the tensor descriptors and the
+ * CPU reference backend. Quantization metadata (§15) layers on top of
+ * these storage primitives without changing them. */
 
 #include <pai/dtype.h>
 

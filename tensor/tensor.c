@@ -1,9 +1,5 @@
-/*
- * ProsperoAI — tensor core
- *
- * Dense row-major tensor descriptors. These are views over storage;
- * ownership of the underlying buffer stays with the caller.
- */
+/* ProsperoAI — dense row-major tensor descriptors: views over storage;
+ * buffer ownership stays with the caller. */
 
 #include <pai/tensor.h>
 

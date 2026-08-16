@@ -1,17 +1,9 @@
 /*
- * ProsperoAI — high-level API implementation (whitepaper §27)
- *
- * The declarations in sdk/include/pai/api.h exist from day one so the
- * ABI stabilizes early. Since the model manager + reference executor
- * landed (models/), the model/session/generate entry points are real:
- * they load `.pai` containers and run the Phase 2 vertical slice.
- *
- * pai_model_close / pai_model_name / pai_session_destroy share their
- * signatures with the model manager and are implemented there; this
- * file only bridges the SDK-only names.
- *
- * pai_embed (Phase 9 seed) maps to the model manager's mean-pooled
- * token-embedding path, exposed by the gateway §26 /v1/embeddings.
+ * ProsperoAI — high-level API implementation (whitepaper §27).
+ * SDK entry points bridge to the model manager (models/): model/session/
+ * generate run the Phase 2 vertical slice; pai_model_close/name and
+ * pai_session_destroy are implemented there with the same signatures.
+ * pai_embed maps to the mean-pooled embedding path (§26 /v1/embeddings).
  */
 
 #include <pai/api.h>

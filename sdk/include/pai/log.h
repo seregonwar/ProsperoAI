@@ -1,9 +1,7 @@
 /*
- * ProsperoAI — public SDK
- *
- * Structured logging with severity levels and subsystem identifiers
- * (whitepaper §33). On PS5 payload builds, messages are additionally
- * forwarded to the kernel log.
+ * ProsperoAI — public SDK: structured logging with severity levels and
+ * subsystem identifiers (whitepaper §33). On PS5 payload builds,
+ * messages are additionally forwarded to the kernel log.
  */
 
 #ifndef PAI_LOG_H

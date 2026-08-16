@@ -1,20 +1,13 @@
 /*
  * ProsperoAI — Scheduler (whitepaper §18) and execution planning (§11)
  *
- * The scheduler turns a compiled graph + its static memory plan into an
- * Execution Plan: an ordered list of op executions with CPU/GPU device
- * placement and per-step memory accounting. It exposes the §18 policies
- * (Interactive / Throughput / Exclusive / Balanced), the §17 memory
- * modes (Performance / Balanced / Capacity), and a minimal session
- * registry with priority ordering (continuous batching seed, Phase 8).
- *
- * The scheduler also ships a reference executor: it runs an Execution
- * Plan against the CPU reference backend over the memory-plan region.
- * This closes the Phase 1 loop — "run a small synthetic neural network
- * completely through ProsperoAI" — on host builds. GPU dispatch and
- * kernel-level execution arrive with the GPU backend (Phase 1+); the
- * `device` field of every step is a placement *decision* that the
- * runtime then honors.
+ * Turns a compiled graph + its static memory plan into an Execution
+ * Plan: ordered steps with CPU/GPU placement and per-step memory
+ * accounting, using the §18 policies and §17 memory modes, plus a
+ * minimal priority session registry (batching seed, Phase 8). Ships a
+ * reference executor that runs a plan against the CPU reference
+ * backend; the per-step `device` is a placement decision the runtime
+ * honors (GPU dispatch arrives with the GPU backend).
  */
 
 #ifndef PAI_SCHEDULER_H
@@ -86,19 +79,14 @@ const char *pai_sched_device_name(uint8_t device);
 const char *pai_sched_memory_mode_name(uint8_t mode);
 
 /*
- * Build the execution plan for a graph + its memory plan.
- *
- * Steps are emitted in topological order (epoch 0..n-1); each step
- * carries the device placement decision:
- *   - an explicit per-op override from `device_hints` (indexed by op
- *     id, pai_sched_device_t; NULL = none) always wins;
- *   - otherwise the per-op-kind default (GEMM/GEMV/MATMUL/ATTENTION/
- *     SOFTMAX -> GPU, the rest -> CPU);
- *   - PAI_SCHED_EXCLUSIVE additionally forces compute ops onto the GPU
- *     unless a hint overrides them.
- *
- * `mem_plan` supplies region/naive/peak statistics and (for the
- * executor) the per-value offsets. Runs the topo sort first if needed.
+ * Build the execution plan. Steps are emitted in topological order;
+ * each carries a device decision: an explicit per-op entry in
+ * `device_hints` (indexed by op id, pai_sched_device_t, NULL = none)
+ * wins, otherwise the per-kind default (GEMM/GEMV/MATMUL/ATTENTION/
+ * SOFTMAX -> GPU, rest -> CPU); PAI_SCHED_EXCLUSIVE additionally
+ * forces compute ops onto the GPU unless hinted. `mem_plan` supplies
+ * region/naive/peak stats and the executor's per-value offsets. Runs
+ * the topo sort first if needed.
  */
 pai_status_t pai_sched_build(pai_graph_t *graph,
                              const pai_graph_mem_plan_t *mem_plan,
@@ -106,32 +94,23 @@ pai_status_t pai_sched_build(pai_graph_t *graph,
                              const uint8_t *device_hints,
                              pai_sched_plan_t *out);
 
-/*
- * Persistent variant for session execution: per-step live/produced/
- * released byte accounting uses the persistent lifetime view (inputs
- * and params live until execution end), matching the layout a session
- * runs repeatedly against (pai_graph_memory_plan_persistent). Use this
- * when the executor will re-run the plan (e.g. one generate step per
- * call) so peak_live and the memory-mode check agree with the region.
- */
+/* Persistent variant: per-step live/produced/released accounting uses
+ * the persistent lifetime view (inputs and params live until execution
+ * end), matching the layout a session re-runs. Use when the executor
+ * will re-run the plan so peak_live agrees with the region. */
 pai_status_t pai_sched_build_persistent(pai_graph_t *graph,
                                         const pai_graph_mem_plan_t *mem_plan,
                                         pai_sched_policy_t policy,
                                         const uint8_t *device_hints,
                                         pai_sched_plan_t *out);
 
-/*
- * Memory mode for a residency budget (§17): PERFORMANCE when the whole
- * planned region fits, BALANCED when at least the peak-live working set
- * fits, CAPACITY otherwise.
- */
+/* Memory mode for a residency budget (§17): PERFORMANCE when the whole
+ * planned region fits, BALANCED when the peak-live set fits, CAPACITY
+ * otherwise. */
 pai_sched_memory_mode_t pai_sched_plan_memory_mode(const pai_sched_plan_t *plan,
                                                    uint64_t budget);
 
-/*
- * Can this plan execute within `budget` bytes of storage? Requires at
- * least the peak-live working set.
- */
+/* Can this plan run within `budget` bytes (at least peak-live)? */
 pai_status_t pai_sched_plan_check(const pai_sched_plan_t *plan,
                                   uint64_t budget);
 
@@ -146,13 +125,12 @@ typedef struct pai_sched_run_stats {
 } pai_sched_run_stats_t;
 
 /*
- * Execute the plan against the CPU reference backend. `region` is a
- * buffer of at least plan->region_bytes bytes; every value lives at
- * region + pai_graph_mem_plan_offset(mem_plan, value_id).
- *
- * Supported ops: ADD, MUL, GEMM, MATMUL, GEMV, RELU, SOFTMAX, RMSNORM,
- * LAYERNORM, CONCAT, COPY, RESHAPE, CONVERT (same-dtype). ROPE,
- * ATTENTION and CUSTOM return PAI_ERR_UNSUPPORTED in v0.
+ * Execute the plan against the CPU reference backend. `region` holds
+ * at least plan->region_bytes; values live at region +
+ * pai_graph_mem_plan_offset(mem_plan, value_id). Supported: ADD, MUL,
+ * GEMM, MATMUL, GEMV, RELU, SOFTMAX, RMSNORM, LAYERNORM, CONCAT, COPY,
+ * RESHAPE, CONVERT (same-dtype); ROPE, ATTENTION and CUSTOM are
+ * unsupported in v0.
  */
 pai_status_t pai_sched_execute(const pai_graph_t *graph,
                                const pai_graph_mem_plan_t *mem_plan,
@@ -188,10 +166,7 @@ pai_status_t pai_sched_session_destroy(pai_sched_sessions_t *sessions,
 int  pai_sched_session_active(const pai_sched_sessions_t *sessions,
                               uint64_t id);
 
-/*
- * Pick the highest-priority active session (ties broken by lowest id).
- * Returns the slot index, or -1 when no session is active.
- */
+/* Highest-priority active session (ties: lowest id); slot index or -1. */
 int pai_sched_pick_session(const pai_sched_sessions_t *sessions);
 
 #ifdef __cplusplus

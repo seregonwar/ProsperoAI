@@ -1,8 +1,6 @@
 /*
- * ProsperoAI — public SDK
- *
- * Tensor datatypes. ProsperoAI is quantization-agnostic (whitepaper §15):
- * this enum carries only the storage representation; quantization
+ * ProsperoAI — public SDK: tensor datatypes. Quantization-agnostic
+ * (§15): the enum carries only storage representation; quantization
  * semantics are described by metadata, never by the dtype alone.
  */
 

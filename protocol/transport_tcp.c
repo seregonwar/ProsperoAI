@@ -1,27 +1,16 @@
 /*
  * ProsperoAI — Prospero Protocol
  *
- * TCP transport (whitepaper §25 — the desktop <-> PS5 link).
- *
- * The protocol connection loop expects pipe-like semantics from a
- * transport (see transport_pipe.c): recv() must return promptly with
- * *out_read == 0 when no bytes are available, and signal EOF with
- * PAI_ERR_IO + *out_read == 0. A blocking socket would stall the poll
- * loop forever, so this transport uses blocking sockets with a receive
- * timeout (SO_RCVTIMEO, 100 ms): recv() then behaves as
+ * TCP transport (whitepaper §25 — the desktop <-> PS5 link). Blocking
+ * sockets with SO_RCVTIMEO (100 ms) keep the poll loop moving:
  *
  *   bytes > 0            -> PAI_OK, *out_read = bytes
- *   timeout / wouldblock -> PAI_OK, *out_read = 0   (nothing yet)
+ *   timeout / wouldblock -> PAI_OK, *out_read = 0    (nothing yet)
  *   peer closed          -> PAI_ERR_IO, *out_read = 0 (EOF)
  *
- * send() is a blocking full-write loop. Host-side only (the payload
- * talks its own sockets on the console).
- *
- * Note: gateway/gwsys.c carries a sibling socket layer for the HTTP
- * server. It stays separate on purpose — the protocol core must not
- * depend on the host-only gateway layer, and the recv contracts differ
- * (this transport is timeout-bounded for the poll loop, gwsys is
- * blocking for thread-per-connection).
+ * send() is a blocking full-write loop. Host-side only; gateway/gwsys.c
+ * has a separate socket layer because its recv contract differs
+ * (blocking, thread-per-connection).
  */
 
 #include <protocol/protocol.h>
@@ -92,7 +81,6 @@ tcp_sys_ready(void) {
 #endif
 }
 
-/* Apply the receive timeout to a fresh socket. */
 static void
 tcp_set_rcv_timeout(tcp_sock_t s) {
 #ifdef _WIN32

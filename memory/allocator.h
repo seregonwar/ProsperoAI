@@ -1,14 +1,9 @@
 /*
- * ProsperoAI — memory subsystem
- *
- * Buddy suballocator (whitepaper §16, GPU allocator foundation). Manages
- * one large region (device memory, or a host test region) and performs
- * suballocation with power-of-two blocks, O(log n) split/merge, strict
- * alignment and low fragmentation. The region must be at least 128 bytes
- * and a power of two; its base must be aligned to its size.
- *
- * Allocated pointers are aligned to the requested alignment; freeing a
- * pointer returned by this allocator re-merges adjacent free blocks.
+ * ProsperoAI — buddy suballocator (whitepaper §16, GPU allocator
+ * foundation). Power-of-two blocks, O(log n) split/merge, strict
+ * alignment, low fragmentation over one large region (device memory or
+ * a host test region). Region must be a power of two >= 128 bytes and
+ * aligned to its size.
  */
 
 #ifndef PAI_MEMORY_ALLOCATOR_H

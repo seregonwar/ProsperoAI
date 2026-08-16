@@ -1,19 +1,9 @@
 /*
- * ProsperoAI — model manager (whitepaper §20/§22, §27 SDK)
- *
- * Loads `.pai` containers into an executable model and runs sessions.
- * This is the layer that makes the high-level SDK real:
- *
- *   pai_model_open   -> parse .pai (meta + manifest + weights + IR +
- *                       tokenizer), rebuild the graph, plan memory
- *   pai_session_create -> allocate the planned region, load weights,
- *                       init the KV cache (§19) and the sampler
- *   pai_generate     -> tokenize -> execute the plan on the reference
- *                       backend -> sample -> decode, streaming tokens
- *
- * The generate path closes the Phase 2 vertical slice ("first generated
- * token") on host builds: a small transformer-like graph embedded in a
- * .pai container runs end-to-end through the runtime.
+ * ProsperoAI — model manager (whitepaper §20/§22, §27 SDK).
+ * Loads `.pai` containers into an executable model and runs sessions:
+ * open -> parse sections + rebuild graph, session -> plan memory, load
+ * weights, init KV cache (§19)/sampler, generate -> tokenize, execute
+ * the plan on the reference backend, sample, decode — streaming tokens.
  */
 
 #ifndef PAI_MODELS_MODEL_H
@@ -72,10 +62,7 @@ struct pai_session {
   uint64_t generated_tokens;
 };
 
-/*
- * Open a `.pai` container from a file. `runtime` is reserved for GPU
- * residency decisions (Phase 3+) and may be NULL on host builds.
- */
+/* Open a `.pai` container from a file. */
 pai_status_t pai_model_open_path(const char *path, pai_model_t **out_model);
 
 /* Open from an in-memory container blob (not owned by the model). */
@@ -86,15 +73,13 @@ void pai_model_close(pai_model_t *model);
 
 const char *pai_model_name(const pai_model_t *model);
 
-/* ------------------------------------------------------------------ */
-/* Sessions                                                            */
-/* ------------------------------------------------------------------ */
+/* Sessions */
 
 /*
- * Create a session for `model`: builds the execution plan (default
- * INTERACTIVE policy), allocates the planned region and copies the
- * canonical weights into it, and inits the KV cache + sampler. The
- * session owns `region` until pai_session_destroy.
+ * Create a session: builds the execution plan (default INTERACTIVE
+ * policy), allocates the planned region, copies the canonical weights
+ * in, and inits the KV cache + sampler. The session owns `region`
+ * until pai_session_destroy.
  */
 pai_status_t pai_session_init(pai_model_t *model, pai_session_t **out_session);
 
@@ -112,34 +97,24 @@ pai_status_t pai_session_set_generation(pai_session_t *session,
 /*
  * Generate tokens from `prompt`, calling on_token(text, user) per
  * emitted token (the text is a stack buffer, valid during the call).
- * The input value is fed the tokenized prompt's last token as a
- * one-hot; the output is sampled and decoded, then appended. Stops at
- * eos_token or max_tokens.
+ * Stops at eos_token or max_tokens.
  */
 pai_status_t pai_session_generate(pai_session_t *session, const char *prompt,
                                   void (*on_token)(const char *token,
                                                    void *user),
                                   void *user);
 
-/* ------------------------------------------------------------------ */
-/* Embeddings (Phase 9 seed, §26 /v1/embeddings)                      */
-/* ------------------------------------------------------------------ */
+/* Embeddings (§26 /v1/embeddings) */
 
-/*
- * Embedding dimension of the model's token-embedding table. Returns
- * PAI_ERR_UNSUPPORTED when the model has no embedding table (models
- * without a GEMM/GEMV on the graph input).
- */
+/* Embedding dimension of the token-embedding table; PAI_ERR_UNSUPPORTED
+ * when the model has none. */
 pai_status_t pai_model_embed_dim(const pai_model_t *model, uint32_t *out_dim);
 
 /*
- * Embed `text` as the mean-pooled bag of its token embeddings: tokenize
- * with the model tokenizer, look each token up in the embedding table
- * (dequantizing when the container stores it quantized, §15), average
- * and write `dim` floats into out. `max_elements` must be >= dim
- * (PAI_ERR_NOMEM otherwise); *out_n receives dim. Token ids outside
- * the vocabulary (byte-fallback ids) are skipped; PAI_ERR_MISMATCH when
- * no token contributes.
+ * Embed `text` as the mean-pooled bag of its token embeddings
+ * (dequantized when the container stores them quantized, §15).
+ * `max_elements` must be >= dim; byte-fallback ids are skipped;
+ * PAI_ERR_MISMATCH when no token contributes.
  */
 pai_status_t pai_model_embed(pai_model_t *model, const char *text,
                              uint32_t max_elements, float *out,

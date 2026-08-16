@@ -3,9 +3,7 @@
 #include <immintrin.h>
 #include <math.h>
 
-/* ------------------------------------------------------------------ */
-/* Feature detection                                                   */
-/* ------------------------------------------------------------------ */
+/* Feature detection */
 
 #if defined(__x86_64__) || defined(_M_X64) || defined(__i386__) ||          \
     defined(_M_IX86)
@@ -86,9 +84,7 @@ pai_opt_backend_name(void) {
   return "portable";
 }
 
-/* ------------------------------------------------------------------ */
-/* Horizontal reductions                                               */
-/* ------------------------------------------------------------------ */
+/* Horizontal reductions */
 
 #if PAI_OPT_GNUCC
 PAI_OPT_TARGET_AVX2
@@ -128,9 +124,7 @@ hmax128_ps(__m128 v) {
   return _mm_cvtss_f32(v);
 }
 
-/* ------------------------------------------------------------------ */
-/* Portable (fallback) tier                                            */
-/* ------------------------------------------------------------------ */
+/* Portable (fallback) tier */
 
 static pai_status_t
 opt_vecadd_portable(const float *a, const float *b, float *c, uint64_t n) {
@@ -242,9 +236,7 @@ opt_gemm_w8_portable(uint64_t m, uint64_t n, uint64_t k, const float *a,
   return PAI_OK;
 }
 
-/* ------------------------------------------------------------------ */
-/* SSE2 tier (x86-64 baseline)                                         */
-/* ------------------------------------------------------------------ */
+/* SSE2 tier (x86-64 baseline) */
 
 static pai_status_t
 opt_vecadd_sse2(const float *a, const float *b, float *c, uint64_t n) {
@@ -383,9 +375,7 @@ opt_gemm_sse2(uint64_t m, uint64_t n, uint64_t k, const float *a,
   return PAI_OK;
 }
 
-/* ------------------------------------------------------------------ */
-/* AVX2 + FMA tier (function-level target attribute; runtime-gated)    */
-/* ------------------------------------------------------------------ */
+/* AVX2 + FMA tier (function-level target attribute; runtime-gated) */
 
 #if PAI_OPT_GNUCC
 
@@ -603,9 +593,7 @@ opt_gemm_w8_avx2(uint64_t m, uint64_t n, uint64_t k, const float *a,
 
 #endif /* PAI_OPT_GNUCC */
 
-/* ------------------------------------------------------------------ */
-/* Dispatch                                                            */
-/* ------------------------------------------------------------------ */
+/* Dispatch */
 
 pai_status_t
 pai_opt_vecadd_f32(const float *a, const float *b, float *c, uint64_t n) {

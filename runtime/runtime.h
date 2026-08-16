@@ -1,9 +1,7 @@
 /*
- * ProsperoAI — runtime core
- *
- * Bootstraps the single-payload architecture in order (whitepaper §5):
- * platform detection -> capability manager -> memory -> GPU device.
- * The scheduler, protocol and model subsystems attach in later phases.
+ * ProsperoAI — runtime core. Bootstraps the single-payload architecture
+ * in order (whitepaper §5): platform detection -> capability manager ->
+ * memory -> GPU device; scheduler, protocol and models attach later.
  */
 
 #ifndef PAI_RUNTIME_H

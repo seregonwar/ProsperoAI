@@ -1,14 +1,9 @@
 /*
- * ProsperoAI — public SDK
- *
- * High-level API surface (whitepaper §27).
- *
- * This header is the stable developer contract for homebrew applications.
- * The functions declared here are intentionally few; everything else is
- * available through the Expert API (later phases).
- *
- * During Phase 0/1 development these entry points exist so the ABI can
- * stabilize early; unimplemented ones return PAI_ERR_UNSUPPORTED.
+ * ProsperoAI — public SDK, high-level API surface (whitepaper §27).
+ * Stable developer contract for homebrew apps; the surface is
+ * intentionally few functions, the rest comes via the Expert API.
+ * Entry points exist during Phase 0/1 so the ABI stabilizes early;
+ * unimplemented ones return PAI_ERR_UNSUPPORTED.
  */
 
 #ifndef PAI_API_H

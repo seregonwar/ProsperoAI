@@ -1,12 +1,10 @@
 /*
  * ProsperoAI — Kernel IR (§10.2)
  *
- * The lower IR level: computational units close enough to GPU execution
- * to permit tiling, vector-width selection, layout specialization and
- * workgroup configuration. The builder is generic; the lowering shipped
- * here is deliberately naive (one kernel per IR op, no fusion) and
- * exists to prove the seam. Fusion and shape specialization are later
- * graph-compiler passes that emit richer kernels through the same API.
+ * Kernel descriptors close to GPU execution (tiling, vector width,
+ * layout, workgroups). The lowering here is deliberately naive (one
+ * kernel per IR op, no fusion); fusion passes emit richer kernels
+ * through the same API.
  */
 
 #include "ir.h"

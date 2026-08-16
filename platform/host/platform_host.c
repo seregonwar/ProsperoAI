@@ -1,9 +1,5 @@
-/*
- * ProsperoAI — host platform detection
- *
- * Reference environment: everything is software-emulated. Used for
- * development, testing and the host-reference execution mode.
- */
+/* ProsperoAI — host platform detection: reference environment with
+ * software-emulated capabilities (dev, testing, host-reference mode). */
 
 #include "platform.h"
 

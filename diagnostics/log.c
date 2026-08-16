@@ -1,9 +1,5 @@
-/*
- * ProsperoAI — diagnostics
- *
- * Structured log sink (whitepaper §33). Severity + subsystem prefixes,
- * forwarded to the kernel log on PS5 payload builds.
- */
+/* ProsperoAI — structured log sink (whitepaper §33): severity +
+ * subsystem prefixes, forwarded to the kernel log on PS5 payloads. */
 
 #include <pai/log.h>
 

@@ -1,11 +1,9 @@
 /*
- * ProsperoAI — graph layer
- *
- * Generic compute graph (whitepaper §10/§11): values (tensor descriptors)
- * and ops with data dependencies. The graph provides topological ordering,
- * tensor lifetime analysis and an integrated static memory plan — the
- * §11 "memory planning" step that reuses buffers for values whose
- * lifetimes do not overlap (§16).
+ * ProsperoAI — generic compute graph (whitepaper §10/§11): values
+ * (tensor descriptors) and ops with data dependencies, topological
+ * ordering, tensor lifetime analysis and an integrated static memory
+ * plan — the §11 step that reuses buffers for values whose lifetimes
+ * do not overlap (§16).
  */
 
 #ifndef PAI_GRAPH_H
@@ -125,10 +123,9 @@ pai_status_t pai_graph_value_lifetimes(pai_graph_t *graph,
 
 /*
  * Persistent variant matching pai_graph_memory_plan_persistent:
- * producer-less values (inputs/params) live until execution end.
- * Consumers that plan sessions (the scheduler's per-step accounting)
- * should use this so their live-byte stats agree with the persistent
- * layout the executor runs against.
+ * producer-less values (inputs/params) live until execution end. Use
+ * this for per-step accounting so live-byte stats agree with the
+ * persistent layout the executor runs against.
  */
 pai_status_t pai_graph_value_lifetimes_persistent(pai_graph_t *graph,
                                                   uint32_t *out_start,

@@ -1,13 +1,8 @@
 /*
- * ProsperoAI — sampler (whitepaper §3.2 CPU components)
- *
- * Deterministic sampling from a logits or probability vector with the
- * standard knobs: temperature, top-k and top-p (nucleus). Greedy
- * decoding is temperature == 0 (or top_k == 1). The PRNG is a seeded
- * xorshift64* so generation is reproducible for the same seed — the
- * deterministic behaviour tests and benchmarking rely on (§31).
- *
- * Sampling runs on the CPU by design (§3.2).
+ * ProsperoAI — sampler (whitepaper §3.2).
+ * Deterministic sampling from logits/probabilities with temperature,
+ * top-k and top-p; greedy is temperature == 0. The PRNG is a seeded
+ * xorshift64* so generation is reproducible per seed (§31). CPU-side.
  */
 
 #ifndef PAI_MODELS_SAMPLER_H
@@ -36,21 +31,15 @@ uint64_t pai_sampler_next_u64(pai_sampler_t *sampler);
 /* Uniform double in [0, 1). */
 double pai_sampler_next_double(pai_sampler_t *sampler);
 
-/*
- * Sample from logits. Applies temperature (unless 0), top-k (unless 0)
- * and top-p (unless >= 1.0), then softmax + categorical sampling.
- * `n` must be >= 1. Sets *out_id to the chosen index. Advances the
- * PRNG state in `sampler` (so the seed evolves across draws).
- */
+/* Sample from logits: temperature (unless 0), top-k (unless 0) and
+ * top-p (unless >= 1.0), then softmax + categorical sampling.
+ * Advances the PRNG state. */
 pai_status_t pai_sampler_sample_logits(pai_sampler_t *sampler,
                                        const float *logits, uint32_t n,
                                        uint32_t *out_id);
 
-/*
- * Sample from an already-normalized probability vector (sum 1). Applies
- * top-k / top-p only. Greedy (temperature 0) picks the argmax.
- * Advances the PRNG state in `sampler`.
- */
+/* Sample from already-normalized probabilities (sum 1); top-k/top-p
+ * only. Greedy (temperature 0) picks the argmax. Advances the PRNG. */
 pai_status_t pai_sampler_sample_probs(pai_sampler_t *sampler,
                                       const float *probs, uint32_t n,
                                       uint32_t *out_id);

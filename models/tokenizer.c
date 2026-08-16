@@ -142,7 +142,7 @@ pai_tok_id_valid(const pai_tok_t *tok, uint32_t id) {
 /* Longest vocab token that is a prefix of text[nbytes] starting at 0. */
 static uint32_t
 match_prefix(const pai_tok_t *tok, const char *text, uint32_t nbytes) {
-  uint32_t best = 0; /* number of tokens? no: length of best match  */
+  uint32_t best = 0;
   uint32_t best_len = 0;
   uint32_t i;
 
@@ -242,7 +242,6 @@ pai_tok_decode(const pai_tok_t *tok, const uint32_t *ids, uint32_t n,
     uint32_t len;
 
     if (id >= tok->byte_fallback_base && id < tok->byte_fallback_base + 256u) {
-      /* single byte */
       if (written + 1 >= cap) {
         return PAI_ERR_NOMEM;
       }
@@ -250,7 +249,6 @@ pai_tok_decode(const pai_tok_t *tok, const uint32_t *ids, uint32_t n,
       continue;
     }
 
-    /* vocab lookup */
     uint32_t t;
     int found = 0;
     for (t = 0; t < tok->num_tokens; t++) {
@@ -275,10 +273,6 @@ pai_tok_decode(const pai_tok_t *tok, const uint32_t *ids, uint32_t n,
   *out_n = written;
   return PAI_OK;
 }
-
-/* ------------------------------------------------------------------ */
-/* Serialization                                                       */
-/* ------------------------------------------------------------------ */
 
 static void
 le_put_u32(uint8_t *p, uint32_t v) {

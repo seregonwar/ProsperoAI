@@ -1,10 +1,8 @@
 /*
- * ProsperoAI — model importer (whitepaper §8)
- *
- * The host-side model import pipeline, first rung of the Desktop
- * toolchain (§7): a small text model description plus raw f32 weight
- * files become a `.pai` container (graph reconstruction -> Prospero IR
- * -> optional quantization -> PAI packaging).
+ * ProsperoAI — model importer (whitepaper §8).
+ * Host-side pipeline (§7): a small text model description plus raw f32
+ * weight files become a `.pai` container (graph reconstruction ->
+ * Prospero IR -> optional quantization -> PAI packaging).
  *
  * Description format (one directive per line, '#' comments):
  *

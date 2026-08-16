@@ -1,9 +1,7 @@
 /*
- * ProsperoAI — memory subsystem
- *
- * Bump arena allocator (whitepaper §16). The runtime keeps dedicated
- * arenas per lifetime class; generic heap allocation stays outside the
- * hot paths.
+ * ProsperoAI — bump arena allocator (whitepaper §16).
+ * Dedicated arenas per lifetime class; generic heap stays off the hot
+ * paths.
  */
 
 #ifndef PAI_MEMORY_ARENA_H
@@ -21,10 +19,7 @@ typedef struct pai_arena {
 
 void pai_arena_init(pai_arena_t *arena, void *memory, uint64_t size);
 
-/*
- * Allocate from the arena. Returns NULL when out of space.
- * Alignment must be a power of two.
- */
+/* Allocate from the arena (NULL when out of space). align = pow2. */
 void *pai_arena_alloc(pai_arena_t *arena, uint64_t size, uint32_t align);
 
 /* Free everything allocated so far. */

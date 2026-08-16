@@ -1,15 +1,8 @@
 /*
  * ProsperoAI — Prospero Protocol
  *
- * Connection state machine (whitepaper §24): negotiation, pipelining,
- * sessions, streams, structured errors. Transport-independent — the
- * connection pulls bytes through a pai_proto_transport_t and drives a
- * receive state machine that buffers one frame at a time.
- *
- * Core-handled messages: HELLO/HELLO_ACK/HELLO_NACK (negotiation),
- * PING->PONG (keepalive), CLOSE (graceful shutdown) and ERROR
- * auto-replies when a handler fails. Everything else reaches the
- * application through the callbacks.
+ * Connection state machine (whitepaper §24). Core handles HELLO*,
+ * PING->PONG, CLOSE and ERROR auto-replies; the rest reaches callbacks.
  */
 
 #include <protocol/protocol.h>
@@ -22,10 +15,8 @@
 /* Max frames processed per poll() call (fairness bound). */
 #define PAI_PROTO_POLL_BATCH 64u
 
-/* ------------------------------------------------------------------ */
-/* little-endian writers (frame.c owns the canonical codec; this file  */
-/* keeps a private copy to build headers without a full wire buffer)   */
-/* ------------------------------------------------------------------ */
+/* Little-endian writers. frame.c owns the canonical codec; this private
+ * copy builds headers without a full wire buffer. */
 
 static void
 put_le16(uint8_t *p, uint16_t v) {
@@ -197,8 +188,7 @@ pai_proto_conn_new_request_id(pai_proto_conn_t *conn) {
   return conn->next_request_id++;
 }
 
-/* Best-effort auto-reply carrying a structured status (whitepaper §24:
- * structured status codes). */
+/* Best-effort auto-reply with a structured status code (§24). */
 static void
 conn_send_error_reply(pai_proto_conn_t *conn, const pai_proto_frame_t *orig,
                       pai_status_t status) {
@@ -311,7 +301,7 @@ stream_begin(pai_proto_conn_t *conn, uint64_t request_id) {
       return PAI_OK;
     }
   }
-  return PAI_ERR_NOMEM; /* table full */
+  return PAI_ERR_NOMEM;
 }
 
 static void
@@ -324,15 +314,11 @@ stream_end(pai_proto_conn_t *conn, uint64_t request_id) {
 }
 
 /*
- * Route a stream frame (TOKEN / STREAM_DATA / STREAM_CLOSE) to the
- * on_stream_* callbacks. TOKEN and STREAM_CLOSE frames are also
- * delivered to on_message; STREAM_DATA is consumed by the stream
- * callbacks only (its kind/seq travel in the payload).
- *
- * Stream lifecycle: STREAM_START opens (on_stream_begin), the terminal
- * frame (STREAM_END flag, STREAM_CLOSE or COMPLETE) closes
- * (on_stream_end). TOKEN chunks carry a synthesized ordinal; STREAM_DATA
- * carries its own seq on the wire.
+ * Route stream frames to the on_stream_* callbacks. TOKEN and
+ * STREAM_CLOSE also reach on_message; STREAM_DATA is stream-only (its
+ * kind/seq travel in the payload). STREAM_START opens; the terminal
+ * frame (STREAM_END flag, STREAM_CLOSE or COMPLETE) closes. TOKEN
+ * chunks carry a synthesized ordinal; STREAM_DATA carries its own seq.
  */
 static pai_status_t
 conn_handle_stream(pai_proto_conn_t *conn, const pai_proto_frame_t *frame) {
@@ -771,10 +757,6 @@ pai_proto_conn_poll(pai_proto_conn_t *conn, uint32_t *out_frames) {
   }
   return result;
 }
-
-/* ------------------------------------------------------------------ */
-/* accessors                                                           */
-/* ------------------------------------------------------------------ */
 
 uint32_t
 pai_proto_conn_negotiated_caps(const pai_proto_conn_t *conn) {

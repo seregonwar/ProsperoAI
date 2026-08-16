@@ -1,8 +1,6 @@
 /*
- * ProsperoAI — public SDK
- *
- * Runtime versioning. Keep PAI_VERSION_* in sync with the CMake project
- * version (cmake/pai_common.cmake).
+ * ProsperoAI — public SDK: runtime versioning. Keep PAI_VERSION_* in
+ * sync with the CMake project version (cmake/pai_common.cmake).
  */
 
 #ifndef PAI_VERSION_H

@@ -1,7 +1,6 @@
 /*
- * ProsperoAI — memory subsystem
- *
- * Small shared helpers used by the static planner and the suballocator.
+ * ProsperoAI — memory subsystem.
+ * Small shared helpers for the static planner and the suballocator.
  */
 
 #ifndef PAI_MEMORY_MEM_H
@@ -26,10 +25,7 @@ pai_mem_align_down(uint64_t v, uint64_t align) {
   return v & ~(align - 1);
 }
 
-/*
- * Smallest o >= 0 such that (1 << o) >= v. Returns 0 for v == 0,
- * 63 for any value needing more than 63 bits.
- */
+/* Smallest o >= 0 with (1 << o) >= v; 0 for v == 0, 63 when clamped. */
 static inline uint32_t
 pai_mem_ceil_log2(uint64_t v) {
   uint64_t p = 1;

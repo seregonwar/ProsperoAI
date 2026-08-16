@@ -1,9 +1,8 @@
 /*
  * ProsperoAI — Prospero Protocol
  *
- * CRC-32 (ISO-HDLC / CRC-32/MPEG-2 family, reflected zlib polynomial
- * 0xEDB88320). Used for per-frame integrity on the wire (whitepaper
- * §24: compact binary frames with checksums) and reusable later for
+ * CRC-32 (ISO-HDLC / CRC-32/MPEG-2, reflected zlib polynomial
+ * 0xEDB88320): per-frame integrity on the wire (§24), reusable for
  * per-chunk hashes in the model transfer engine (§23).
  */
 
