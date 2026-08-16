@@ -23,6 +23,7 @@
 #include <pai/log.h>
 
 #include <string.h>
+#include <unistd.h>
 
 #ifdef PAI_PS5
 
