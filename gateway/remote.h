@@ -19,6 +19,7 @@
 #define PAI_GATEWAY_REMOTE_H
 
 #include <pai/error.h>
+#include <protocol/protocol.h>
 
 #include <stdint.h>
 
@@ -28,10 +29,13 @@ extern "C" {
 
 /*
  * One-shot remote generation over the Prospero Protocol (v0):
- * connect to host:port, negotiate, send GENERATE(prompt), and relay
- * each TOKEN through `on_token` (synchronous; the token text is only
- * valid for the duration of the call). Finishes when COMPLETE arrives.
+ * connect to host:port, negotiate, send GENERATE(prompt[, sampler]),
+ * and relay each TOKEN through `on_token` (synchronous; the token
+ * text is only valid for the duration of the call). Finishes when
+ * COMPLETE arrives.
  *
+ * `sampler` (may be NULL) carries generation overrides; zero/default
+ * values mean the payload's own defaults (see pai_proto_sampler_t).
  * `timeout_ms` bounds the whole exchange including negotiation
  * (0 selects a 30000 ms default); on expiry PAI_ERR_TIMEOUT is
  * returned. Other returns:
@@ -48,6 +52,7 @@ extern "C" {
  */
 pai_status_t pai_gw_remote_generate(const char *host, uint16_t port,
                                     const char *prompt,
+                                    const pai_proto_sampler_t *sampler,
                                     void (*on_token)(const char *token,
                                                      void *user),
                                     void *user, uint32_t *out_tokens,

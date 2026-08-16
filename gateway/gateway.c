@@ -561,16 +561,26 @@ handle_completions(pai_gw_t *gw, const uint8_t *body, uint32_t body_len,
     }
 
     if (!entry->remote) {
-      /* Apply request sampling config + generation cap (local only:
-       * the v0 GENERATE message carries just the prompt, so remote
-       * generation uses the payload's default settings). The prompt
-       * buffer above (GW_PROMPT_MAX, 65536) already bounds the length
-       * below the wire's u16 limit, so no extra check is needed. */
+      /* Apply request sampling config + generation cap (local). */
       entry->session->sampler.temperature = (float)temp;
       entry->session->sampler.top_k = (uint32_t)top_k;
       entry->session->sampler.top_p = (float)top_p;
       pai_session_set_generation(entry->session, max_tokens, 0);
     }
+    {
+      /* Remote: carry the request's effective sampler settings in the
+       * GENERATE trailer so the payload applies them (zero/default
+       * values fall back to the payload's own defaults). */
+      pai_proto_sampler_t wire_sampler;
+      const pai_proto_sampler_t *smp = NULL;
+      memset(&wire_sampler, 0, sizeof(wire_sampler));
+      if (entry->remote) {
+        wire_sampler.temperature = (float)temp;
+        wire_sampler.top_p = (float)top_p;
+        wire_sampler.top_k = (uint32_t)top_k;
+        wire_sampler.max_tokens = max_tokens;
+        smp = &wire_sampler;
+      }
 
     if (ctx.stream) {
       pai_http_resp_begin(resp, 200, "text/event-stream", 1);
@@ -593,7 +603,7 @@ handle_completions(pai_gw_t *gw, const uint8_t *body, uint32_t body_len,
       }
       if (entry->remote) {
         st = pai_gw_remote_generate(entry->remote_host, entry->remote_port,
-                                    prompt, gen_on_token, &ctx,
+                                    prompt, smp, gen_on_token, &ctx,
                                     &ctx.generated, 0);
         ctx.failed = ctx.failed || st != PAI_OK;
       } else {
@@ -605,7 +615,7 @@ handle_completions(pai_gw_t *gw, const uint8_t *body, uint32_t body_len,
     } else {
       if (entry->remote) {
         st = pai_gw_remote_generate(entry->remote_host, entry->remote_port,
-                                    prompt, gen_on_token, &ctx,
+                                    prompt, smp, gen_on_token, &ctx,
                                     &ctx.generated, 0);
         ctx.failed = ctx.failed || st != PAI_OK;
       } else {
@@ -664,6 +674,7 @@ handle_completions(pai_gw_t *gw, const uint8_t *body, uint32_t body_len,
                      st == PAI_OK ? "generation failed" : pai_status_str(st));
         }
       }
+    }
     }
     pai_gw_mutex_unlock(entry->lock);
     pai_json_wb_destroy(&out_wb);

@@ -265,13 +265,55 @@ pai_status_t pai_proto_msg_decode_error(const uint8_t *payload, uint32_t len,
                                         pai_status_t *out_status,
                                         char *out_msg, uint32_t msg_cap);
 
-/* GENERATE: { u16 prompt_len; u8 prompt[prompt_len] } (UTF-8). */
+/*
+ * Sampler settings carried by GENERATE (optional trailer). Sent by
+ * the desktop gateway; the payload applies them to generation.
+ * Zero/default values mean "use the payload's default": temperature
+ * 0 = greedy, top_p 1 = off, top_k 0 = off, max_tokens 0 = model
+ * default, seed 0 = default (non-deterministic).
+ */
+typedef struct pai_proto_sampler {
+  float    temperature;
+  float    top_p;
+  uint32_t top_k;
+  uint32_t max_tokens;
+  uint64_t seed;
+} pai_proto_sampler_t;
+
+/*
+ * GENERATE v1: { u16 prompt_len; u8 prompt[prompt_len] } (UTF-8).
+ * GENERATE v2: the same, followed by an optional trailer
+ * { u32 sampler_magic; u8 sampler[sizeof(pai_proto_sampler_t)] }.
+ * The trailer is backward-compatible: v1 decoders read the prompt
+ * and ignore trailing bytes, and v2 decoders treat a v1 payload
+ * (no trailer) as "no sampler overrides".
+ */
+#define PAI_PROTO_SAMPLER_MAGIC 0x50414953u /* "PAIS" little-endian */
+
+/* v1: prompt only (identical encoding with a NULL sampler). */
 pai_status_t pai_proto_msg_encode_generate(uint8_t *out, uint32_t cap,
                                            const char *prompt,
                                            uint32_t *out_len);
 pai_status_t pai_proto_msg_decode_generate(const uint8_t *payload, uint32_t len,
                                            const char **out_prompt,
                                            uint32_t *out_prompt_len);
+
+/* v2: prompt plus an optional sampler trailer (NULL = v1 encoding). */
+pai_status_t pai_proto_msg_encode_generate2(uint8_t *out, uint32_t cap,
+                                            const char *prompt,
+                                            const pai_proto_sampler_t *sampler,
+                                            uint32_t *out_len);
+/*
+ * Decodes both v1 and v2 payloads. When a trailer is present,
+ * `out_sampler` (caller-owned) receives a copy and *out_has_sampler
+ * is set to 1; otherwise *out_has_sampler is set to 0 and
+ * `out_sampler` is left untouched. Either may be NULL.
+ */
+pai_status_t pai_proto_msg_decode_generate2(const uint8_t *payload, uint32_t len,
+                                            const char **out_prompt,
+                                            uint32_t *out_prompt_len,
+                                            pai_proto_sampler_t *out_sampler,
+                                            int *out_has_sampler);
 
 /* TOKEN: { u16 token_len; u8 token[token_len] }. */
 pai_status_t pai_proto_msg_encode_token(uint8_t *out, uint32_t cap,

@@ -454,6 +454,49 @@ TEST_MAIN_BEGIN()
   CHECK(pai_proto_msg_encode_generate(buf, sizeof(buf), NULL, &len) ==
         PAI_ERR_INVALID_ARG);
 
+  /* generate v2: optional sampler trailer round-trip + v1/v2 compat */
+  {
+    pai_proto_sampler_t sp;
+    pai_proto_sampler_t got;
+    int has = -1;
+    const char *prompt = NULL;
+    uint32_t plen = 0;
+
+    memset(&sp, 0, sizeof(sp));
+    sp.temperature = 0.7f;
+    sp.top_p = 0.9f;
+    sp.top_k = 40;
+    sp.max_tokens = 128;
+    sp.seed = 12345ull;
+    CHECK(pai_proto_msg_encode_generate2(buf, sizeof(buf), "Sampled!", &sp,
+                                         &len) == PAI_OK);
+    CHECK(pai_proto_msg_decode_generate2(buf, len, &prompt, &plen, &got,
+                                         &has) == PAI_OK);
+    CHECK_EQ_UINT(plen, 8);
+    CHECK(memcmp(prompt, "Sampled!", 8) == 0);
+    CHECK_EQ_INT(has, 1);
+    CHECK(got.temperature == 0.7f);
+    CHECK(got.top_p == 0.9f);
+    CHECK_EQ_UINT(got.top_k, 40);
+    CHECK_EQ_UINT(got.max_tokens, 128);
+    CHECK_EQ_UINT(got.seed, 12345ull);
+
+    /* A v1 decoder reads the prompt and ignores the trailer. */
+    CHECK(pai_proto_msg_decode_generate(buf, len, &prompt, &plen) == PAI_OK);
+    CHECK_EQ_UINT(plen, 8);
+    CHECK(memcmp(prompt, "Sampled!", 8) == 0);
+
+    /* A v1 payload (prompt only) decoded by v2: no sampler block. */
+    CHECK(pai_proto_msg_encode_generate2(buf, sizeof(buf), "Plain", NULL,
+                                         &len) == PAI_OK);
+    has = -1;
+    CHECK(pai_proto_msg_decode_generate2(buf, len, &prompt, &plen, &got,
+                                         &has) == PAI_OK);
+    CHECK_EQ_UINT(plen, 5);
+    CHECK(memcmp(prompt, "Plain", 5) == 0);
+    CHECK_EQ_INT(has, 0);
+  }
+
   /* token round-trip */
   CHECK(pai_proto_msg_encode_token(buf, sizeof(buf), (const uint8_t *)"tok",
                                    3, &len) == PAI_OK);

@@ -1,9 +1,8 @@
 /*
  * ProsperoAI — Prospero Protocol
  *
- * Message payload codecs (v0 formats). Payload formats are small and
- * length-prefixed so receivers can validate every field; the frame
- * header carries the correlation metadata (request/session ids).
+ * Message payload codecs (v0): small, length-prefixed, fully validated;
+ * the frame header carries request/session correlation.
  */
 
 #include <protocol/protocol.h>
@@ -59,6 +58,19 @@ static uint32_t
 get_le32(const uint8_t *p) {
   return (uint32_t)p[0] | ((uint32_t)p[1] << 8) | ((uint32_t)p[2] << 16) |
          ((uint32_t)p[3] << 24);
+}
+
+static void
+put_le64(uint8_t *p, uint64_t v) {
+  uint32_t lo = (uint32_t)(v & 0xFFFFFFFFu);
+  uint32_t hi = (uint32_t)(v >> 32);
+  put_le32(p, lo);
+  put_le32(p + 4, hi);
+}
+
+static uint64_t
+get_le64(const uint8_t *p) {
+  return (uint64_t)get_le32(p) | ((uint64_t)get_le32(p + 4) << 32);
 }
 
 /* ------------------------------------------------------------------ */
@@ -214,21 +226,112 @@ decode_u16_blob(const uint8_t *payload, uint32_t len, const uint8_t **out_blob,
   return PAI_OK;
 }
 
+/* Copy the sampler trailer (magic + fixed-size block) after the
+ * prompt blob. The layout is appended to the v1 payload, so v1
+ * decoders (which only read the prompt) ignore it. */
+static void
+encode_sampler_trailer(uint8_t *out, const pai_proto_sampler_t *s) {
+  put_le32(out + 0, PAI_PROTO_SAMPLER_MAGIC);
+  /* Float bits are stored verbatim (both target platforms are
+   * IEEE-754 little-endian); integer fields use the LE helpers. */
+  memcpy(out + 4, &s->temperature, sizeof(s->temperature));
+  memcpy(out + 8, &s->top_p, sizeof(s->top_p));
+  put_le32(out + 12, s->top_k);
+  put_le32(out + 16, s->max_tokens);
+  put_le64(out + 20, s->seed);
+}
+
+static pai_status_t
+decode_sampler_trailer(const uint8_t *trailer, uint32_t len,
+                       pai_proto_sampler_t *out) {
+  if (len != 4u + sizeof(pai_proto_sampler_t) ||
+      get_le32(trailer + 0) != PAI_PROTO_SAMPLER_MAGIC) {
+    return PAI_ERR_PROTOCOL;
+  }
+  memcpy(&out->temperature, trailer + 4, sizeof(out->temperature));
+  memcpy(&out->top_p, trailer + 8, sizeof(out->top_p));
+  out->top_k = get_le32(trailer + 12);
+  out->max_tokens = get_le32(trailer + 16);
+  out->seed = get_le64(trailer + 20);
+  return PAI_OK;
+}
+
 pai_status_t
 pai_proto_msg_encode_generate(uint8_t *out, uint32_t cap, const char *prompt,
                               uint32_t *out_len) {
-  if (!prompt) {
-    return PAI_ERR_INVALID_ARG;
-  }
-  return encode_u16_blob(out, cap, prompt, (uint32_t)strlen(prompt), out_len);
+  return pai_proto_msg_encode_generate2(out, cap, prompt, NULL, out_len);
 }
 
 pai_status_t
 pai_proto_msg_decode_generate(const uint8_t *payload, uint32_t len,
                               const char **out_prompt,
                               uint32_t *out_prompt_len) {
-  return decode_u16_blob(payload, len, (const uint8_t **)out_prompt,
-                         out_prompt_len);
+  return pai_proto_msg_decode_generate2(payload, len, out_prompt,
+                                        out_prompt_len, NULL, NULL);
+}
+
+pai_status_t
+pai_proto_msg_encode_generate2(uint8_t *out, uint32_t cap, const char *prompt,
+                               const pai_proto_sampler_t *sampler,
+                               uint32_t *out_len) {
+  uint32_t plen;
+
+  if (!prompt) {
+    return PAI_ERR_INVALID_ARG;
+  }
+  plen = (uint32_t)strlen(prompt);
+  if (plen > 0xFFFFu) {
+    return PAI_ERR_INVALID_ARG;
+  }
+  if (sampler == NULL) {
+    return encode_u16_blob(out, cap, prompt, plen, out_len);
+  }
+  {
+    uint32_t total = 2u + plen + 4u + (uint32_t)sizeof(pai_proto_sampler_t);
+    if (cap < total) {
+      return PAI_ERR_INVALID_ARG;
+    }
+    put_le16(out + 0, (uint16_t)plen);
+    if (plen > 0) {
+      memcpy(out + 2, prompt, plen);
+    }
+    encode_sampler_trailer(out + 2 + plen, sampler);
+    *out_len = total;
+    return PAI_OK;
+  }
+}
+
+pai_status_t
+pai_proto_msg_decode_generate2(const uint8_t *payload, uint32_t len,
+                               const char **out_prompt,
+                               uint32_t *out_prompt_len,
+                               pai_proto_sampler_t *out_sampler,
+                               int *out_has_sampler) {
+  const uint8_t *prompt;
+  uint32_t plen;
+  pai_status_t st;
+
+  if (out_has_sampler != NULL) {
+    *out_has_sampler = 0;
+  }
+  st = decode_u16_blob(payload, len, &prompt, &plen);
+  if (st != PAI_OK) {
+    return st;
+  }
+  if (out_prompt != NULL) {
+    *out_prompt = (const char *)prompt;
+  }
+  if (out_prompt_len != NULL) {
+    *out_prompt_len = plen;
+  }
+  /* Optional trailer: { magic; sampler block }. Anything else after
+   * the prompt is tolerated (v1 payloads have no trailer). */
+  if (out_sampler != NULL && out_has_sampler != NULL && len > 2u + plen &&
+      decode_sampler_trailer(payload + 2u + plen, len - (2u + plen),
+                             out_sampler) == PAI_OK) {
+    *out_has_sampler = 1;
+  }
+  return PAI_OK;
 }
 
 pai_status_t

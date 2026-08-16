@@ -10,8 +10,6 @@
 
 #include "remote.h"
 
-#include <protocol/protocol.h>
-
 #include <string.h>
 
 #define REMOTE_DEFAULT_TIMEOUT_MS 30000ull
@@ -84,6 +82,7 @@ remote_on_message(void *user, const pai_proto_frame_t *frame) {
 
 pai_status_t
 pai_gw_remote_generate(const char *host, uint16_t port, const char *prompt,
+                       const pai_proto_sampler_t *sampler,
                        void (*on_token)(const char *, void *), void *user,
                        uint32_t *out_tokens, uint64_t timeout_ms) {
   pai_proto_transport_t transport;
@@ -95,7 +94,7 @@ pai_gw_remote_generate(const char *host, uint16_t port, const char *prompt,
   uint64_t req;
   uint32_t frames = 0;
   uint32_t plen = 0;
-  uint8_t pay[65535 + 2];
+  uint8_t pay[65535 + 2 + 4 + (uint32_t)sizeof(pai_proto_sampler_t)];
 
   if (host == NULL || port == 0 || prompt == NULL) {
     return PAI_ERR_INVALID_ARG;
@@ -154,8 +153,9 @@ pai_gw_remote_generate(const char *host, uint16_t port, const char *prompt,
     goto out;
   }
 
-  /* GENERATE(prompt). */
-  st = pai_proto_msg_encode_generate(pay, sizeof(pay), prompt, &plen);
+  /* GENERATE(prompt[, sampler]). */
+  st = pai_proto_msg_encode_generate2(pay, sizeof(pay), prompt, sampler,
+                                      &plen);
   if (st != PAI_OK) {
     goto out;
   }

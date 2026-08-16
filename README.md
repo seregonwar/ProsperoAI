@@ -137,8 +137,10 @@ Implemented so far:
   relays each TOKEN chunk straight into the response (`remote.c`,
   `pai_gw_remote_generate`). Unreachable payloads and negotiation
   refusals answer 502 Bad Gateway; remote embeddings are reported as
-  501 in v0 (no EMBED message yet), and v0 GENERATE carries only the
-  prompt, so remote sampling uses payload defaults.
+  501 in v0 (no EMBED message yet). Sampling parameters travel in the
+  GENERATE v2 trailer (`temperature`/`top_p`/`top_k`/`max_tokens`/
+  `seed`); zero values fall back to the payload's own defaults, and
+  v1 payloads simply ignore the trailer.
   Ships its own dependency-free stack: `json.{h,c}` (bounds-checked
   JSON DOM parser with depth/node caps + writer), `gwsys.{h,c}`
   (Win32/POSIX sockets, threads, mutexes), `http.{h,c}` (request

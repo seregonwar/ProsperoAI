@@ -17,6 +17,24 @@
 
 #include <string.h>
 
+#ifdef _WIN32
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
+static void
+ping_sleep_ms(uint32_t ms) {
+  Sleep(ms);
+}
+#else
+#include <time.h>
+static void
+ping_sleep_ms(uint32_t ms) {
+  struct timespec ts;
+  ts.tv_sec = ms / 1000;
+  ts.tv_nsec = (long)(ms % 1000) * 1000000L;
+  nanosleep(&ts, NULL);
+}
+#endif
+
 /* ------------------------------------------------------------------ */
 /* client-side PONG tracking                                           */
 /* ------------------------------------------------------------------ */
@@ -122,6 +140,13 @@ pai_proto_ping(const char *host, uint16_t port, uint32_t count,
   if (out_caps != NULL) {
     *out_caps = pai_proto_conn_negotiated_caps(&conn);
   }
+
+  /* Let the peer's negotiation loop drain before the first PING: the
+   * core auto-replies PONG while negotiating, so a PING arriving in
+   * the peer's final negotiate poll would be answered even by a
+   * server that should stay silent. 50 ms is invisible to a health
+   * check and makes first-ping timing deterministic. */
+  ping_sleep_ms(50);
 
   for (i = 0; i < count; i++) {
     uint64_t req = pai_proto_conn_new_request_id(&conn);

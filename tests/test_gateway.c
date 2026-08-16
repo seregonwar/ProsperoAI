@@ -269,6 +269,10 @@ typedef struct remote_probe {
   volatile int refuse;     /* 1 = HELLO_NACK on negotiation            */
   volatile int no_answer;  /* 1 = accept GENERATE but never reply       */
   volatile int n_served;
+  /* Sampler overrides from the last GENERATE (written by the probe
+   * thread; the network round trip orders the main thread's read). */
+  pai_proto_sampler_t last_sampler;
+  volatile int got_sampler;
 } remote_probe_t;
 
 typedef struct probe_gen {
@@ -295,8 +299,15 @@ probe_on_message(void *user, const pai_proto_frame_t *frame) {
   if (frame->msg_type != PAI_PROTO_MSG_GENERATE) {
     return PAI_OK;
   }
-  CHECK(pai_proto_msg_decode_generate(frame->payload, frame->payload_len,
-                                      &prompt, &plen) == PAI_OK);
+  {
+    int has = 0;
+    g->probe->got_sampler = 0;
+    CHECK(pai_proto_msg_decode_generate2(frame->payload, frame->payload_len,
+                                         &prompt, &plen,
+                                         &g->probe->last_sampler, &has) ==
+          PAI_OK);
+    g->probe->got_sampler = has;
+  }
   if (g->probe->no_answer) {
     return PAI_OK; /* negotiates, then goes silent */
   }
@@ -883,6 +894,20 @@ CHECK(build_fixture());
   CHECK(strcmp(pai_json_str_member(&doc, msg, "content"), "user: hi") == 0);
   pai_json_destroy(&doc);
 
+  /* Sampling parameters from the request travel in the GENERATE
+   * trailer and reach the payload. */
+  CHECK(gw_call(&gw, "POST", "/v1/completions",
+                "{\"model\":\"remote-lm\",\"prompt\":\"x\","
+                "\"temperature\":0.7,\"top_p\":0.9,\"top_k\":40,"
+                "\"max_tokens\":7}",
+                &cap) == PAI_OK);
+  CHECK_EQ_INT(resp_status(&cap), 200);
+  CHECK_EQ_INT(probe.got_sampler, 1);
+  CHECK(probe.last_sampler.temperature == 0.7f);
+  CHECK(probe.last_sampler.top_p == 0.9f);
+  CHECK_EQ_UINT(probe.last_sampler.top_k, 40);
+  CHECK_EQ_UINT(probe.last_sampler.max_tokens, 7);
+
   /* Embeddings are not bridged in v0. */
   CHECK(gw_call(&gw, "POST", "/v1/embeddings",
                 "{\"model\":\"remote-lm\",\"input\":\"a\"}", &cap) ==
@@ -939,15 +964,15 @@ CHECK(build_fixture());
   CHECK(probe_start(&probe, &lst, &port) == 0);
   probe.no_answer = 1;
 
-  CHECK(pai_gw_remote_generate("127.0.0.1", port, "hi", NULL, NULL,
+  CHECK(pai_gw_remote_generate("127.0.0.1", port, "hi", NULL, NULL, NULL,
                                &tokens, 300) == PAI_ERR_TIMEOUT);
   CHECK_EQ_UINT(tokens, 0);
 
   /* Bad arguments. */
-  CHECK(pai_gw_remote_generate(NULL, port, "hi", NULL, NULL, NULL, 0) ==
+  CHECK(pai_gw_remote_generate(NULL, port, "hi", NULL, NULL, NULL, NULL, 0) ==
         PAI_ERR_INVALID_ARG);
-  CHECK(pai_gw_remote_generate("127.0.0.1", 0, "hi", NULL, NULL, NULL, 0) ==
-        PAI_ERR_INVALID_ARG);
+  CHECK(pai_gw_remote_generate("127.0.0.1", 0, "hi", NULL, NULL, NULL, NULL,
+                               0) == PAI_ERR_INVALID_ARG);
 
   probe_stop(&probe, lst);
   CHECK_EQ_UINT(probe.finished, 1);
