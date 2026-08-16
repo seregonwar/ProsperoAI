@@ -35,6 +35,9 @@ $stamp = Get-Date -Format "yyyyMMdd-HHmmss"
 $localLog = Join-Path $runDir "run-$stamp.log"
 
 Write-Output "== deploy to ${Ps5Ip}:${Ps5Port} =="
+# Drop the previous on-console log so the fetch below only ever sees
+# this run's output (the FTP server can serve stale cached listings).
+curl.exe -s --connect-timeout 5 "ftp://${Ps5Ip}:${FtpPort}/" --user "${FtpUser}:${FtpPass}" -Q "-DELE /data/prosperoai/prosperoai.log" 2>$null | Out-Null
 cmd /c "type `"$elf`" | `"$plink`" -raw -P $Ps5Port $Ps5Ip" | Out-Null
 
 Write-Output "== waiting for console log (FTP :${FtpPort}) =="
@@ -43,13 +46,16 @@ $deadline = (Get-Date).AddSeconds($TimeoutSec)
 $prevSize = -1
 $stableCount = 0
 $found = $false
+$lastBytes = 0
 
 while ((Get-Date) -lt $deadline) {
   Start-Sleep -Seconds 2
   curl.exe -s --connect-timeout 5 "$logUrl" --user "${FtpUser}:${FtpPass}" -o $localLog 2>$null
   if (($LASTEXITCODE -eq 0) -and (Test-Path $localLog)) {
     $size = (Get-Item $localLog).Length
-    $found = $true
+    if ($size -gt 0) {
+      $found = $true
+    }
     if ($size -eq $prevSize) {
       $stableCount++
     } else {
