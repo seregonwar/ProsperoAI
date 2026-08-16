@@ -196,6 +196,18 @@ pai_gvmspace_diag(void) {
     PAI_LOG_INFO_(PAI_SUB_GPU, "\n");
   }
 
+  /* Deep-dump the GPU-pmap candidate (vmspace+0x1D8 pointer): 0x40..0x100. */
+  {
+    intptr_t pmap = (intptr_t)kernel_getlong(vmspace + 0x1D8);
+    if (pmap && pmap != -1) {
+      for (int i = 8; i < 32; i++) {
+        v = kernel_getlong(pmap + i * 8);
+        PAI_LOG_INFO_(PAI_SUB_GPU, "gvm diag: pmap2+0x%lx = 0x%llx\n",
+                      (unsigned long)(i * 8), (unsigned long long)v);
+      }
+    }
+  }
+
   return PAI_OK;
 }
 
