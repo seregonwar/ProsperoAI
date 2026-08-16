@@ -189,8 +189,91 @@ m0_run_gpu(m0_ctx_t *ctx, uint32_t *stream, uint32_t stream_len,
     if (st == PAI_OK) {
       PAI_LOG_INFO_(PAI_SUB_GPU, "[%s] label fired (fence=%s)\n", stage,
                     fence_names[fence]);
-      return 0;
+  /* E48-E50: value-path bisect under the 4-SGPR config.
+   * E48: v0 = v1 (pure tid copy as value, no arithmetic)
+   * E49: v0 = v4 (k copy as value)
+   * E50: VOP3 e64 add v0 = v1 + v4 (hand-encoded) */
+  {
+    static const uint32_t e48_code[12] = {
+        0x7E020300u, /* v_mov_b32 v1, v0 */
+        0x7E040202u, /* v_mov_b32 v2, s2 */
+        0x7E060203u, /* v_mov_b32 v3, s3 */
+        0x7E000301u, /* v_mov_b32 v0, v1  (value = tid) */
+        0x34080682u, /* v_lshlrev_b32 v1, 2, v1 */
+        0xD70F6A02u, 0x00020502u, /* v_add_co_u32 v2, vcc_lo, v2, v1 */
+        0xD5286A03u, 0x01A90103u, /* v_add_co_ci_u32 v3, vcc_lo, v3, 0, vcc_lo */
+        0xDC700000u, 0x007D0404u, /* flat_store_dword v[2:3], v4 */
+        0xBF810000u, /* s_endpgm */
+    };
+    static const uint32_t e49_code[12] = {
+        0x7E020300u, /* v_mov_b32 v1, v0 */
+        0x7E040202u, /* v_mov_b32 v2, s2 */
+        0x7E060203u, /* v_mov_b32 v3, s3 */
+        0x7E080200u, /* v_mov_b32 v4, s0  (k) */
+        0x7E000304u, /* v_mov_b32 v0, v4  (value = k) */
+        0x34080682u, /* v_lshlrev_b32 v1, 2, v1 */
+        0xD70F6A02u, 0x00020502u,
+        0xD5286A03u, 0x01A90103u,
+        0xDC700000u, 0x007D0404u,
+        0xBF810000u,
+    };
+    static const uint32_t e50_code[14] = {
+        0x7E020300u, /* v_mov_b32 v1, v0 */
+        0x7E040202u, /* v_mov_b32 v2, s2 */
+        0x7E060203u, /* v_mov_b32 v3, s3 */
+        0x7E080200u, /* v_mov_b32 v4, s0  (k) */
+        0xD5030000u, 0x00020901u, /* v_add_f32 v0, v1, v4 (VOP3 e64) */
+        0x34080682u, /* v_lshlrev_b32 v1, 2, v1 */
+        0xD70F6A02u, 0x00020502u,
+        0xD5286A03u, 0x01A90103u,
+        0xDC700000u, 0x007D0404u,
+        0xBF810000u,
+    };
+
+    for (uint32_t variant = 0; variant < 3; variant++) {
+      const uint32_t *code = variant == 0 ? e48_code
+                             : variant == 1 ? e49_code
+                                            : e50_code;
+      uint32_t words = variant == 2 ? 14u : 12u;
+      const char *name = variant == 0 ? "E48" : variant == 1 ? "E49" : "E50";
+      if (!host) {
+        pai_gpu_reset(gpu);
+      }
+      memcpy(ctx->code.cpu_addr, code, words * sizeof(uint32_t));
+      if (host) {
+        pai_gpu_host_register_shader(gpu, ctx->code.gpu_addr,
+                                     pai_host_kernel_arith, NULL);
+      }
+      ud[0] = 0;
+      ud[1] = 0;
+      ud[2] = (uint32_t)(ctx->c.gpu_addr & 0xFFFFFFFFu);
+      ud[3] = (uint32_t)(ctx->c.gpu_addr >> 32);
+      {
+        float k = 1.5f;
+        memcpy(&ud[0], &k, sizeof(k));
+      }
+      m0_build_dispatch_stream(ctx, stream, M0_PM4_CAP, PAI_ARITH4_RSRC2,
+                               PAI_EXP_THREADS_X, 1, ud, 4, &stream_len);
+      m0_run_gpu(ctx, stream, stream_len, c32, 128, 0xCC, name);
+      PAI_LOG_INFO_(PAI_SUB_GPU, "[M0-%s] c[0..7] = %08x %08x %08x %08x "
+                    "%08x %08x %08x %08x\n",
+                    name, c32[0], c32[1], c32[2], c32[3], c32[4], c32[5],
+                    c32[6], c32[7]);
+      if (variant == 0) {
+        int ok = 1;
+        for (uint32_t i = 0; i < PAI_EXP_THREADS_X; i++) {
+          if (c32[i] != i) {
+            ok = 0;
+            break;
+          }
+        }
+        m0_exp_report("E48", ok);
+      }
     }
+  }
+
+  return 0;
+}
 
     /* Label timed out: did the GPU execute the stream anyway? */
     {
