@@ -3627,6 +3627,163 @@ h48[0] = kk;
     m0_exp_report("G48", ok);
   }
 
+  /* G49-G53: T4 serial integer elementwise kernels - packed (a,b)
+   * pairs, C at s4:s5, TGID_X = element index, one thread per group.
+   * u32 wrap semantics (SALU integer path, G22-proven). */
+  {
+    static const uint32_t k_offs[5] = {PAI_INT_ADD2D_OFF, PAI_INT_SUB1D_OFF,
+                                       PAI_INT_MUL1D_OFF, PAI_INT_RELU_OFF,
+                                       PAI_INT_CLIP_OFF};
+    static const uint32_t k_lens[5] = {
+        PAI_INT_ADD2D_WORDS, PAI_INT_SUB1D_WORDS, PAI_INT_MUL1D_WORDS,
+        PAI_INT_RELU_WORDS, PAI_INT_CLIP_WORDS};
+    static const char *const k_names[5] = {"G49", "G50", "G51", "G52",
+                                           "G53"};
+    static pai_host_kernel_fn const k_host[5] = {
+        pai_host_kernel_int_add2d, pai_host_kernel_int_sub1d,
+        pai_host_kernel_int_mul1d, pai_host_kernel_int_relu,
+        pai_host_kernel_int_clip};
+    uint32_t n = 64u;
+    uint32_t *ab32 = (uint32_t *)ctx->a.cpu_addr;
+    uint32_t *c49 = (uint32_t *)ctx->c.cpu_addr;
+    uint32_t stream_len = 0;
+    uint32_t want[64];
+
+    for (uint32_t variant = 0; variant < 5; variant++) {
+      int ok = 1;
+      uint64_t cpu_phys = 0;
+      uint32_t pde[4];
+      if (!host) {
+        pai_gpu_reset(gpu);
+      }
+      memset(c49, 0xCC, 64 * sizeof(uint32_t));
+      memcpy(ctx->code.cpu_addr, &pai_int_ops_code[k_offs[variant]],
+             k_lens[variant] * sizeof(uint32_t));
+      pai_cpu_phys_of_va((uint64_t)(uintptr_t)ctx->code.cpu_addr, &cpu_phys);
+      pai_gvmspace_dump_pde_page(ctx->code.gpu_addr, pde);
+      PAI_LOG_INFO_(PAI_SUB_GPU,
+                    "[M0-%s] code cpu_phys=0x%llx gpu_pde=%08x %08x %08x %08x "
+                    "first=%08x\n",
+                    k_names[variant], (unsigned long long)cpu_phys, pde[0],
+                    pde[1], pde[2], pde[3],
+                    ((uint32_t *)ctx->code.cpu_addr)[0]);
+      if (host) {
+        pai_gpu_host_register_shader(gpu, ctx->code.gpu_addr, k_host[variant],
+                                     NULL);
+      }
+      for (uint32_t g = 0; g < n; g++) {
+        uint32_t av = 0x80000000u + 0x01000000u * g;
+        uint32_t bv = 0x11111111u + 0x00001000u * g;
+        ab32[2u * g] = av;
+        ab32[2u * g + 1u] = bv;
+        switch (variant) {
+        case 0:
+          want[g] = av + bv;
+          break;
+        case 1:
+          want[g] = av - bv;
+          break;
+        case 2:
+          want[g] = av * bv;
+          break;
+        case 3:
+          want[g] = av > 0u ? av : 0u;
+          break;
+        default:
+          want[g] = av < 0u ? 0u : (av > 1u ? 1u : av);
+          break;
+        }
+      }
+      pai_gpu_buffer_flush(ctx->gpu, &ctx->a);
+      pai_gpu_buffer_flush(ctx->gpu, &ctx->code);
+      ud[0] = 0;
+      ud[1] = 0;
+      ud[2] = (uint32_t)(ctx->a.gpu_addr & 0xFFFFFFFFu);
+      ud[3] = (uint32_t)(ctx->a.gpu_addr >> 32);
+      ud[4] = (uint32_t)(ctx->c.gpu_addr & 0xFFFFFFFFu);
+      ud[5] = (uint32_t)(ctx->c.gpu_addr >> 32);
+      ud[6] = 0;
+      m0_build_dispatch_stream(ctx, stream, M0_PM4_CAP, PAI_INT_RSRC2,
+                               PAI_INT_THREADS, n, ud, 7, &stream_len);
+      m0_run_gpu(ctx, stream, stream_len, c49, 64, 0xCC, k_names[variant]);
+      for (uint32_t g = 0; g < n && ok; g++) {
+        if (c49[g] != want[g]) {
+          ok = 0;
+        }
+      }
+      PAI_LOG_INFO_(PAI_SUB_GPU, "[M0-%s] c[0..3] = %08x %08x %08x %08x\n",
+                    k_names[variant], c49[0], c49[1], c49[2], c49[3]);
+      m0_exp_report(k_names[variant], ok);
+    }
+  }
+
+  /* G54: T4 integer matmul - C[i*N+j] = sum_k a[i*K+k] * b[k*N+j],
+   * u32 wrap, one group per row. Header [K, N, a_lo, a_hi, b_lo, b_hi].
+   * b is row-major [k][N]: k-stride = N*4 bytes. */
+  if (!host) {
+    pai_gpu_reset(gpu);
+  }
+  {
+    uint32_t rows = 4u, kk = 16u, cols = 4u;
+    uint32_t *h54 = (uint32_t *)ctx->a.cpu_addr;
+    uint32_t *a54 = (uint32_t *)ctx->b.cpu_addr;
+    uint32_t *b54 = a54 + rows * kk;
+    uint32_t *c54 = (uint32_t *)ctx->c.cpu_addr;
+    uint32_t stream_len = 0;
+    int ok = 1;
+
+    memset(c54, 0xCC, 64 * sizeof(uint32_t));
+    memcpy(ctx->code.cpu_addr, &pai_int_ops_code[PAI_INT_MATMUL_OFF],
+           PAI_INT_MATMUL_WORDS * sizeof(uint32_t));
+    if (host) {
+      pai_gpu_host_register_shader(gpu, ctx->code.gpu_addr,
+                                   pai_host_kernel_int_matmul, NULL);
+    }
+    h54[0] = kk;
+    h54[1] = cols;
+    h54[2] = (uint32_t)(ctx->b.gpu_addr & 0xFFFFFFFFu);
+    h54[3] = (uint32_t)(ctx->b.gpu_addr >> 32);
+    h54[4] = (uint32_t)((ctx->b.gpu_addr + rows * kk * 4) & 0xFFFFFFFFu);
+    h54[5] = (uint32_t)((ctx->b.gpu_addr + rows * kk * 4) >> 32);
+    for (uint32_t i = 0; i < rows; i++) {
+      for (uint32_t t = 0; t < kk; t++) {
+        a54[i * kk + t] = 0x10000000u + 0x00000100u * i + t;
+      }
+    }
+    for (uint32_t t = 0; t < kk; t++) {
+      for (uint32_t j = 0; j < cols; j++) {
+        b54[t * cols + j] = 0x20000000u + 0x00010000u * t + j;
+      }
+    }
+    pai_gpu_buffer_flush(ctx->gpu, &ctx->a);
+    pai_gpu_buffer_flush(ctx->gpu, &ctx->b);
+    pai_gpu_buffer_flush(ctx->gpu, &ctx->code);
+    ud[0] = 0;
+    ud[1] = 0;
+    ud[2] = (uint32_t)(ctx->a.gpu_addr & 0xFFFFFFFFu);
+    ud[3] = (uint32_t)(ctx->a.gpu_addr >> 32);
+    ud[4] = (uint32_t)(ctx->c.gpu_addr & 0xFFFFFFFFu);
+    ud[5] = (uint32_t)(ctx->c.gpu_addr >> 32);
+    ud[6] = 0;
+    m0_build_dispatch_stream(ctx, stream, M0_PM4_CAP, PAI_INT_RSRC2,
+                             PAI_INT_THREADS, rows, ud, 7, &stream_len);
+    m0_run_gpu(ctx, stream, stream_len, c54, 64, 0xCC, "G54");
+    for (uint32_t i = 0; i < rows && ok; i++) {
+      for (uint32_t j = 0; j < cols; j++) {
+        uint32_t want = 0;
+        for (uint32_t t = 0; t < kk; t++) {
+          want += a54[i * kk + t] * b54[t * cols + j];
+        }
+        if (c54[i * cols + j] != want) {
+          ok = 0;
+        }
+      }
+    }
+    PAI_LOG_INFO_(PAI_SUB_GPU, "[M0-G54] c[0..3] = %08x %08x %08x %08x\n",
+                  c54[0], c54[1], c54[2], c54[3]);
+    m0_exp_report("G54", ok);
+  }
+
   /* G17: load from the kernel's own acqrb VA - does ANY load complete,
    * or only our dmem pages hang? */
   if (!host) {

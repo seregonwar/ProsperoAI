@@ -536,3 +536,97 @@ pai_host_kernel_t4_matmul(void *ctx, const uint32_t user_data[16],
   }
   return PAI_OK;
 }
+
+/* T4 integer elementwise ops (int_ops.s G49-G53): packed (a,b) pairs at
+ * ud 2-3, C at ud 4-5, one group per element, u32 wrap. */
+static pai_status_t
+pai_host_kernel_int_ew(void *ctx, const uint32_t user_data[16],
+                       uint32_t threads_x, uint32_t group_x, uint32_t op) {
+  const uint32_t *ab = (const uint32_t *)(uintptr_t)pai_ud64(user_data, 2);
+  uint32_t *c = (uint32_t *)(uintptr_t)pai_ud64(user_data, 4);
+
+  (void)ctx;
+  (void)threads_x;
+
+  for (uint32_t g = 0; g < group_x; g++) {
+    uint32_t av = ab[2u * g];
+    uint32_t bv = ab[2u * g + 1u];
+    switch (op) {
+    case 0:
+      c[g] = av + bv;
+      break;
+    case 1:
+      c[g] = av - bv;
+      break;
+    case 2:
+      c[g] = av * bv;
+      break;
+    case 3:
+      c[g] = av > 0u ? av : 0u;
+      break;
+    default:
+      c[g] = av < 0u ? 0u : (av > 1u ? 1u : av);
+      break;
+    }
+  }
+  return PAI_OK;
+}
+
+pai_status_t
+pai_host_kernel_int_add2d(void *ctx, const uint32_t user_data[16],
+                          uint32_t threads_x, uint32_t group_x) {
+  return pai_host_kernel_int_ew(ctx, user_data, threads_x, group_x, 0);
+}
+
+pai_status_t
+pai_host_kernel_int_sub1d(void *ctx, const uint32_t user_data[16],
+                          uint32_t threads_x, uint32_t group_x) {
+  return pai_host_kernel_int_ew(ctx, user_data, threads_x, group_x, 1);
+}
+
+pai_status_t
+pai_host_kernel_int_mul1d(void *ctx, const uint32_t user_data[16],
+                          uint32_t threads_x, uint32_t group_x) {
+  return pai_host_kernel_int_ew(ctx, user_data, threads_x, group_x, 2);
+}
+
+pai_status_t
+pai_host_kernel_int_relu(void *ctx, const uint32_t user_data[16],
+                         uint32_t threads_x, uint32_t group_x) {
+  return pai_host_kernel_int_ew(ctx, user_data, threads_x, group_x, 3);
+}
+
+pai_status_t
+pai_host_kernel_int_clip(void *ctx, const uint32_t user_data[16],
+                         uint32_t threads_x, uint32_t group_x) {
+  return pai_host_kernel_int_ew(ctx, user_data, threads_x, group_x, 4);
+}
+
+/* T4 integer matmul (G54): header at ud 2-3 [K, N, a_lo, a_hi,
+ * b_lo, b_hi], C at ud 4-5; one group per row:
+ * c[i*N+j] = sum_k a[i*K+k] * b[k*N+j], u32 wrap. */
+pai_status_t
+pai_host_kernel_int_matmul(void *ctx, const uint32_t user_data[16],
+                           uint32_t threads_x, uint32_t group_x) {
+  const uint32_t *h = (const uint32_t *)(uintptr_t)pai_ud64(user_data, 2);
+  const uint32_t *a = (const uint32_t *)(uintptr_t)pai_ud64(h, 2);
+  const uint32_t *b = (const uint32_t *)(uintptr_t)pai_ud64(h, 4);
+  uint32_t *c = (uint32_t *)(uintptr_t)pai_ud64(user_data, 4);
+  uint32_t kdim = h[0];
+  uint32_t n = h[1];
+
+  (void)ctx;
+  (void)threads_x;
+
+  for (uint32_t i = 0; i < group_x; i++) {
+    const uint32_t *row = a + i * kdim;
+    for (uint32_t j = 0; j < n; j++) {
+      uint32_t acc = 0;
+      for (uint32_t k = 0; k < kdim; k++) {
+        acc += row[k] * b[k * n + j];
+      }
+      c[i * n + j] = acc;
+    }
+  }
+  return PAI_OK;
+}

@@ -146,4 +146,22 @@ pai_status_t pai_host_kernel_t4_biasadd(void *ctx, const uint32_t user_data[16],
 pai_status_t pai_host_kernel_t4_matmul(void *ctx, const uint32_t user_data[16],
                                        uint32_t threads_x, uint32_t group_x);
 
+/* T4 integer elementwise ops (int_ops.s G49-G53): packed (a,b) at
+ * ud[2:3], C at ud[4:5], one group per element, u32 wrap. */
+pai_status_t pai_host_kernel_int_add2d(void *ctx, const uint32_t user_data[16],
+                                       uint32_t threads_x, uint32_t group_x);
+pai_status_t pai_host_kernel_int_sub1d(void *ctx, const uint32_t user_data[16],
+                                       uint32_t threads_x, uint32_t group_x);
+pai_status_t pai_host_kernel_int_mul1d(void *ctx, const uint32_t user_data[16],
+                                       uint32_t threads_x, uint32_t group_x);
+pai_status_t pai_host_kernel_int_relu(void *ctx, const uint32_t user_data[16],
+                                      uint32_t threads_x, uint32_t group_x);
+pai_status_t pai_host_kernel_int_clip(void *ctx, const uint32_t user_data[16],
+                                      uint32_t threads_x, uint32_t group_x);
+
+/* T4 integer matmul (G54): header [K, N, a_lo, a_hi, b_lo, b_hi] at
+ * ud[2:3], C at ud[4:5], one group per row, u32 wrap. */
+pai_status_t pai_host_kernel_int_matmul(void *ctx, const uint32_t user_data[16],
+                                        uint32_t threads_x, uint32_t group_x);
+
 #endif /* PAI_GPU_HOST_KERNELS_H */

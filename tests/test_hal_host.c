@@ -227,6 +227,87 @@ TEST_MAIN_BEGIN()
                               UINT64_C(1000000000)) == PAI_ERR_UNSUPPORTED);
   }
 
+  /* T4B integer kernels (int_ops.s G49-G54): host-ref mirrors must
+   * match the u32 wrap semantics of the serial shaders one-to-one. */
+  {
+    uint32_t ab[2 * 64];
+    uint32_t cbuf[64];
+    uint32_t ud[7] = {0};
+    uint32_t want;
+
+    for (uint32_t i = 0; i < 64; i++) {
+      ab[2 * i] = 0x80000000u + 0x01000000u * i;
+      ab[2 * i + 1] = 0x11111111u + 0x00001000u * i;
+    }
+    ud[2] = (uint32_t)(uintptr_t)ab;
+    ud[3] = (uint32_t)((uintptr_t)ab >> 32);
+    ud[4] = (uint32_t)(uintptr_t)cbuf;
+    ud[5] = (uint32_t)((uintptr_t)cbuf >> 32);
+
+    /* add2d */
+    CHECK(pai_host_kernel_int_add2d(NULL, ud, 1, 64) == PAI_OK);
+    for (uint32_t i = 0; i < 64; i++) {
+      CHECK_EQ_UINT(cbuf[i], ab[2 * i] + ab[2 * i + 1]);
+    }
+    /* sub1d */
+    CHECK(pai_host_kernel_int_sub1d(NULL, ud, 1, 64) == PAI_OK);
+    for (uint32_t i = 0; i < 64; i++) {
+      CHECK_EQ_UINT(cbuf[i], ab[2 * i] - ab[2 * i + 1]);
+    }
+    /* mul1d */
+    CHECK(pai_host_kernel_int_mul1d(NULL, ud, 1, 64) == PAI_OK);
+    for (uint32_t i = 0; i < 64; i++) {
+      CHECK_EQ_UINT(cbuf[i], ab[2 * i] * ab[2 * i + 1]);
+    }
+    /* relu */
+    CHECK(pai_host_kernel_int_relu(NULL, ud, 1, 64) == PAI_OK);
+    for (uint32_t i = 0; i < 64; i++) {
+      CHECK_EQ_UINT(cbuf[i], ab[2 * i] > 0u ? ab[2 * i] : 0u);
+    }
+    /* clip */
+    CHECK(pai_host_kernel_int_clip(NULL, ud, 1, 64) == PAI_OK);
+    for (uint32_t i = 0; i < 64; i++) {
+      CHECK_EQ_UINT(cbuf[i], ab[2 * i] < 1u ? ab[2 * i] : 1u);
+    }
+
+    /* matmul_u32: header [K, N, a_lo, a_hi, b_lo, b_hi] */
+    {
+      uint32_t h[6];
+      uint32_t a48[4 * 16];
+      uint32_t b48[16 * 4];
+      uint32_t rows = 4, kk = 16, cols = 4;
+
+      for (uint32_t i = 0; i < rows; i++) {
+        for (uint32_t t = 0; t < kk; t++) {
+          a48[i * kk + t] = 0x10000000u + 0x00000100u * i + t;
+        }
+      }
+      for (uint32_t t = 0; t < kk; t++) {
+        for (uint32_t j = 0; j < cols; j++) {
+          b48[t * cols + j] = 0x20000000u + 0x00010000u * t + j;
+        }
+      }
+      h[0] = kk;
+      h[1] = cols;
+      h[2] = (uint32_t)(uintptr_t)a48;
+      h[3] = (uint32_t)((uintptr_t)a48 >> 32);
+      h[4] = (uint32_t)(uintptr_t)b48;
+      h[5] = (uint32_t)((uintptr_t)b48 >> 32);
+      ud[2] = (uint32_t)(uintptr_t)h;
+      ud[3] = (uint32_t)((uintptr_t)h >> 32);
+      CHECK(pai_host_kernel_int_matmul(NULL, ud, 1, rows) == PAI_OK);
+      for (uint32_t i = 0; i < rows; i++) {
+        for (uint32_t j = 0; j < cols; j++) {
+          want = 0;
+          for (uint32_t t = 0; t < kk; t++) {
+            want += a48[i * kk + t] * b48[t * cols + j];
+          }
+          CHECK_EQ_UINT(cbuf[i * cols + j], want);
+        }
+      }
+    }
+  }
+
   pai_gpu_buffer_free(dev, &label);
   pai_gpu_buffer_free(dev, &code);
   pai_gpu_buffer_free(dev, &c);
