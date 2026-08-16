@@ -1280,6 +1280,99 @@ m0_exp_v0model(m0_ctx_t *ctx) {
     }
   }
 
+  /* H12/H13: zeroed-s0-s1 workaround — loads into s4+ / T# at s4+. */
+  {
+    uint32_t *a32 = (uint32_t *)ctx->a.cpu_addr;
+    uint32_t a0;
+
+    /* H12: SMEM load into s[4:7], in-place on A. */
+    if (!host) {
+      pai_gpu_reset(gpu);
+    }
+    a32[0] = 0x66660000u;
+    for (uint32_t i = 1; i < PAI_EXP_THREADS_X; i++) {
+      a32[i] = 0x66660000u + i;
+    }
+    a0 = a32[0];
+    memcpy(ctx->code.cpu_addr, &pai_hbatch5_code[PAI_H12_OFF],
+           PAI_H12_WORDS * sizeof(uint32_t));
+    if (host) {
+      pai_gpu_host_register_shader(gpu, ctx->code.gpu_addr,
+                                   pai_host_kernel_g7, NULL);
+    }
+    ud[0] = 0;
+    ud[1] = 0;
+    ud[2] = (uint32_t)(ctx->a.gpu_addr & 0xFFFFFFFFu);
+    ud[3] = (uint32_t)(ctx->a.gpu_addr >> 32);
+    ud[4] = 0;
+    ud[5] = 0;
+    m0_build_dispatch_stream(ctx, stream, M0_PM4_CAP, PAI_H12_RSRC2,
+                             PAI_EXP_THREADS_X, 1, ud, 6, &stream_len);
+    m0_run_gpu(ctx, stream, stream_len, a32, 128, 0xEE, "H12");
+    PAI_LOG_INFO_(PAI_SUB_GPU, "[M0-H12] A[0..15] = %08x %08x %08x %08x "
+                  "%08x %08x %08x %08x %08x %08x %08x %08x %08x %08x "
+                  "%08x %08x\n",
+                  a32[0], a32[1], a32[2], a32[3], a32[4], a32[5], a32[6],
+                  a32[7], a32[8], a32[9], a32[10], a32[11], a32[12], a32[13],
+                  a32[14], a32[15]);
+    {
+      int ok = 1;
+      for (uint32_t i = 0; i < 8; i++) {
+        if (a32[i] != a0 + (i << 2) + 3u) {
+          ok = 0;
+          break;
+        }
+      }
+      m0_exp_report("H12", ok);
+    }
+
+    /* H13: MUBUF load with T# at s[4:7], per-thread copy via x4 store. */
+    if (!host) {
+      pai_gpu_reset(gpu);
+    }
+    for (uint32_t i = 0; i < PAI_EXP_THREADS_X; i++) {
+      a32[i] = 0x77770000u + i;
+    }
+    memcpy(ctx->code.cpu_addr, &pai_hbatch5_code[PAI_H13_OFF],
+           PAI_H13_WORDS * sizeof(uint32_t));
+    if (host) {
+      pai_gpu_host_register_shader(gpu, ctx->code.gpu_addr,
+                                   pai_host_kernel_h1, NULL);
+    }
+    ud[0] = 0;
+    ud[1] = 0;
+    ud[2] = (uint32_t)(ctx->c.gpu_addr & 0xFFFFFFFFu);
+    ud[3] = (uint32_t)(ctx->c.gpu_addr >> 32);
+    ud[4] = (uint32_t)(ctx->a.gpu_addr & 0xFFFFFFFFu);
+    ud[5] = (uint32_t)(ctx->a.gpu_addr >> 32);
+    ud[6] = 4096u;
+    ud[7] = PAI_TBUF_WORD3_EXEC;
+    m0_build_dispatch_stream(ctx, stream, M0_PM4_CAP, PAI_H13_RSRC2,
+                             PAI_EXP_THREADS_X, 1, ud, 8, &stream_len);
+    m0_run_gpu(ctx, stream, stream_len, c32, 128 * 4, 0xCC, "H13");
+    PAI_LOG_INFO_(PAI_SUB_GPU, "[M0-H13] c[0..15] = %08x %08x %08x %08x "
+                  "%08x %08x %08x %08x %08x %08x %08x %08x %08x %08x "
+                  "%08x %08x\n",
+                  c32[0], c32[1], c32[2], c32[3], c32[4], c32[5], c32[6],
+                  c32[7], c32[8], c32[9], c32[10], c32[11], c32[12], c32[13],
+                  c32[14], c32[15]);
+    {
+      int ok = 1;
+      for (uint32_t i = 0; i < 8; i++) {
+        for (uint32_t j = 0; j < 4; j++) {
+          if (c32[i * 4 + j] != a32[i]) {
+            ok = 0;
+            break;
+          }
+        }
+        if (!ok) {
+          break;
+        }
+      }
+      m0_exp_report("H13", ok);
+    }
+  }
+
   /* H11: SMEM load with proven sbase s[2:3] — in-place on A. */
   if (!host) {
     pai_gpu_reset(gpu);

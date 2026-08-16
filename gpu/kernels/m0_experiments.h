@@ -163,6 +163,14 @@
 #define PAI_H11_RSRC2 0x00000008u
 #define PAI_H11_CODE_WORDS 16u
 
+/* H12/H13: zeroed-s0-s1 workaround (pai_hbatch5.inc). */
+#define PAI_H12_OFF 0u
+#define PAI_H12_WORDS 16u
+#define PAI_H12_RSRC2 0x0000000Cu
+#define PAI_H13_OFF 16u
+#define PAI_H13_WORDS 15u
+#define PAI_H13_RSRC2 0x00000010u
+
 /* E31: loadstore with vaddr pairs 1 (v[2:3]) only. */
 #define PAI_LOADSTORE_GOLD_RSRC2 0x0000000Cu
 #define PAI_LOADSTORE_GOLD_CODE_WORDS 20u
@@ -217,6 +225,7 @@ extern const uint32_t pai_hbatch_code[];
 extern const uint32_t pai_hbatch2_code[];
 extern const uint32_t pai_hbatch3_code[PAI_H10_CODE_WORDS];
 extern const uint32_t pai_hbatch4_code[PAI_H11_CODE_WORDS];
+extern const uint32_t pai_hbatch5_code[];
 extern const uint32_t pai_v0model_code[];
 extern const uint32_t pai_loadstore_gold_code[PAI_LOADSTORE_GOLD_CODE_WORDS];
 extern const uint32_t pai_loadstore_code[PAI_LOADSTORE_CODE_WORDS];
