@@ -31,6 +31,7 @@ import type {
   GatewayStatus,
   HubSearchResult,
   ImportResult,
+  InspectResult,
   LibraryEntry,
   OptimizeResult,
 } from '../shared/types';
@@ -150,8 +151,13 @@ function registerIpc(): void {
         onDelta: (delta) => sendToRenderer('chat-delta', delta),
       });
       sendToRenderer('chat-delta', { requestId: id, token: '', done: true } satisfies ChatStreamDelta);
-      events.push('INFO', 'gateway', `stream completato · ${result.tokens} token · ${String(model ?? '')}`);
-      return { ok: true, tokens: result.tokens };
+      events.push('INFO', 'gateway', `stream completato · ${result.tokens} token${result.finishReason ? ` · ${result.finishReason}` : ''} · ${String(model ?? '')}`);
+      return {
+        ok: true,
+        tokens: result.tokens,
+        finishReason: result.finishReason,
+        usage: result.usage,
+      };
     } catch (error) {
       const message = error instanceof Error ? error.message : 'stream fallito';
       sendToRenderer('chat-delta', { requestId: id, token: '', done: true, error: message } satisfies ChatStreamDelta);
@@ -271,6 +277,19 @@ function registerIpc(): void {
       result.ok
         ? `piano di ottimizzazione · ${result.plan?.model} · ${((((result.plan?.currentBytes ?? 0) - (result.plan?.planBytes ?? 0)) / 1048576)).toFixed(2)} MiB risparmiati (${result.plan?.feasible ? '' : 'oltre budget '}§15)`
         : `ottimizzazione fallita · ${result.error ?? 'errore'}`,
+    );
+    return result;
+  });
+
+  ipcMain.handle('library-inspect', async (event, entryId: unknown): Promise<InspectResult> => {
+    assertTrustedSender(event.sender.id);
+    const result = await library.inspect(String(entryId ?? ''));
+    events.push(
+      result.ok ? 'INFO' : 'WARN',
+      'library',
+      result.ok
+        ? `manifest letto · ${result.data?.meta?.name ?? result.data?.path ?? '?'} · ${result.data?.tensors.length ?? 0} tensor${(result.data?.tensors.length ?? 0) === 1 ? 'e' : 'i'} (§20)`
+        : `inspect fallito · ${result.error ?? 'errore'}`,
     );
     return result;
   });

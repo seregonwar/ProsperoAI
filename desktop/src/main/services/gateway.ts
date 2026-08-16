@@ -117,6 +117,30 @@ export async function checkGateway(rawBaseUrl: unknown): Promise<GatewayCheckRes
   }
 }
 
+/* Serialize the sampling parameters a request can carry (§26):
+ * temperature, max_tokens, top_p, top_k, seed and stop sequences
+ * (validated to the gateway's contract: up to 4 strings, 1..64 chars
+ * each, empty sequences dropped). */
+export function samplingBody(params: ChatRequestParams): JsonRecord {
+  const body: JsonRecord = {};
+  /* Defensive clamps to the gateway's §26 contract so a caller can
+   * never produce a 400: temperature 0..2, top_p (0,1], top_k 1..200,
+   * max_tokens 1..2048, and stop sequences trimmed to 1..64 chars. */
+  if (typeof params.temperature === 'number' && Number.isFinite(params.temperature)) body.temperature = Math.max(0, Math.min(2, params.temperature));
+  if (typeof params.maxTokens === 'number' && Number.isFinite(params.maxTokens)) body.max_tokens = Math.max(1, Math.min(2048, Math.floor(params.maxTokens)));
+  if (typeof params.topP === 'number' && Number.isFinite(params.topP)) body.top_p = Math.max(0.05, Math.min(1, params.topP));
+  if (typeof params.topK === 'number' && Number.isFinite(params.topK) && params.topK > 0) body.top_k = Math.floor(Math.min(200, params.topK));
+  if (typeof params.seed === 'number' && Number.isFinite(params.seed) && params.seed >= 0) body.seed = Math.floor(params.seed);
+  if (Array.isArray(params.stop)) {
+    const stops = params.stop
+      .map((item) => String(item).slice(0, 64))
+      .filter((item) => item.length > 0)
+      .slice(0, 4);
+    if (stops.length > 0) body.stop = stops;
+  }
+  return body;
+}
+
 export async function completeChat(rawBaseUrl: unknown, rawModel: unknown, rawMessages: unknown, rawParams: unknown): Promise<string> {
   const baseUrl = normaliseBaseUrl(rawBaseUrl);
   if (typeof rawModel !== 'string' || rawModel.length === 0 || rawModel.length > 256) throw new Error('Modello non valido');
@@ -125,10 +149,8 @@ export async function completeChat(rawBaseUrl: unknown, rawModel: unknown, rawMe
     model: rawModel,
     messages: validateMessages(rawMessages),
     stream: false,
+    ...samplingBody(params),
   };
-  if (typeof params.temperature === 'number') body.temperature = params.temperature;
-  if (typeof params.maxTokens === 'number') body.max_tokens = params.maxTokens;
-  if (typeof params.topP === 'number') body.top_p = params.topP;
   const value = await requestJson(baseUrl, '/v1/chat/completions', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -155,6 +177,12 @@ export interface StreamChatOptions {
  * choices[0].delta.content is one token. Resolves with the token
  * count; rejects on HTTP errors, aborts and mid-stream error events.
  */
+export interface StreamChatResult {
+  tokens: number;
+  finishReason?: string;
+  usage?: { promptTokens: number; completionTokens: number; totalTokens: number };
+}
+
 export async function streamChat(
   rawBaseUrl: unknown,
   rawModel: unknown,
@@ -162,7 +190,7 @@ export async function streamChat(
   rawParams: unknown,
   requestId: string,
   options: StreamChatOptions = {},
-): Promise<{ tokens: number }> {
+): Promise<StreamChatResult> {
   const baseUrl = normaliseBaseUrl(rawBaseUrl);
   if (typeof rawModel !== 'string' || rawModel.length === 0 || rawModel.length > 256) throw new Error('Modello non valido');
   const params = (isRecord(rawParams) ? rawParams : {}) as ChatRequestParams;
@@ -170,10 +198,8 @@ export async function streamChat(
     model: rawModel,
     messages: validateMessages(rawMessages),
     stream: true,
+    ...samplingBody(params),
   };
-  if (typeof params.temperature === 'number') body.temperature = params.temperature;
-  if (typeof params.maxTokens === 'number') body.max_tokens = params.maxTokens;
-  if (typeof params.topP === 'number') body.top_p = params.topP;
 
   const controller = new AbortController();
   const onAbort = () => controller.abort();
@@ -192,6 +218,11 @@ export async function streamChat(
     let tokens = 0;
     let finished = false;
     let midStreamError: Error | null = null;
+    /* §26 extras surfaced to the caller: the finish_reason of the
+     * terminal chunk and the usage totals of the optional usage
+     * chunk (stream_options.include_usage). */
+    let finishReason: string | undefined;
+    let usage: { promptTokens: number; completionTokens: number; totalTokens: number } | undefined;
     try {
       while (!finished) {
         const chunk = await reader.read();
@@ -229,6 +260,16 @@ export async function streamChat(
                 tokens++;
                 options.onDelta?.({ requestId, token, done: false });
               }
+              /* The terminal chunk carries the finish_reason; the
+               * optional usage chunk carries empty choices + the
+               * usage totals (both are single, final chunks). */
+              if (typeof choice?.finish_reason === 'string') finishReason = choice.finish_reason;
+              const rawUsage = isRecord(payload.usage) ? payload.usage : null;
+              if (rawUsage && typeof rawUsage.prompt_tokens === 'number' && typeof rawUsage.completion_tokens === 'number') {
+                const promptTokens = rawUsage.prompt_tokens;
+                const completionTokens = rawUsage.completion_tokens;
+                usage = { promptTokens, completionTokens, totalTokens: promptTokens + completionTokens };
+              }
             } catch {
               /* ignore malformed chunks */
             }
@@ -236,7 +277,7 @@ export async function streamChat(
         }
       }
       if (midStreamError) throw midStreamError;
-      return { tokens };
+      return { tokens, finishReason, usage };
     } finally {
       /* Release the wire reader on every path (mid-stream errors
        * included) so no stream handle leaks into process exit. */

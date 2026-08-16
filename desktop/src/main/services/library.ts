@@ -13,11 +13,12 @@ import crypto from 'node:crypto';
 import { execFile, execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
-import type { LibraryEntry, LibraryEntryKind, LibraryEntryStatus, OptimizePlan, OptimizeResult, OptimizeScheme, OptimizeTensor } from '../../shared/types';
+import type { InspectData, InspectResult, LibraryEntry, LibraryEntryKind, LibraryEntryStatus, OptimizePlan, OptimizeResult, OptimizeScheme, OptimizeTensor } from '../../shared/types';
 
 const CONVERT_TIMEOUT_MS = 300_000;
 const VALIDATE_TIMEOUT_MS = 120_000;
 const OPTIMIZE_TIMEOUT_MS = 120_000;
+const INSPECT_TIMEOUT_MS = 60_000;
 
 /* Wire shape of `pai optimize --json` (snake_case fields). */
 interface RawOptimizeTensor {
@@ -39,6 +40,40 @@ interface RawOptimizePlan {
   min_bytes?: unknown;
   feasible?: unknown;
   tensors?: RawOptimizeTensor[];
+}
+
+/* Wire shape of `pai inspect --json` (snake_case fields). */
+interface RawInspect {
+  container?: {
+    path?: unknown;
+    bytes?: unknown;
+    version?: unknown;
+    sections?: Array<{ type?: unknown; offset?: unknown; size?: unknown }>;
+  };
+  meta?: {
+    name?: unknown;
+    family?: unknown;
+    context_len?: unknown;
+    num_layers?: unknown;
+    kv_bytes_per_token?: unknown;
+    vocab_size?: unknown;
+  };
+  tensors?: Array<{
+    name?: unknown;
+    value_id?: unknown;
+    dtype?: unknown;
+    rank?: unknown;
+    shape?: unknown[];
+    offset?: unknown;
+    size_bytes?: unknown;
+  }>;
+  ir?: {
+    values?: unknown;
+    inputs?: unknown;
+    outputs?: unknown;
+    ops?: Array<{ id?: unknown; kind?: unknown; inputs?: unknown; outputs?: unknown }>;
+  };
+  tokenizer?: { tokens?: unknown; merges?: unknown };
 }
 
 export interface PaiCliInfo {
@@ -178,6 +213,91 @@ export class ModelLibrary {
       };
     } catch (error) {
       return { ok: false, error: error instanceof Error ? error.message : 'parse del piano fallito' };
+    }
+  }
+
+  /*
+   * Container manifest report (§20/§7): `pai inspect --json` over a
+   * managed .pai entry. Returns the parsed container/meta/tensor/IR
+   * report or an error.
+   */
+  async inspect(entryId: string): Promise<InspectResult> {
+    const entry = this.state.find((item) => item.id === entryId);
+    if (!entry || entry.kind !== 'pai' || !entry.libraryPath) {
+      return { ok: false, error: 'nessun container .pai pronto per questa voce' };
+    }
+    const cli = this.findPaiCli();
+    if (!cli) {
+      return { ok: false, error: 'CLI `pai` non trovata (imposta PAI_BIN o aggiungi il binario al PATH)' };
+    }
+    const result = await this.runPai(cli, ['inspect', entry.libraryPath, '--json'], INSPECT_TIMEOUT_MS);
+    if (result.code !== 0) {
+      return { ok: false, error: (result.stderr || result.stdout || 'pai inspect fallito').trim().slice(0, 500) };
+    }
+    try {
+      const start = result.stdout.indexOf('{');
+      if (start < 0) throw new Error('risposta priva di JSON');
+      const parsed = JSON.parse(result.stdout.slice(start)) as RawInspect;
+      const container = parsed.container ?? {};
+      const sections = Array.isArray(container.sections)
+        ? container.sections.map((section) => ({
+            type: String(section.type ?? '?'),
+            offset: Number(section.offset ?? 0),
+            size: Number(section.size ?? 0),
+          }))
+        : [];
+      const tensors = Array.isArray(parsed.tensors)
+        ? parsed.tensors.map((tensor) => ({
+            name: String(tensor.name ?? '?'),
+            valueId: Number(tensor.value_id ?? 0),
+            dtype: String(tensor.dtype ?? '?'),
+            rank: Number(tensor.rank ?? 0),
+            shape: Array.isArray(tensor.shape) ? tensor.shape.map((dim) => Number(dim) || 0) : [],
+            offset: Number(tensor.offset ?? 0),
+            sizeBytes: Number(tensor.size_bytes ?? 0),
+          }))
+        : [];
+      const data: InspectData = {
+        path: String(container.path ?? entry.libraryPath),
+        bytes: Number(container.bytes ?? 0),
+        version: Number(container.version ?? 0),
+        sections,
+        tensors,
+      };
+      if (parsed.meta) {
+        data.meta = {
+          name: String(parsed.meta.name ?? entry.name),
+          family: Number(parsed.meta.family ?? 0),
+          contextLen: Number(parsed.meta.context_len ?? 0),
+          numLayers: Number(parsed.meta.num_layers ?? 0),
+          kvBytesPerToken: Number(parsed.meta.kv_bytes_per_token ?? 0),
+          vocabSize: Number(parsed.meta.vocab_size ?? 0),
+        };
+      }
+      if (parsed.ir) {
+        data.ir = {
+          values: Number(parsed.ir.values ?? 0),
+          inputs: Number(parsed.ir.inputs ?? 0),
+          outputs: Number(parsed.ir.outputs ?? 0),
+          ops: Array.isArray(parsed.ir.ops)
+            ? parsed.ir.ops.map((op, index) => ({
+                id: Number(op.id ?? index + 1),
+                kind: String(op.kind ?? '?'),
+                inputs: Number(op.inputs ?? 0),
+                outputs: Number(op.outputs ?? 0),
+              }))
+            : [],
+        };
+      }
+      if (parsed.tokenizer) {
+        data.tokenizer = {
+          tokens: Number(parsed.tokenizer.tokens ?? 0),
+          merges: Number(parsed.tokenizer.merges ?? 0),
+        };
+      }
+      return { ok: true, data };
+    } catch (error) {
+      return { ok: false, error: error instanceof Error ? error.message : 'parse del report fallito' };
     }
   }
 

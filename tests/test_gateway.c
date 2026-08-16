@@ -730,6 +730,105 @@ CHECK(build_fixture());
         0);
   pai_json_destroy(&doc);
 
+  /* stream_options.include_usage (§26): a final chunk with empty
+   * choices carries the usage totals right before [DONE]. */
+  CHECK(gw_call(&gw, "POST", "/v1/completions",
+                "{\"model\":\"gw_tiny\",\"prompt\":\"a\",\"temperature\":0,"
+                "\"max_tokens\":8,\"stream\":true,"
+                "\"stream_options\":{\"include_usage\":true}}",
+                &cap) == PAI_OK);
+  CHECK_EQ_INT(resp_status(&cap), 200);
+  {
+    char sse[8192];
+    uint32_t sse_len = dechunk_body(&cap, sse, sizeof(sse));
+    /* 8 token chunks + final finish chunk + usage chunk. */
+    CHECK_EQ_INT(count_substr_in(sse, sse_len, "data: {"), 10);
+    CHECK(count_substr_in(sse, sse_len, "\"choices\":[],\"usage\":") == 1);
+    CHECK(count_substr_in(sse, sse_len, "\"prompt_tokens\":1") == 1);
+    CHECK(count_substr_in(sse, sse_len, "\"completion_tokens\":8") == 1);
+    CHECK(count_substr_in(sse, sse_len, "\"total_tokens\":9") == 1);
+    /* The usage chunk sits before the SSE terminal event. */
+    CHECK(count_substr_in(sse, sse_len, "data: [DONE]") == 1);
+  }
+
+  /* stream_options without stream: rejected like OpenAI (400). */
+  CHECK(gw_call(&gw, "POST", "/v1/completions",
+                "{\"model\":\"gw_tiny\",\"prompt\":\"a\",\"max_tokens\":2,"
+                "\"stream_options\":{\"include_usage\":true}}",
+                &cap) == PAI_OK);
+  CHECK_EQ_INT(resp_status(&cap), 400);
+
+  /* malformed stream_options -> 400. */
+  CHECK(gw_call(&gw, "POST", "/v1/completions",
+                "{\"model\":\"gw_tiny\",\"prompt\":\"a\",\"stream\":true,"
+                "\"stream_options\":\"nope\"}",
+                &cap) == PAI_OK);
+  CHECK_EQ_INT(resp_status(&cap), 400);
+
+  pai_gw_destroy(&gw);
+}
+
+/* ---- stream_options.include_usage over chat + remote (§26) ---- */
+{
+  /* Chat streaming: the usage chunk keeps the chat object shape. */
+  pai_gw_t gw;
+  cap_t cap;
+  CHECK(pai_gw_init(&gw) == PAI_OK);
+  CHECK(pai_gw_add_file(&gw, "gw_tiny.pai") == PAI_OK);
+  CHECK(gw_call(&gw, "POST", "/v1/chat/completions",
+                "{\"model\":\"gw_tiny\",\"messages\":[{\"role\":\"user\","
+                "\"content\":\"a\"}],\"temperature\":0,\"max_tokens\":8,"
+                "\"stream\":true,\"stream_options\":{\"include_usage\":true}}",
+                &cap) == PAI_OK);
+  CHECK_EQ_INT(resp_status(&cap), 200);
+  {
+    char sse[8192];
+    uint32_t sse_len = dechunk_body(&cap, sse, sizeof(sse));
+    /* role chunk + 8 token chunks + finish chunk + usage chunk. */
+    CHECK_EQ_INT(count_substr_in(sse, sse_len, "data: {"), 11);
+    CHECK(count_substr_in(sse, sse_len,
+                          "\"object\":\"chat.completion.chunk\","
+                          "\"created\":") > 0);
+    CHECK(count_substr_in(sse, sse_len, "\"choices\":[],\"usage\":") == 1);
+    /* The chat prompt is "user: a": 6 byte-fallback tokens + the
+     * known "a" token. The usage chunk reports the real encode. */
+    CHECK(count_substr_in(sse, sse_len, "\"prompt_tokens\":7") == 1);
+    CHECK(count_substr_in(sse, sse_len, "\"completion_tokens\":8") == 1);
+    CHECK(count_substr_in(sse, sse_len, "\"total_tokens\":15") == 1);
+  }
+  pai_gw_destroy(&gw);
+}
+
+/* ---- remote streaming + include_usage: prompt_tokens stays 0 ---- */
+/* ---- (the payload owns the tokenizer)                      ---- */
+{
+  pai_proto_tcp_listener_t *lst = NULL;
+  remote_probe_t probe;
+  pai_gw_t gw;
+  cap_t cap;
+  uint16_t port = 0;
+
+  CHECK(probe_start(&probe, &lst, &port) == 0);
+  CHECK(pai_gw_init(&gw) == PAI_OK);
+  CHECK(pai_gw_add_remote(&gw, "usage-lm", "127.0.0.1", port) == PAI_OK);
+  CHECK(gw_call(&gw, "POST", "/v1/completions",
+                "{\"model\":\"usage-lm\",\"prompt\":\"ab\","
+                "\"max_tokens\":8,\"stream\":true,"
+                "\"stream_options\":{\"include_usage\":true}}",
+                &cap) == PAI_OK);
+  CHECK_EQ_INT(resp_status(&cap), 200);
+  {
+    char sse[4096];
+    uint32_t sse_len = dechunk_body(&cap, sse, sizeof(sse));
+    /* 1 relayed chunk + finish chunk + usage chunk. */
+    CHECK_EQ_INT(count_substr_in(sse, sse_len, "data: {"), 3);
+    CHECK(count_substr_in(sse, sse_len, "\"choices\":[],\"usage\":") == 1);
+    CHECK(count_substr_in(sse, sse_len, "\"prompt_tokens\":0") == 1);
+    CHECK(count_substr_in(sse, sse_len, "\"completion_tokens\":1") == 1);
+    CHECK(count_substr_in(sse, sse_len, "\"total_tokens\":1") == 1);
+  }
+  probe_stop(&probe, lst);
+  CHECK_EQ_UINT(probe.finished, 1);
   pai_gw_destroy(&gw);
 }
 

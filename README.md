@@ -80,7 +80,9 @@ model converters, and serving stacks into one capability-aware runtime.
 ### Serving
 
 - OpenAI-compatible gateway: `/v1/models`, `/v1/completions`,
-  `/v1/chat/completions`, `/v1/embeddings`, SSE streaming
+  `/v1/chat/completions`, `/v1/embeddings`, SSE streaming with
+  full §26 sampling (`stop` sequences, `seed`, `echo`,
+  `response_format json_object`, `stream_options.include_usage`)
 - Prospero Protocol over TCP with negotiation, pipelining, async streams,
   and ping health checks
 - `pai` CLI: `convert`, `inspect` (con `--json`), `optimize`

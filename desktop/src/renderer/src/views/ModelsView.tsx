@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react';
-import type { GatewayModel, LibraryEntry, OptimizePlan } from '../../../shared/types';
-import { EmptyState, Icon, SectionHeader, StatusDot, formatBytes } from '../components';
+import type { GatewayModel, InspectData, LibraryEntry, OptimizePlan } from '../../../shared/types';
+import { EmptyState, Icon, SectionHeader, StatusDot, formatBytes, formatCount } from '../components';
 import type { View } from './Overview';
 
 interface ModelsViewProps {
@@ -20,6 +20,9 @@ export function ModelsView({ gatewayModels, library, importing, onImport, onNavi
   const [optimizingId, setOptimizingId] = useState<string | null>(null);
   const [plan, setPlan] = useState<OptimizePlan | null>(null);
   const [optimizeError, setOptimizeError] = useState<string | null>(null);
+  const [inspectingId, setInspectingId] = useState<string | null>(null);
+  const [inspect, setInspect] = useState<InspectData | null>(null);
+  const [inspectError, setInspectError] = useState<string | null>(null);
 
   async function runOptimize(entry: LibraryEntry): Promise<void> {
     setOptimizingId(entry.id);
@@ -43,6 +46,25 @@ export function ModelsView({ gatewayModels, library, importing, onImport, onNavi
   const planSavings = plan && plan.currentBytes > 0
     ? 100 * (1 - plan.planBytes / plan.currentBytes)
     : 0;
+
+  async function runInspect(entry: LibraryEntry): Promise<void> {
+    setInspectingId(entry.id);
+    setInspectError(null);
+    try {
+      const result = await window.prospero.inspectModel(entry.id);
+      if (result.ok && result.data) {
+        setInspect(result.data);
+      } else {
+        setInspect(null);
+        setInspectError(result.error ?? 'lettura manifest fallita');
+      }
+    } catch (error) {
+      setInspect(null);
+      setInspectError(error instanceof Error ? error.message : 'lettura manifest fallita');
+    } finally {
+      setInspectingId(null);
+    }
+  }
 
   const all = useMemo(() => {
     const gateway = gatewayModels.map((model): GatewayModel & { source: 'gateway' } => ({ ...model, source: 'gateway' }));
@@ -142,15 +164,26 @@ export function ModelsView({ gatewayModels, library, importing, onImport, onNavi
               <span className="library-message">
                 {entry.message ?? (entry.status === 'ready' ? 'integrità verificata' : '—')}
                 {entry.kind === 'pai' && entry.status === 'ready' && (
-                  <button
-                    className="small-button"
-                    style={{ marginLeft: 8 }}
-                    onClick={() => void runOptimize(entry)}
-                    disabled={optimizingId !== null}
-                    title="Piano mixed-precision §15 (pai optimize)"
-                  >
-                    {optimizingId === entry.id ? 'Pianifico…' : 'Ottimizza'}
-                  </button>
+                  <>
+                    <button
+                      className="small-button"
+                      style={{ marginLeft: 8 }}
+                      onClick={() => void runOptimize(entry)}
+                      disabled={optimizingId !== null}
+                      title="Piano mixed-precision §15 (pai optimize)"
+                    >
+                      {optimizingId === entry.id ? 'Pianifico…' : 'Ottimizza'}
+                    </button>
+                    <button
+                      className="small-button muted"
+                      style={{ marginLeft: 6 }}
+                      onClick={() => void runInspect(entry)}
+                      disabled={inspectingId !== null}
+                      title="Manifest del container §20 (pai inspect)"
+                    >
+                      {inspectingId === entry.id ? 'Leggo…' : 'Dettagli'}
+                    </button>
+                  </>
                 )}
               </span>
             </div>
@@ -160,6 +193,72 @@ export function ModelsView({ gatewayModels, library, importing, onImport, onNavi
     </section>
 
     {optimizeError && <div className="optimize-error"><Icon name="pulse" size={15} /> {optimizeError}</div>}
+
+    {inspectError && <div className="optimize-error"><Icon name="pulse" size={15} /> {inspectError}</div>}
+
+    {inspect && (
+      <section className="panel inspect-panel">
+        <div className="panel-heading">
+          <div><span className="eyebrow">Container manifest · §20</span><h3>{inspect.meta?.name ?? inspect.path.split(/[\\/]/).pop() ?? 'Manifest'}</h3></div>
+          <div className="optimize-actions">
+            <span className="secure-pill"><Icon name="terminal" size={14} /> v{inspect.version} · {formatBytes(inspect.bytes)}</span>
+            <button className="icon-button" onClick={() => setInspect(null)} title="Chiudi report"><Icon name="more" size={15} /></button>
+          </div>
+        </div>
+        {inspect.meta && (
+          <div className="inspect-meta">
+            <div><strong>{inspect.meta.numLayers}</strong><span>layer</span></div>
+            <div><strong>{formatCount(inspect.meta.contextLen)}</strong><span>context tokens</span></div>
+            <div><strong>{formatCount(inspect.meta.vocabSize)}</strong><span>vocab</span></div>
+            <div><strong>{formatBytes(inspect.meta.kvBytesPerToken)}</strong><span>KV / token</span></div>
+            <div><strong>{inspect.meta.family}</strong><span>family</span></div>
+          </div>
+        )}
+        <div className="inspect-cols">
+          <div>
+            <div className="panel-heading"><div><span className="eyebrow">Sezioni</span><h3>Container</h3></div></div>
+            <div className="library-table">
+              <div className="library-row library-head"><span>Sezione</span><span>Offset</span><span>Dimensione</span></div>
+              {inspect.sections.map((section) => (
+                <div className="library-row" key={section.type}>
+                  <span><strong>{section.type}</strong></span>
+                  <span className="library-kind">{section.offset} B</span>
+                  <span>{formatBytes(section.size)}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+          <div>
+            <div className="panel-heading"><div><span className="eyebrow">{inspect.tensors.length} tensor{inspect.tensors.length === 1 ? 'e' : 'i'}</span><h3>Manifest</h3></div></div>
+            <div className="library-table">
+              <div className="library-row library-head"><span>Tensor</span><span>Dtype</span><span>Shape</span><span>Peso</span></div>
+              {[...inspect.tensors].sort((a, b) => b.sizeBytes - a.sizeBytes).slice(0, 8).map((tensor) => (
+                <div className="library-row" key={tensor.name}>
+                  <span><strong>{tensor.name}</strong></span>
+                  <span className="library-kind">{tensor.dtype}</span>
+                  <span className="inspect-shape">[{tensor.shape.join(',')}]</span>
+                  <span>{formatBytes(tensor.sizeBytes)}</span>
+                </div>
+              ))}
+              {inspect.tensors.length > 8 && (
+                <div className="library-row"><span><small>…e altri {inspect.tensors.length - 8} tensor{inspect.tensors.length - 8 === 1 ? 'e' : 'i'}</small></span></div>
+              )}
+            </div>
+          </div>
+          {inspect.ir && (
+            <div>
+              <div className="panel-heading"><div><span className="eyebrow">Grafo compilato</span><h3>IR</h3></div></div>
+              <div className="inspect-ir">
+                <span>{inspect.ir.ops.length} op{inspect.ir.ops.length === 1 ? 'erazione' : 'erazioni'}</span>
+                <span>{inspect.ir.values} valori</span>
+                <span>{inspect.ir.inputs} in · {inspect.ir.outputs} out</span>
+                {inspect.tokenizer && <span>tokenizer: {formatCount(inspect.tokenizer.tokens)} token · {formatCount(inspect.tokenizer.merges)} merge</span>}
+              </div>
+            </div>
+          )}
+        </div>
+      </section>
+    )}
 
     {plan && (
       <section className="panel optimize-panel">

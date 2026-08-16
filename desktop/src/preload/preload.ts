@@ -47,6 +47,7 @@ const api: ProsperoApi = {
   listLibrary: () => ipcRenderer.invoke('library-list'),
   importModels: () => ipcRenderer.invoke('library-import'),
   optimizeModel: (id) => ipcRenderer.invoke('library-optimize', id),
+  inspectModel: (id) => ipcRenderer.invoke('library-inspect', id),
 
   runBenchmark: (model, options) => ipcRenderer.invoke('benchmark-run', model, options),
   listBenchmarks: () => ipcRenderer.invoke('benchmark-list'),

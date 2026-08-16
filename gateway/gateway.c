@@ -410,6 +410,7 @@ typedef struct gw_gen_ctx {
   /* response_format: 1 = json_object (post-processed extraction).  */
   int json_mode;
   int echo;             /* completions only: prepend the prompt       */
+  int include_usage;    /* stream_options.include_usage (§26)         */
 } gw_gen_ctx_t;
 
 /* Emit one SSE data chunk for a generated text fragment. */
@@ -677,6 +678,28 @@ handle_completions(pai_gw_t *gw, const uint8_t *body, uint32_t body_len,
     ctx.resp = resp;
     ctx.chat = chat;
     ctx.stream = bool_member(&doc, root, "stream", 0);
+    /* stream_options (§26): OpenAI's streaming extension. v0 honors
+     * include_usage: a final chunk with an empty choices array and
+     * the request's usage object is emitted right before [DONE].
+     * Like OpenAI, stream_options is only valid with stream: true. */
+    {
+      int32_t so = pai_json_member(&doc, root, "stream_options");
+      if (so >= 0) {
+        if (pai_json_type(&doc, so) != PAI_JSON_OBJECT) {
+          pai_json_destroy(&doc);
+          send_error(resp, 400, "invalid_request_error",
+                     "stream_options must be an object");
+          return PAI_OK;
+        }
+        if (!ctx.stream) {
+          pai_json_destroy(&doc);
+          send_error(resp, 400, "invalid_request_error",
+                     "stream_options requires stream:true");
+          return PAI_OK;
+        }
+        ctx.include_usage = bool_member(&doc, so, "include_usage", 0);
+      }
+    }
     /* Stop sequences (§26 stop): a string or an array of up to
      * GW_STOP_MAX non-empty strings of at most GW_STOP_MAX_LEN
      * chars. Parsed before out_wb is initialized (early 400 paths
@@ -908,6 +931,52 @@ handle_completions(pai_gw_t *gw, const uint8_t *body, uint32_t body_len,
           /* The client is gone; nothing left to do. */
         }
         pai_json_wb_destroy(&wb);
+        /* stream_options.include_usage: a final chunk with empty
+         * choices carries the usage totals (OpenAI streaming shape).
+         * Prompt tokens are counted locally when the tokenizer is
+         * available; remote payloads own their tokenizer, so v0
+         * reports prompt_tokens as 0 (mirroring the non-stream
+         * response). */
+        if (ctx.include_usage) {
+          uint32_t ptok = 0;
+          pai_json_wb_t wb2;
+          if (!entry->remote) {
+            /* 64 KiB of ids: a u16 prompt can encode to far more than
+             * a small fixed cap, so count generously (the HTTP thread
+             * has a 1 MB stack). */
+            enum { PTOK_MAX = 16384 };
+            uint32_t *ids = (uint32_t *)malloc(PTOK_MAX * sizeof(uint32_t));
+            if (ids != NULL) {
+              uint32_t nids = 0;
+              if (pai_tok_encode(&entry->model->tokenizer, prompt,
+                                 (uint32_t)strlen(prompt), ids, PTOK_MAX,
+                                 &nids) == PAI_OK) {
+                ptok = nids;
+              }
+              free(ids);
+            }
+          }
+          pai_json_wb_init(&wb2);
+          pai_json_wb_puts(&wb2, "{\"id\":");
+          pai_json_quote(&wb2, ctx.id, (uint32_t)strlen(ctx.id));
+          pai_json_wb_puts(&wb2, ",\"object\":");
+          pai_json_wb_puts(&wb2, chat ? "\"chat.completion.chunk\""
+                                      : "\"text_completion\"");
+          pai_json_wb_putf(&wb2, ",\"created\":%llu,\"model\":",
+                           (unsigned long long)ctx.created);
+          pai_json_quote(&wb2, entry->name, (uint32_t)strlen(entry->name));
+          pai_json_wb_puts(&wb2, ",\"choices\":[],\"usage\":"
+                                 "{\"prompt_tokens\":");
+          pai_json_wb_putf(&wb2, "%u,\"completion_tokens\":%u,"
+                                 "\"total_tokens\":%u}}",
+                           ptok, ctx.generated, ptok + ctx.generated);
+          if (pai_http_resp_write(resp, "data: ", 6) != PAI_OK ||
+              pai_http_resp_write(resp, wb2.buf, wb2.len) != PAI_OK ||
+              pai_http_resp_write(resp, "\n\n", 2) != PAI_OK) {
+            /* The client is gone; nothing left to do. */
+          }
+          pai_json_wb_destroy(&wb2);
+        }
       }
       pai_http_resp_write(resp, "data: [DONE]\n\n", 15);
       pai_http_resp_end(resp);
@@ -932,12 +1001,19 @@ handle_completions(pai_gw_t *gw, const uint8_t *body, uint32_t body_len,
         uint32_t text_n;
         char *combined = NULL;
         if (!entry->remote) {
-          uint32_t ids[4096];
-          uint32_t nids = 0;
-          if (pai_tok_encode(&entry->model->tokenizer, prompt,
-                             (uint32_t)strlen(prompt), ids, 4096, &nids) ==
-                              PAI_OK) {
-            ptok = nids;
+          /* 64 KiB of ids: a u16 prompt can encode to far more than
+           * a small fixed cap, so count generously (the HTTP thread
+           * has a 1 MB stack). */
+          enum { PTOK_MAX = 16384 };
+          uint32_t *ids = (uint32_t *)malloc(PTOK_MAX * sizeof(uint32_t));
+          if (ids != NULL) {
+            uint32_t nids = 0;
+            if (pai_tok_encode(&entry->model->tokenizer, prompt,
+                               (uint32_t)strlen(prompt), ids, PTOK_MAX,
+                               &nids) == PAI_OK) {
+              ptok = nids;
+            }
+            free(ids);
           }
         }
         /* response_format json_object: keep only the first balanced

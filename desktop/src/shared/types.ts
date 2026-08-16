@@ -31,6 +31,17 @@ export interface ChatRequestParams {
   temperature?: number;
   maxTokens?: number;
   topP?: number;
+  topK?: number;
+  seed?: number;
+  /* Stop sequences (§26): up to 4 non-empty strings of at most 64
+   * chars each; the gateway halts generation at the first match. */
+  stop?: string[];
+}
+
+export interface ChatUsage {
+  promptTokens: number;
+  completionTokens: number;
+  totalTokens: number;
 }
 
 export interface ChatStreamDelta {
@@ -44,6 +55,11 @@ export interface ChatStreamResult {
   ok: boolean;
   error?: string;
   tokens: number;
+  /* finish_reason of the final chunk (§26): "stop" | "length". */
+  finishReason?: string;
+  /* Usage totals when the request asked for stream_options
+   * include_usage (the gateway emits a final usage chunk). */
+  usage?: ChatUsage;
 }
 
 export interface AppInfo {
@@ -156,6 +172,63 @@ export interface OptimizePlan {
 export interface OptimizeResult {
   ok: boolean;
   plan?: OptimizePlan;
+  error?: string;
+}
+
+/* Manifest report from `pai inspect --json` (§20/§7 tooling). */
+export interface InspectSection {
+  type: string;
+  offset: number;
+  size: number;
+}
+
+export interface InspectTensor {
+  name: string;
+  valueId: number;
+  dtype: string;
+  rank: number;
+  shape: number[];
+  offset: number;
+  sizeBytes: number;
+}
+
+export interface InspectMeta {
+  name: string;
+  family: number;
+  contextLen: number;
+  numLayers: number;
+  kvBytesPerToken: number;
+  vocabSize: number;
+}
+
+export interface InspectIrOp {
+  id: number;
+  kind: string;
+  inputs: number;
+  outputs: number;
+}
+
+export interface InspectIr {
+  values: number;
+  ops: InspectIrOp[];
+  inputs: number;
+  outputs: number;
+}
+
+export interface InspectData {
+  path: string;
+  bytes: number;
+  version: number;
+  sections: InspectSection[];
+  meta?: InspectMeta;
+  tensors: InspectTensor[];
+  ir?: InspectIr;
+  tokenizer?: { tokens: number; merges: number };
+}
+
+export interface InspectResult {
+  ok: boolean;
+  data?: InspectData;
   error?: string;
 }
 
@@ -296,6 +369,7 @@ export interface ProsperoApi {
   listLibrary(): Promise<LibraryEntry[]>;
   importModels(): Promise<ImportResult>;
   optimizeModel(entryId: string): Promise<OptimizeResult>;
+  inspectModel(entryId: string): Promise<InspectResult>;
 
   /* Benchmarks (§31) */
   runBenchmark(model: string, options?: BenchmarkOptions): Promise<BenchmarkRun>;
