@@ -52,6 +52,8 @@ typedef struct m0_ctx {
   pai_gpu_buffer_t label;
   uint32_t label_value;
   int acb_mode; /* 1 = submit via the special compute queue (pipe 0xc) */
+  int quiet_phases; /* 1 = skip INFO phase lines on successful submits */
+  uint64_t timeout_ns; /* 0 = M0_TIMEOUT_NS */
   pai_bench_result_t bench;
 } m0_ctx_t;
 
@@ -113,9 +115,17 @@ m0_ctx_alloc_buffers(m0_ctx_t *ctx) {
 
 /* Runs `stream` on queue 3 with a completion signal appended. Fence
  * ladder (hardware-qualified): eop-action → write-data → eop-legacy.
- * `watch` is pre-filled with `watch_fill`; if the label times out but
- * `watch` changed, the stream ran and only the fence is broken.
- * Returns 0 on success, -1 when the stream never executed. */
+ *
+ * Phases (logged, never collapsed into a single FAIL):
+ *   SUBMITTED               submit ioctl returned OK
+ *   EXECUTION_OBSERVED      EOP fired and/or watch bytes changed
+ *   SHADER_OUTPUT_OBSERVED  watch differs from the fill pattern
+ *   EOP_OBSERVED            completion label matched
+ * VALIDATED is reported by the caller (m0_exp_report) after a CPU check.
+ *
+ * Returns 0 when execution was observed (EOP or shader output), -1
+ * when the stream produced neither. A label timeout with changed
+ * watch is success: the GPU ran and only the fence is broken. */
 static int
 m0_run_gpu(m0_ctx_t *ctx, uint32_t *stream, uint32_t stream_len,
            void *watch, uint32_t watch_bytes, uint32_t watch_fill,
@@ -126,8 +136,24 @@ m0_run_gpu(m0_ctx_t *ctx, uint32_t *stream, uint32_t stream_len,
   for (uint32_t fence = 0; fence < 3; fence++) {
     pai_pm4_builder_t pb;
     pai_status_t st;
+    int submitted = 0;
+    int eop_observed = 0;
+    int shader_output = 0;
+    int execution = 0;
+    const uint8_t *w = (const uint8_t *)watch;
+    uint32_t i;
 
     memset(watch, (int)watch_fill, watch_bytes);
+#if defined(PAI_PS5)
+    {
+      uintptr_t wstart = (uintptr_t)watch & ~(uintptr_t)63u;
+      uintptr_t wend = (uintptr_t)watch + watch_bytes;
+      while (wstart < wend) {
+        __asm__ volatile("clflush (%0)" : : "r"(wstart) : "memory");
+        wstart += 64u;
+      }
+    }
+#endif
     *(volatile uint32_t *)ctx->label.cpu_addr = 0;
     ctx->label_value++;
 
@@ -164,52 +190,46 @@ m0_run_gpu(m0_ctx_t *ctx, uint32_t *stream, uint32_t stream_len,
     }
 
     PAI_LOG_DEBUG_(PAI_SUB_GPU,
-                   "[%s] attempt: fence=%s label=0x%llx value=0x%x\n", stage,
-                   fence_names[fence], (unsigned long long)ctx->label.gpu_addr,
-                   ctx->label_value);
+                   "[M0-%s] attempt: fence=%s label=0x%llx value=0x%x\n",
+                   stage, fence_names[fence],
+                   (unsigned long long)ctx->label.gpu_addr, ctx->label_value);
 
     st = ctx->acb_mode
              ? pai_gpu_submit_acb(ctx->gpu, stream, pb.len)
              : pai_gpu_submit_q(ctx->gpu, stream, pb.len, 3);
     if (st != PAI_OK) {
-      PAI_LOG_ERROR_(PAI_SUB_GPU, "[%s] submit failed (fence=%s): %s\n",
-                     stage, fence_names[fence], pai_status_str(st));
+      PAI_LOG_ERROR_(PAI_SUB_GPU,
+                     "[M0-%s] SUBMITTED=0 fence=%s: %s\n", stage,
+                     fence_names[fence], pai_status_str(st));
       continue;
     }
+    submitted = 1;
 
     st = pai_gpu_wait_label(ctx->gpu, ctx->label.gpu_addr, ctx->label_value,
-                            M0_TIMEOUT_NS);
-    if (st == PAI_OK) {
-      PAI_LOG_INFO_(PAI_SUB_GPU, "[%s] label fired (fence=%s)\n", stage,
-                    fence_names[fence]);
-
-  return 0;
-}
-
-    /* Label timed out: did the GPU run the stream anyway? */
-    {
-      const uint8_t *w = (const uint8_t *)watch;
-      uint32_t i;
-      int changed = 0;
-      for (i = 0; i < watch_bytes; i++) {
-        if (w[i] != (uint8_t)watch_fill) {
-          changed = 1;
-          break;
-        }
+                            ctx->timeout_ns ? ctx->timeout_ns : M0_TIMEOUT_NS);
+    eop_observed = (st == PAI_OK);
+    for (i = 0; i < watch_bytes; i++) {
+      if (w[i] != (uint8_t)watch_fill) {
+        shader_output = 1;
+        break;
       }
-      if (changed) {
-        PAI_LOG_WARN_(PAI_SUB_GPU,
-                      "[%s] data changed but label did not fire (fence=%s): "
-                      "stream executed\n",
-                      stage, fence_names[fence]);
+    }
+    execution = eop_observed || shader_output;
 
-  return 0;
-}
+    if (!ctx->quiet_phases || !execution) {
+      PAI_LOG_INFO_(PAI_SUB_GPU,
+                    "[M0-%s] SUBMITTED=%d EXECUTION_OBSERVED=%d "
+                    "SHADER_OUTPUT_OBSERVED=%d EOP_OBSERVED=%d fence=%s\n",
+                    (stage[0] == 'M' && stage[1] == '0' && stage[2] == '-')
+                        ? stage + 3
+                        : stage,
+                    submitted, execution, shader_output, eop_observed,
+                    fence_names[fence]);
     }
 
-    PAI_LOG_WARN_(PAI_SUB_GPU,
-                  "[%s] no execution observed (fence=%s, label timeout)\n",
-                  stage, fence_names[fence]);
+    if (execution) {
+      return 0;
+    }
   }
 
   return -1;
@@ -366,7 +386,8 @@ static void m0_build_memset16_stream(m0_ctx_t *ctx, uint32_t *stream,
 
 static void
 m0_exp_report(const char *name, int ok) {
-  PAI_LOG_INFO_(PAI_SUB_GPU, "[M0-%s] %s\n", name, ok ? "PASS" : "FAIL");
+  PAI_LOG_INFO_(PAI_SUB_GPU, "[M0-%s] VALIDATED %s\n", name,
+                ok ? "PASS" : "FAIL");
 }
 
 /* ACO's hardware-qualified memset kernel sets bit 15 of every FLAT
@@ -953,13 +974,279 @@ m0_exp_golden_mutant(m0_ctx_t *ctx, const char *name, uint32_t store_word0,
   return 0;
 }
 
+/* Parametric 1D add: same add1d kernel, groups_x = N, 1 thread/group.
+ * Returns 1 on zero-mismatch for all completed iters. */
+static int
+m0_add1d_run_n(m0_ctx_t *ctx, uint32_t *stream, uint32_t *ud, uint32_t n) {
+  pai_gpu_buffer_t packb;
+  pai_gpu_buffer_t coutb;
+  pai_gpu_buffer_t *pack_buf;
+  pai_gpu_buffer_t *c_buf;
+  uint32_t *pack;
+  uint32_t *c1d;
+  uint32_t stream_len = 0;
+  uint32_t iter;
+  uint32_t niter = 1u;
+  uint32_t want_iters;
+  uint64_t pack_bytes = (uint64_t)n * 8u;
+  uint64_t c_bytes = (uint64_t)n * 4u;
+  uint64_t t0, t1, first_ns = 0;
+  int extra = 0;
+  int ok = 1;
+  int host = pai_gpu_device_backend(ctx->gpu) == PAI_GPU_BACKEND_HOST_REF;
+
+  memset(&packb, 0, sizeof(packb));
+  memset(&coutb, 0, sizeof(coutb));
+
+  if (n == 0) {
+    return 0;
+  }
+  if (pack_bytes <= M0_DMA_BYTES && c_bytes <= M0_DMA_BYTES) {
+    pack_buf = &ctx->a;
+    c_buf = &ctx->c;
+  } else {
+    extra = 1;
+    if (pai_gpu_buffer_alloc(ctx->gpu, &packb, pack_bytes,
+                             PAI_GPU_BUF_CPU_VISIBLE | PAI_GPU_BUF_GARLIC) !=
+            PAI_OK ||
+        pai_gpu_buffer_alloc(ctx->gpu, &coutb, c_bytes,
+                             PAI_GPU_BUF_CPU_VISIBLE | PAI_GPU_BUF_GARLIC) !=
+            PAI_OK) {
+      PAI_LOG_ERROR_(PAI_SUB_GPU,
+                     "[M0-G] N=%u SKIP: buffer alloc failed (%llu + %llu)\n",
+                     n, (unsigned long long)pack_bytes,
+                     (unsigned long long)c_bytes);
+      if (packb.cpu_addr) {
+        pai_gpu_buffer_free(ctx->gpu, &packb);
+      }
+      if (coutb.cpu_addr) {
+        pai_gpu_buffer_free(ctx->gpu, &coutb);
+      }
+      return 0;
+    }
+    pack_buf = &packb;
+    c_buf = &coutb;
+  }
+
+  pack = (uint32_t *)pack_buf->cpu_addr;
+  c1d = (uint32_t *)c_buf->cpu_addr;
+  for (uint32_t i = 0; i < n; i++) {
+    pack[2u * i] = 0x11110000u + i;
+    pack[2u * i + 1u] = 0x00001111u + i;
+  }
+  pai_gpu_buffer_flush(ctx->gpu, pack_buf);
+
+  if (n <= 256u) {
+    want_iters = PAI_ADD1D_ITERS;
+  } else if (n <= 4096u) {
+    want_iters = 10u;
+  } else {
+    want_iters = 1u;
+  }
+  ctx->timeout_ns = (n >= 32768u) ? UINT64_C(15000000000) : 0;
+
+  ud[0] = 0;
+  ud[1] = 0;
+  ud[2] = (uint32_t)(pack_buf->gpu_addr & 0xFFFFFFFFu);
+  ud[3] = (uint32_t)(pack_buf->gpu_addr >> 32);
+  ud[4] = (uint32_t)(c_buf->gpu_addr & 0xFFFFFFFFu);
+  ud[5] = (uint32_t)(c_buf->gpu_addr >> 32);
+  m0_build_dispatch_stream(ctx, stream, M0_PM4_CAP, PAI_ADD1D_RSRC2,
+                           PAI_ADD1D_THREADS, n, ud, 6, &stream_len);
+
+  for (iter = 0; iter < niter && ok; iter++) {
+    ctx->quiet_phases = (iter > 0);
+    t0 = pai_clock_ns();
+    if (m0_run_gpu(ctx, stream, stream_len, c1d, (uint32_t)c_bytes, 0xCC,
+                   "G") != 0) {
+      PAI_LOG_ERROR_(PAI_SUB_GPU,
+                     "[M0-G] N=%u iter %u no execution c[0]=%08x\n", n, iter,
+                     c1d[0]);
+      ok = 0;
+      break;
+    }
+    t1 = pai_clock_ns();
+    if (iter == 0) {
+      first_ns = t1 - t0;
+      PAI_LOG_INFO_(PAI_SUB_GPU,
+                    "[M0-G] N=%u iter 0 c[0..3] = %08x %08x %08x %08x "
+                    "(%llu us)\n",
+                    n, c1d[0], c1d[1 < n ? 1 : 0], c1d[2 < n ? 2 : 0],
+                    c1d[3 < n ? 3 : 0],
+                    (unsigned long long)(first_ns / 1000u));
+    }
+    for (uint32_t i = 0; i < n; i++) {
+      uint32_t want = 0x11111111u + i * 2u;
+      if (c1d[i] != want) {
+        PAI_LOG_ERROR_(PAI_SUB_GPU,
+                       "[M0-G] N=%u c[%u] = %08x want %08x\n", n, i, c1d[i],
+                       want);
+        ok = 0;
+        break;
+      }
+    }
+    if (ok && iter == 0) {
+      niter = want_iters;
+      PAI_LOG_INFO_(PAI_SUB_GPU,
+                    "[M0-G] N=%u first PASS, repeating %u times (no reset)\n",
+                    n, niter);
+    }
+  }
+  ctx->quiet_phases = 0;
+  ctx->timeout_ns = 0;
+  PAI_LOG_INFO_(PAI_SUB_GPU,
+                "[M0-G] N=%u %s iters=%u/%u first=%llu us groups=%u "
+                "threads=1\n",
+                n, ok ? "PASS" : "FAIL", iter, niter,
+                (unsigned long long)(first_ns / 1000u), n);
+  if (extra) {
+    pai_gpu_buffer_free(ctx->gpu, &packb);
+    pai_gpu_buffer_free(ctx->gpu, &coutb);
+  }
+  (void)host;
+  return ok;
+}
+
+/* Integer SAXPY: C[i] = 3*A[i]+B[i], same dispatch as add1d. */
+static int
+m0_saxpy_run_n(m0_ctx_t *ctx, uint32_t *stream, uint32_t *ud, uint32_t n) {
+  pai_gpu_buffer_t packb;
+  pai_gpu_buffer_t coutb;
+  pai_gpu_buffer_t *pack_buf;
+  pai_gpu_buffer_t *c_buf;
+  uint32_t *pack;
+  uint32_t *c1d;
+  uint32_t stream_len = 0;
+  uint32_t iter;
+  uint32_t niter = 1u;
+  uint32_t want_iters;
+  uint64_t pack_bytes = (uint64_t)n * 8u;
+  uint64_t c_bytes = (uint64_t)n * 4u;
+  uint64_t t0, t1, first_ns = 0;
+  int extra = 0;
+  int ok = 1;
+  int host = pai_gpu_device_backend(ctx->gpu) == PAI_GPU_BACKEND_HOST_REF;
+
+  memset(&packb, 0, sizeof(packb));
+  memset(&coutb, 0, sizeof(coutb));
+
+  if (n == 0) {
+    return 0;
+  }
+  if (pack_bytes <= M0_DMA_BYTES && c_bytes <= M0_DMA_BYTES) {
+    pack_buf = &ctx->a;
+    c_buf = &ctx->c;
+  } else {
+    extra = 1;
+    if (pai_gpu_buffer_alloc(ctx->gpu, &packb, pack_bytes,
+                             PAI_GPU_BUF_CPU_VISIBLE | PAI_GPU_BUF_GARLIC) !=
+            PAI_OK ||
+        pai_gpu_buffer_alloc(ctx->gpu, &coutb, c_bytes,
+                             PAI_GPU_BUF_CPU_VISIBLE | PAI_GPU_BUF_GARLIC) !=
+            PAI_OK) {
+      PAI_LOG_ERROR_(PAI_SUB_GPU,
+                     "[M0-S] N=%u SKIP: buffer alloc failed (%llu + %llu)\n",
+                     n, (unsigned long long)pack_bytes,
+                     (unsigned long long)c_bytes);
+      if (packb.cpu_addr) {
+        pai_gpu_buffer_free(ctx->gpu, &packb);
+      }
+      if (coutb.cpu_addr) {
+        pai_gpu_buffer_free(ctx->gpu, &coutb);
+      }
+      return 0;
+    }
+    pack_buf = &packb;
+    c_buf = &coutb;
+  }
+
+  pack = (uint32_t *)pack_buf->cpu_addr;
+  c1d = (uint32_t *)c_buf->cpu_addr;
+  for (uint32_t i = 0; i < n; i++) {
+    pack[2u * i] = 0x11110000u + i;
+    pack[2u * i + 1u] = 0x00001111u + i;
+  }
+  pai_gpu_buffer_flush(ctx->gpu, pack_buf);
+
+  if (n <= 256u) {
+    want_iters = PAI_SAXPY_ITERS;
+  } else if (n <= 4096u) {
+    want_iters = 10u;
+  } else {
+    want_iters = 1u;
+  }
+  ctx->timeout_ns = (n >= 32768u) ? UINT64_C(15000000000) : 0;
+
+  ud[0] = 0;
+  ud[1] = 0;
+  ud[2] = (uint32_t)(pack_buf->gpu_addr & 0xFFFFFFFFu);
+  ud[3] = (uint32_t)(pack_buf->gpu_addr >> 32);
+  ud[4] = (uint32_t)(c_buf->gpu_addr & 0xFFFFFFFFu);
+  ud[5] = (uint32_t)(c_buf->gpu_addr >> 32);
+  m0_build_dispatch_stream(ctx, stream, M0_PM4_CAP, PAI_SAXPY_RSRC2,
+                           PAI_SAXPY_THREADS, n, ud, 6, &stream_len);
+
+  for (iter = 0; iter < niter && ok; iter++) {
+    ctx->quiet_phases = (iter > 0);
+    t0 = pai_clock_ns();
+    if (m0_run_gpu(ctx, stream, stream_len, c1d, (uint32_t)c_bytes, 0xCC,
+                   "S") != 0) {
+      PAI_LOG_ERROR_(PAI_SUB_GPU,
+                     "[M0-S] N=%u iter %u no execution c[0]=%08x\n", n, iter,
+                     c1d[0]);
+      ok = 0;
+      break;
+    }
+    t1 = pai_clock_ns();
+    if (iter == 0) {
+      first_ns = t1 - t0;
+      PAI_LOG_INFO_(PAI_SUB_GPU,
+                    "[M0-S] N=%u iter 0 c[0..3] = %08x %08x %08x %08x "
+                    "(%llu us)\n",
+                    n, c1d[0], c1d[1 < n ? 1 : 0], c1d[2 < n ? 2 : 0],
+                    c1d[3 < n ? 3 : 0],
+                    (unsigned long long)(first_ns / 1000u));
+    }
+    for (uint32_t i = 0; i < n; i++) {
+      uint32_t want =
+          PAI_SAXPY_A * (0x11110000u + i) + (0x00001111u + i);
+      if (c1d[i] != want) {
+        PAI_LOG_ERROR_(PAI_SUB_GPU,
+                       "[M0-S] N=%u c[%u] = %08x want %08x\n", n, i, c1d[i],
+                       want);
+        ok = 0;
+        break;
+      }
+    }
+    if (ok && iter == 0) {
+      niter = want_iters;
+      PAI_LOG_INFO_(PAI_SUB_GPU,
+                    "[M0-S] N=%u first PASS, repeating %u times (no reset)\n",
+                    n, niter);
+    }
+  }
+  ctx->quiet_phases = 0;
+  ctx->timeout_ns = 0;
+  PAI_LOG_INFO_(PAI_SUB_GPU,
+                "[M0-S] N=%u %s iters=%u/%u first=%llu us groups=%u "
+                "threads=1 a=%u integer\n",
+                n, ok ? "PASS" : "FAIL", iter, niter,
+                (unsigned long long)(first_ns / 1000u), n, PAI_SAXPY_A);
+  if (extra) {
+    pai_gpu_buffer_free(ctx->gpu, &packb);
+    pai_gpu_buffer_free(ctx->gpu, &coutb);
+  }
+  (void)host;
+  return ok;
+}
+
 /* E34-E37: the flat v0-broadcast model — loads and the real vecadd. */
 static int
 m0_exp_v0model(m0_ctx_t *ctx) {
   pai_gpu_device_t *gpu = ctx->gpu;
   uint32_t stream[M0_PM4_CAP];
   uint32_t stream_len;
-  uint32_t ud[8];
+  uint32_t ud[16];
   uint32_t *a32 = (uint32_t *)ctx->a.cpu_addr;
   uint32_t *c32 = (uint32_t *)ctx->c.cpu_addr;
   int host = pai_gpu_device_backend(gpu) == PAI_GPU_BACKEND_HOST_REF;
@@ -1857,57 +2144,64 @@ m0_exp_v0model(m0_ctx_t *ctx) {
     }
   }
 
-  /* G23: SMEM->LDS staged vecadd - 128 elements in 4 dispatches. */
+  /* M0-G / G23: parametric 1D add, same add1d kernel, groups_x = N. */
   if (!host) {
     pai_gpu_reset(gpu);
   }
   {
-    uint32_t *a23 = (uint32_t *)ctx->a.cpu_addr;
-    uint32_t *b23 = (uint32_t *)ctx->b.cpu_addr;
-    uint32_t *c23 = (uint32_t *)ctx->c.cpu_addr;
-    memset(c23, 0xCC, 128 * sizeof(uint32_t));
-    for (uint32_t i = 0; i < PAI_VECADD_MAX_ELEMS; i++) {
-      a23[i] = 0x11110000u + i;
-      b23[i] = 0x00001111u + i;
-    }
+    static const uint32_t ns[] = {1u, 8u, 32u, 256u, 4096u, 32768u, 131072u,
+                                  1048576u};
+    int all_ok = 1;
     memcpy(ctx->code.cpu_addr, pai_smemvecadd_code,
-           PAI_G23_CODE_WORDS * sizeof(uint32_t));
+           PAI_ADD1D_CODE_WORDS * sizeof(uint32_t));
     if (host) {
       pai_gpu_host_register_shader(gpu, ctx->code.gpu_addr,
                                    pai_host_kernel_g8, NULL);
     }
-    for (uint32_t chunk = 0; chunk < 4; chunk++) {
-      uint64_t a_base = ctx->a.gpu_addr + chunk * 128u;
-      uint64_t b_base = ctx->b.gpu_addr + chunk * 128u;
-      ud[0] = 0;
-      ud[1] = 0;
-      ud[2] = (uint32_t)(a_base & 0xFFFFFFFFu);
-      ud[3] = (uint32_t)(a_base >> 32);
-      ud[4] = (uint32_t)(b_base & 0xFFFFFFFFu);
-      ud[5] = (uint32_t)(b_base >> 32);
-      ud[6] = (uint32_t)(ctx->c.gpu_addr & 0xFFFFFFFFu);
-      ud[7] = (uint32_t)(ctx->c.gpu_addr >> 32);
-      m0_build_dispatch_stream(ctx, stream, M0_PM4_CAP, 0x00000048u,
-                               PAI_EXP_THREADS_X, 1, ud, 8, &stream_len);
-      m0_run_gpu(ctx, stream, stream_len, c23 + chunk * 32, 32 * 4, 0xCC,
-                 "G23");
-    }
-    PAI_LOG_INFO_(PAI_SUB_GPU,
-                  "[M0-G23] c[0..15] = %08x %08x %08x %08x %08x %08x "
-                  "%08x %08x %08x %08x %08x %08x %08x %08x %08x %08x\n",
-                  c23[0], c23[1], c23[2], c23[3], c23[4], c23[5], c23[6],
-                  c23[7], c23[8], c23[9], c23[10], c23[11], c23[12], c23[13],
-                  c23[14], c23[15]);
-    {
-      int ok = 1;
-      for (uint32_t i = 0; i < 16; i++) {
-        if (c23[i] != (a23[i] + b23[i])) {
-          ok = 0;
-          break;
-        }
+    for (uint32_t k = 0; k < sizeof(ns) / sizeof(ns[0]); k++) {
+      int nok = m0_add1d_run_n(ctx, stream, ud, ns[k]);
+      if (ns[k] == 8u) {
+        m0_exp_report("G23", nok);
       }
-      m0_exp_report("G23", ok);
+      PAI_LOG_INFO_(PAI_SUB_GPU, "[M0-G] sweep N=%u VALIDATED %s\n", ns[k],
+                    nok ? "PASS" : "FAIL");
+      if (!nok) {
+        all_ok = 0;
+        PAI_LOG_ERROR_(PAI_SUB_GPU,
+                       "[M0-G] sweep stops at N=%u (next sizes skipped)\n",
+                       ns[k]);
+        break;
+      }
     }
+    m0_exp_report("G", all_ok);
+  }
+
+  /* Integer SAXPY: C[i] = 3*A[i]+B[i], same PM4 path as add1d. */
+  if (!host) {
+    pai_gpu_reset(gpu);
+  }
+  {
+    static const uint32_t ns[] = {8u, 256u, 4096u, 1048576u};
+    int all_ok = 1;
+    memcpy(ctx->code.cpu_addr, pai_saxpy_code,
+           PAI_SAXPY_CODE_WORDS * sizeof(uint32_t));
+    if (host) {
+      pai_gpu_host_register_shader(gpu, ctx->code.gpu_addr,
+                                   pai_host_kernel_saxpy, NULL);
+    }
+    for (uint32_t k = 0; k < sizeof(ns) / sizeof(ns[0]); k++) {
+      int nok = m0_saxpy_run_n(ctx, stream, ud, ns[k]);
+      PAI_LOG_INFO_(PAI_SUB_GPU, "[M0-S] sweep N=%u VALIDATED %s\n", ns[k],
+                    nok ? "PASS" : "FAIL");
+      if (!nok) {
+        all_ok = 0;
+        PAI_LOG_ERROR_(PAI_SUB_GPU,
+                       "[M0-S] sweep stops at N=%u (next sizes skipped)\n",
+                       ns[k]);
+        break;
+      }
+    }
+    m0_exp_report("S", all_ok);
   }
 
   /* G24: s_load_dwordx16 alone - the G23 hang bisection. */

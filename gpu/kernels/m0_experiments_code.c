@@ -89,7 +89,10 @@ const uint32_t pai_smemload_g15_code[PAI_G22_CODE_WORDS] = {
 #include "gfx1013/pai_smemload_g15.inc"
 };
 const uint32_t pai_smemvecadd_code[PAI_G23_CODE_WORDS] = {
-#include "gfx1013/pai_smemvecadd.inc"
+#include "gfx1013/pai_add1d.inc"
+};
+const uint32_t pai_saxpy_code[PAI_SAXPY_CODE_WORDS] = {
+#include "gfx1013/pai_saxpy.inc"
 };
 const uint32_t pai_smemload16_code[PAI_G24_CODE_WORDS] = {
 #include "gfx1013/pai_smemload16.inc"

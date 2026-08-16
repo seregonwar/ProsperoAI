@@ -307,6 +307,22 @@ pai_host_kernel_g8(void *ctx, const uint32_t user_data[16],
   return PAI_OK;
 }
 
+/* Integer SAXPY matching saxpy.s: C[i] = 3 * A[i] + B[i] (uint32 wrap). */
+pai_status_t
+pai_host_kernel_saxpy(void *ctx, const uint32_t user_data[16],
+                      uint32_t threads_x, uint32_t group_x) {
+  uint32_t *pack = (uint32_t *)(uintptr_t)pai_ud64(user_data, 2);
+  uint32_t *c = (uint32_t *)(uintptr_t)pai_ud64(user_data, 4);
+
+  (void)ctx;
+  (void)threads_x;
+
+  for (uint32_t i = 0; i < group_x; i++) {
+    c[i] = 3u * pack[2u * i] + pack[2u * i + 1u];
+  }
+  return PAI_OK;
+}
+
 pai_status_t
 pai_host_kernel_loadstore(void *ctx, const uint32_t user_data[16],
                           uint32_t threads_x, uint32_t group_x) {

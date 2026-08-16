@@ -95,6 +95,10 @@ pai_status_t pai_host_kernel_g7(void *ctx, const uint32_t user_data[16],
 pai_status_t pai_host_kernel_g8(void *ctx, const uint32_t user_data[16],
                                 uint32_t threads_x, uint32_t group_x);
 
+/* Integer SAXPY: packed AB at ud[2:3], C at ud[4:5], C[i] = 3*A[i]+B[i]. */
+pai_status_t pai_host_kernel_saxpy(void *ctx, const uint32_t user_data[16],
+                                   uint32_t threads_x, uint32_t group_x);
+
 /* h1: copy a[i] -> c[4i..4i+3]. */
 pai_status_t pai_host_kernel_h1(void *ctx, const uint32_t user_data[16],
                                 uint32_t threads_x, uint32_t group_x);

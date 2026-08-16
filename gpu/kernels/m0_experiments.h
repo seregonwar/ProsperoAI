@@ -168,9 +168,22 @@
 #define PAI_G22_RSRC2 0x0000000Cu
 #define PAI_G22_CODE_WORDS 16u
 
-/* G23: SMEM->LDS staged vecadd, 32 elements/dispatch (pai_smemvecadd.inc). */
-#define PAI_G23_RSRC2 0x00000048u
-#define PAI_G23_CODE_WORDS 170u
+/* M0-G / G23: parametric 1D add C[i]=A[i]+B[i] (pai_add1d.inc).
+ * RSRC2 = 6 user SGPRs + TGID_X_EN; NUM_THREAD_X = 1. */
+#define PAI_ADD1D_RSRC2 0x0000008Cu
+#define PAI_ADD1D_CODE_WORDS 25u
+#define PAI_ADD1D_THREADS 1u
+#define PAI_ADD1D_ITERS 1000u
+#define PAI_G23_RSRC2 PAI_ADD1D_RSRC2
+#define PAI_G23_CODE_WORDS PAI_ADD1D_CODE_WORDS
+
+/* Integer SAXPY: C[i] = a * A[i] + B[i], a = 3 immediate (s_mulk_i32).
+ * Same ABI as add1d (RSRC2 0x8C, 1 thread/group, groups_x = N). */
+#define PAI_SAXPY_RSRC2 PAI_ADD1D_RSRC2
+#define PAI_SAXPY_CODE_WORDS 26u
+#define PAI_SAXPY_THREADS PAI_ADD1D_THREADS
+#define PAI_SAXPY_ITERS PAI_ADD1D_ITERS
+#define PAI_SAXPY_A 3u
 
 /* G24: s_load_dwordx16 alone (G23 hang bisection, pai_smemload16.inc). */
 #define PAI_G24_RSRC2 0x0000000Cu
@@ -180,12 +193,14 @@
 #define PAI_G25_RSRC2 0x0000004Cu
 #define PAI_G25_CODE_WORDS 22u
 
-/* G26: one x16 load + one ds write/read + G15 formula (pai_dsstaged.inc). */
-#define PAI_G26_RSRC2 0x00000048u
+/* G26: one x16 load + one ds write/read + G15 formula (pai_dsstaged.inc).
+ * RSRC2 = 6 user SGPRs (s0-s5) + the G25 LDS bit. */
+#define PAI_G26_RSRC2 0x0000004Cu
 #define PAI_G26_CODE_WORDS 26u
 
-/* G27: single s_load + ds write/read + G15 formula (pai_dsstaged1.inc). */
-#define PAI_G27_RSRC2 0x00000048u
+/* G27: single s_load + ds write/read + G15 formula (pai_dsstaged1.inc).
+ * RSRC2 = 6 user SGPRs (s0-s5) + the G25 LDS bit. */
+#define PAI_G27_RSRC2 0x0000004Cu
 #define PAI_G27_CODE_WORDS 26u
 #define PAI_G25_VALUE 0xDEAD0001u
 #define PAI_G19_VALUE 0xA5A5A5A5u
@@ -279,6 +294,7 @@ extern const uint32_t pai_mubufload_clean_code[PAI_G20_CODE_WORDS];
 extern const uint32_t pai_mubufload_g15_code[PAI_G21_CODE_WORDS];
 extern const uint32_t pai_smemload_g15_code[PAI_G22_CODE_WORDS];
 extern const uint32_t pai_smemvecadd_code[PAI_G23_CODE_WORDS];
+extern const uint32_t pai_saxpy_code[PAI_SAXPY_CODE_WORDS];
 extern const uint32_t pai_smemload16_code[PAI_G24_CODE_WORDS];
 extern const uint32_t pai_dsprobe_code[PAI_G25_CODE_WORDS];
 extern const uint32_t pai_dsstaged_code[PAI_G26_CODE_WORDS];
