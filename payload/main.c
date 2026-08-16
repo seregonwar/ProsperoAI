@@ -988,8 +988,46 @@ m0_stage_e(m0_ctx_t *ctx) {
                 "[M0-E] order: safe (patched/proven) first, controls last; "
                 "gc reset between experiments\n");
 
-  /* Safe experiments first: a hanging kernel can wedge the ring, so the
-   * controls (unpatched llvm-mc encodings) run last. */
+  /* E30/E31: golden register layout (vaddr pair 1). */
+  if (!host) {
+    pai_gpu_reset(gpu);
+  }
+  m0_exp_store64_variant(ctx, "E30", pai_store64_gold_code,
+                         PAI_STORE64_GOLD_CODE_WORDS, PAI_STORE64_GOLD_VALUE,
+                         256, pai_host_kernel_store64_gold, 0, 0);
+
+  if (!host) {
+    pai_gpu_reset(gpu);
+  }
+  {
+    /* E31: loadstore with golden addressing. */
+    uint32_t stream[M0_PM4_CAP];
+    uint32_t stream_len;
+    uint32_t ud[6];
+    uint32_t *a32 = (uint32_t *)ctx->a.cpu_addr;
+    uint32_t *c32 = (uint32_t *)ctx->c.cpu_addr;
+
+    memcpy(ctx->code.cpu_addr, pai_loadstore_gold_code,
+           PAI_LOADSTORE_GOLD_CODE_WORDS * sizeof(uint32_t));
+    if (pai_gpu_device_backend(gpu) == PAI_GPU_BACKEND_HOST_REF) {
+      pai_gpu_host_register_shader(gpu, ctx->code.gpu_addr,
+                                   pai_host_kernel_loadstore_gold, NULL);
+    }
+    for (uint32_t i = 0; i < PAI_EXP_THREADS_X; i++) {
+      a32[i] = 0x31313131u + i;
+    }
+    ud[0] = 0;
+    ud[1] = 0;
+    ud[2] = (uint32_t)(ctx->a.gpu_addr & 0xFFFFFFFFu);
+    ud[3] = (uint32_t)(ctx->a.gpu_addr >> 32);
+    ud[4] = (uint32_t)(ctx->c.gpu_addr & 0xFFFFFFFFu);
+    ud[5] = (uint32_t)(ctx->c.gpu_addr >> 32);
+    m0_build_dispatch_stream(ctx, stream, M0_PM4_CAP, PAI_LOADSTORE_GOLD_RSRC2,
+                             PAI_EXP_THREADS_X, 1, ud, 6, &stream_len);
+    m0_run_gpu(ctx, stream, stream_len, c32, 128, 0xCC, "E31");
+    m0_check_loadstore(a32, c32, "E31");
+  }
+
   if (!host) {
     pai_gpu_reset(gpu);
   }

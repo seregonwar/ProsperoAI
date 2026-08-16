@@ -48,6 +48,16 @@ pai_status_t
 pai_host_kernel_store64_smem(void *ctx, const uint32_t user_data[16],
                              uint32_t threads_x, uint32_t group_x);
 
+/* store64_gold (E30): 0xB0DD00D1, 16 bytes per thread. */
+pai_status_t
+pai_host_kernel_store64_gold(void *ctx, const uint32_t user_data[16],
+                             uint32_t threads_x, uint32_t group_x);
+
+/* loadstore_gold (E31): A at 2-3, C at 4-5. */
+pai_status_t
+pai_host_kernel_loadstore_gold(void *ctx, const uint32_t user_data[16],
+                               uint32_t threads_x, uint32_t group_x);
+
 /* loadstore (E2): user_data 0-1 = A, 2-3 = C; c[i] = a[i]. */
 pai_status_t pai_host_kernel_loadstore(void *ctx, const uint32_t user_data[16],
                                        uint32_t threads_x, uint32_t group_x);

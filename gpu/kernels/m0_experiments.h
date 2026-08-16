@@ -48,6 +48,16 @@
 #define PAI_STORE64_SMEM_VALUE 0xC0FFEEEEu
 #define PAI_STORE64_SMEM_FLAT_WORD 17u
 
+/* E30: store with the golden register layout (vaddr v[2:3], data
+ * v[4:7]) — the only flat combination the 9.40 silicon accepts. */
+#define PAI_STORE64_GOLD_RSRC2 0x00000008u
+#define PAI_STORE64_GOLD_CODE_WORDS 16u
+#define PAI_STORE64_GOLD_VALUE 0xB0DD00D1u
+
+/* E31: loadstore with vaddr pairs 1 (v[2:3]) only. */
+#define PAI_LOADSTORE_GOLD_RSRC2 0x0000000Cu
+#define PAI_LOADSTORE_GOLD_CODE_WORDS 20u
+
 /* Instruction bisection (E15-E19): word ranges in gfx1013/pai_bisect.inc. */
 #define PAI_BISECT_BARE_OFF 0u
 #define PAI_BISECT_BARE_WORDS 2u
@@ -82,6 +92,8 @@ extern const uint32_t pai_store_const64_code[PAI_STORE_CONST64_CODE_WORDS];
 extern const uint32_t pai_store64_x2_code[PAI_STORE64_X2_CODE_WORDS];
 extern const uint32_t pai_store64_x4_code[PAI_STORE64_X4_CODE_WORDS];
 extern const uint32_t pai_store64_smem_code[PAI_STORE64_SMEM_CODE_WORDS];
+extern const uint32_t pai_store64_gold_code[PAI_STORE64_GOLD_CODE_WORDS];
+extern const uint32_t pai_loadstore_gold_code[PAI_LOADSTORE_GOLD_CODE_WORDS];
 extern const uint32_t pai_loadstore_code[PAI_LOADSTORE_CODE_WORDS];
 extern const uint32_t pai_bisect_code[];
 
