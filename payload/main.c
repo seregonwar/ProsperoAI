@@ -988,6 +988,14 @@ m0_stage_e(m0_ctx_t *ctx) {
                 "[M0-E] order: safe (patched/proven) first, controls last; "
                 "gc reset between experiments\n");
 
+  /* E32: v0-broadcast store hypothesis. */
+  if (!host) {
+    pai_gpu_reset(gpu);
+  }
+  m0_exp_store64_variant(ctx, "E32", pai_store64_v0_code,
+                         PAI_STORE64_V0_CODE_WORDS, PAI_STORE64_V0_VALUE,
+                         256, pai_host_kernel_store64_v0, 0, 0);
+
   /* E30/E31: golden register layout (vaddr pair 1). */
   if (!host) {
     pai_gpu_reset(gpu);

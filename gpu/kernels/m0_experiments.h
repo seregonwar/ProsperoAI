@@ -54,6 +54,11 @@
 #define PAI_STORE64_GOLD_CODE_WORDS 16u
 #define PAI_STORE64_GOLD_VALUE 0xB0DD00D1u
 
+/* E32: v0-broadcast store hypothesis (data lives in v0). */
+#define PAI_STORE64_V0_RSRC2 0x00000008u
+#define PAI_STORE64_V0_CODE_WORDS 13u
+#define PAI_STORE64_V0_VALUE 0x12345678u
+
 /* E31: loadstore with vaddr pairs 1 (v[2:3]) only. */
 #define PAI_LOADSTORE_GOLD_RSRC2 0x0000000Cu
 #define PAI_LOADSTORE_GOLD_CODE_WORDS 20u
@@ -93,6 +98,7 @@ extern const uint32_t pai_store64_x2_code[PAI_STORE64_X2_CODE_WORDS];
 extern const uint32_t pai_store64_x4_code[PAI_STORE64_X4_CODE_WORDS];
 extern const uint32_t pai_store64_smem_code[PAI_STORE64_SMEM_CODE_WORDS];
 extern const uint32_t pai_store64_gold_code[PAI_STORE64_GOLD_CODE_WORDS];
+extern const uint32_t pai_store64_v0_code[PAI_STORE64_V0_CODE_WORDS];
 extern const uint32_t pai_loadstore_gold_code[PAI_LOADSTORE_GOLD_CODE_WORDS];
 extern const uint32_t pai_loadstore_code[PAI_LOADSTORE_CODE_WORDS];
 extern const uint32_t pai_bisect_code[];
