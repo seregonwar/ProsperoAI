@@ -102,6 +102,30 @@ VM fault/return that never completes for the raw /dev/gc context on
 READ capability of our context is the missing piece, not the page
 tables.
 
+## Reads - the three paths (G16-G22, 2026-08-16)
+
+Three distinct read behaviors, all on the same buffers:
+
+- flat_load_dword: HANGS the wave AND the ring (G16/G17/G18, also
+  without any s_waitcnt). The EOP label never fires. Do not use.
+- buffer_load_dword (MUBUF): completes (label fires) but returns 0
+  with T# word3 = 0x31014FAC (G20/G21: stored 4i+0+3). The T# format
+  for 9.40 is still unresolved; the vector path itself does not hang.
+- s_load_dword (SMEM): WORKS. G22 PASS: s_load of C[0] returned the
+  real 0xA5A5A5A5 fill; the G15 store formula produced
+  c[i] = 4i + 0xA5A5A5A5 + 3 exactly. The scalar read path is fully
+  functional on 9.40.
+
+Consequences: uniform/shader-constant data is readable via s_load.
+Per-thread reads need either the correct MUBUF T# word3 (hunt still
+open: 0x31014FAC and 0x20002000 both return 0) or an SMEM-based
+restructuring (s_load_dwordx16 + LDS redistribution).
+
+Also ruled out for the hang/zeros (safe tests): dmem type 1 vs 3
+(WB_ONION vs WC_GARLIC + clflush), the exact GPU authid
+0x4801000000000000, MAKESYSMAP ioctl (0xC0088109, returns identity),
+SETUP_ASYNC ioctl (0x80048126, rc=0). None changed the read behavior.
+
 ## Loads (OPEN — the next hard problem)
 
 All vector/scalar loads return 0 on 9.40 in our dispatch config:
