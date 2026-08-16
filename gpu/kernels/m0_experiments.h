@@ -153,6 +153,12 @@
 /* G19: SMEM scalar load probe (pai_smemload.inc). */
 #define PAI_G19_RSRC2 0x00000008u
 #define PAI_G19_CODE_WORDS 20u
+
+/* G20: clean MUBUF load test (pai_mubufload_clean.inc). */
+#define PAI_G20_RSRC2 0x0000000Cu
+#define PAI_G20_CODE_WORDS 21u
+#define PAI_G20_VALUE 0xA5A5A5A5u
+#define PAI_G20_TBUF_WORD3 0x31014FACu
 #define PAI_G19_VALUE 0xA5A5A5A5u
 #define PAI_G16_VALUE 0x12345678u
 
@@ -240,6 +246,7 @@ extern const uint32_t pai_selfref_code[PAI_G16_CODE_WORDS];
 extern const uint32_t pai_acqload_code[PAI_G17_CODE_WORDS];
 extern const uint32_t pai_selfref_nowait_code[PAI_G18_CODE_WORDS];
 extern const uint32_t pai_smemload_code[PAI_G19_CODE_WORDS];
+extern const uint32_t pai_mubufload_clean_code[PAI_G20_CODE_WORDS];
 extern const uint32_t pai_hbatch_code[];
 extern const uint32_t pai_hbatch2_code[];
 extern const uint32_t pai_hbatch3_code[PAI_H10_CODE_WORDS];

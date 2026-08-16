@@ -1748,6 +1748,41 @@ m0_exp_v0model(m0_ctx_t *ctx) {
     }
   }
 
+  /* G20: clean MUBUF load - the watch fill (0xA5) covers C, the load
+   * reads C[tid] and stores to C[tid+64]. A working vector-buffer read
+   * path stores 0xA5A5A5A5. */
+  if (!host) {
+    pai_gpu_reset(gpu);
+  }
+  {
+    uint32_t *c20 = (uint32_t *)ctx->c.cpu_addr;
+    memcpy(ctx->code.cpu_addr, pai_mubufload_clean_code,
+           PAI_G20_CODE_WORDS * sizeof(uint32_t));
+    if (host) {
+      pai_gpu_host_register_shader(gpu, ctx->code.gpu_addr,
+                                   pai_host_kernel_g8, NULL);
+    }
+    ud[0] = (uint32_t)(ctx->c.gpu_addr & 0xFFFFFFFFu);
+    ud[1] = (uint32_t)(ctx->c.gpu_addr >> 32);
+    ud[2] = 4096u;
+    ud[3] = PAI_G20_TBUF_WORD3;
+    ud[4] = (uint32_t)(ctx->c.gpu_addr & 0xFFFFFFFFu);
+    ud[5] = (uint32_t)(ctx->c.gpu_addr >> 32);
+    m0_build_dispatch_stream(ctx, stream, M0_PM4_CAP, PAI_G20_RSRC2,
+                             PAI_EXP_THREADS_X, 1, ud, 6, &stream_len);
+    m0_run_gpu(ctx, stream, stream_len, c20, 128, 0xA5, "G20");
+    PAI_LOG_INFO_(PAI_SUB_GPU,
+                  "[M0-G20] c[0..3] = %08x %08x %08x %08x  "
+                  "c[64..67] = %08x %08x %08x %08x\n",
+                  c20[0], c20[1], c20[2], c20[3], c20[64], c20[65], c20[66],
+                  c20[67]);
+    {
+      int ok = (c20[64] == PAI_G20_VALUE) && (c20[65] == PAI_G20_VALUE) &&
+               (c20[66] == PAI_G20_VALUE) && (c20[67] == PAI_G20_VALUE);
+      m0_exp_report("G20", ok);
+    }
+  }
+
   /* G17: load from the kernel's own acqrb VA - does ANY load complete,
    * or only our dmem pages hang? */
   if (!host) {
