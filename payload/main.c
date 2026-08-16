@@ -993,6 +993,15 @@ m0_stage_e(m0_ctx_t *ctx) {
   m0_exp_bisect(ctx, "E19b", PAI_BISECT_STORE_OFF, PAI_BISECT_STORE_WORDS, 1,
                 1);
 
+  /* E22: SMEM s_load prologue + golden store encoding. */
+  if (!host) {
+    pai_gpu_reset(gpu);
+  }
+  m0_exp_store64_variant(ctx, "E22", pai_store64_smem_code,
+                         PAI_STORE64_SMEM_CODE_WORDS, PAI_STORE64_SMEM_VALUE,
+                         256, pai_host_kernel_store64_smem, 1,
+                         PAI_STORE64_SMEM_FLAT_WORD);
+
   if (!host) {
     pai_gpu_reset(gpu);
   }

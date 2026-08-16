@@ -16,6 +16,10 @@ const uint32_t pai_store64_x4_code[PAI_STORE64_X4_CODE_WORDS] = {
 #include "gfx1013/pai_store64_x4.inc"
 };
 
+const uint32_t pai_store64_smem_code[PAI_STORE64_SMEM_CODE_WORDS] = {
+#include "gfx1013/pai_store64_smem.inc"
+};
+
 const uint32_t pai_loadstore_code[PAI_LOADSTORE_CODE_WORDS] = {
 #include "gfx1013/pai_loadstore.inc"
 };

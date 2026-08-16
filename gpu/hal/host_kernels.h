@@ -43,6 +43,11 @@ pai_status_t
 pai_host_kernel_bisect_store(void *ctx, const uint32_t user_data[16],
                              uint32_t threads_x, uint32_t group_x);
 
+/* store64_smem (E22): 0xC0FFEEEE, 16 bytes per thread. */
+pai_status_t
+pai_host_kernel_store64_smem(void *ctx, const uint32_t user_data[16],
+                             uint32_t threads_x, uint32_t group_x);
+
 /* loadstore (E2): user_data 0-1 = A, 2-3 = C; c[i] = a[i]. */
 pai_status_t pai_host_kernel_loadstore(void *ctx, const uint32_t user_data[16],
                                        uint32_t threads_x, uint32_t group_x);

@@ -42,6 +42,12 @@
 #define PAI_STORE64_X4_VALUE 0xF00DFEEDu
 #define PAI_STORE64_X4_FLAT_WORD 13u
 
+/* E22: E19 + SMEM s_load prologue (golden-style first instruction). */
+#define PAI_STORE64_SMEM_RSRC2 0x00000008u
+#define PAI_STORE64_SMEM_CODE_WORDS 19u
+#define PAI_STORE64_SMEM_VALUE 0xC0FFEEEEu
+#define PAI_STORE64_SMEM_FLAT_WORD 17u
+
 /* Instruction bisection (E15-E19): word ranges in gfx1013/pai_bisect.inc. */
 #define PAI_BISECT_BARE_OFF 0u
 #define PAI_BISECT_BARE_WORDS 2u
@@ -75,6 +81,7 @@ extern const uint32_t pai_store_const_code[PAI_STORE_CONST_CODE_WORDS];
 extern const uint32_t pai_store_const64_code[PAI_STORE_CONST64_CODE_WORDS];
 extern const uint32_t pai_store64_x2_code[PAI_STORE64_X2_CODE_WORDS];
 extern const uint32_t pai_store64_x4_code[PAI_STORE64_X4_CODE_WORDS];
+extern const uint32_t pai_store64_smem_code[PAI_STORE64_SMEM_CODE_WORDS];
 extern const uint32_t pai_loadstore_code[PAI_LOADSTORE_CODE_WORDS];
 extern const uint32_t pai_bisect_code[];
 

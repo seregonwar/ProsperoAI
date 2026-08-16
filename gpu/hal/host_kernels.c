@@ -121,6 +121,20 @@ pai_host_kernel_bisect_store(void *ctx, const uint32_t user_data[16],
 }
 
 pai_status_t
+pai_host_kernel_store64_smem(void *ctx, const uint32_t user_data[16],
+                             uint32_t threads_x, uint32_t group_x) {
+  uint32_t *dst = (uint32_t *)(uintptr_t)pai_ud64(user_data, 2);
+
+  (void)ctx;
+  (void)group_x;
+
+  for (uint32_t i = 0; i < threads_x * 4; i++) {
+    dst[i] = 0xC0FFEEEEu;
+  }
+  return PAI_OK;
+}
+
+pai_status_t
 pai_host_kernel_loadstore(void *ctx, const uint32_t user_data[16],
                           uint32_t threads_x, uint32_t group_x) {
   uint32_t *a = (uint32_t *)(uintptr_t)pai_ud64(user_data, 0);
