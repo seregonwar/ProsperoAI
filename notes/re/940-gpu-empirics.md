@@ -88,16 +88,29 @@ All vector/scalar loads return 0 on 9.40 in our dispatch config:
   0x31014FAC (OpenAGC raw) and 0x20002000 the load FAULTS the wave;
   with 0x00080688 and 0x97688 it returns 0 regardless of the vdata
   register (v0/v1/v2) and glc.
-- s_load_dwordx4 (SMEM, the golden's path): returns 0 (H10).
+- s_load_dwordx4 (SMEM, the golden's path): returns 0 — even with the
+  proven sbase pair s[2:3] and with the destination at s[4:7] (H10,
+  H11, H12).
+
+Falsified hypotheses (all tested on hardware):
+- s0-s1 zeroing eating load destinations/T# bases (H12: load into
+  s[4:7] still 0)
+- L1 cache staleness (IT_ACQUIRE_MEM GCR_ALL=0xC3B1 before loads: no
+  change)
+- dmem vs flexible-memory GPU mappings (both return 0)
+- missing driver context: QUEUE_CREATE with SPRX magic tokens
+  SUCCEEDS on 9.40 (acqrb/eop regions accepted), but ACB submission
+  (queue 0xc + const-IB descriptors) does NOT execute — the real
+  compute-queue path needs the DingDong/ring machinery.
 
 Stores land correctly (DMA + flat stores verified), so the write path
-is fine. Working hypothesis: the wave's GPU page tables (gvmspace) do
-not cover our dmem for the SHADER READ path (zero-fill on fault), or
-the read path requires the driver's internal-memory/queue setup
-(OpenAGC allocates ACQRB/EOP FIFO + QUEUE_CREATE with magic tokens
-before compute). Next steps: walk the process gvmspace (spoofer's
-GPU PTE walk) and verify/insert PTEs for our dmem; or replicate the
-OpenAGC internal-memory + queue-create sequence.
+is fine. Remaining candidates: the wave's GPU page-table READ side
+(zero-fill on fault — writes may be posted/uncached while reads fault),
+or the driver's shadow/ring setup. The gvmspace array was NOT found by
+structural scans of kernel_940.elf (layout differs from the 11.20
+spoofer). Next: runtime gvmspace discovery (scan kernel data for an
+entry CONTAINING the live acqrb/dmem VAs) and the PTE fix, or the
+DingDong submission path on the created queue.
 
 ## MILESTONE STATUS
 
