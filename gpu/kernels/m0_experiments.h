@@ -279,6 +279,12 @@
 #define PAI_FGEMV_RSRC2 0x0000008Cu
 #define PAI_FGEMV_THREADS 1u
 #define PAI_FGEMV_CODE_WORDS 50u
+
+/* G41: VALU float SAXPY, per-group (pai_fsaxpy.inc). */
+#define PAI_FSAXPY_RSRC2 0x0000008Cu
+#define PAI_FSAXPY_THREADS 1u
+#define PAI_FSAXPY_CODE_WORDS 26u
+#define PAI_FSAXPY_K 0.5f
 #define PAI_G35_WORDS 15u
 #define PAI_G32_WORDS 16u
 #define PAI_G25_VALUE 0xDEAD0001u
@@ -389,6 +395,7 @@ extern const uint32_t pai_mubufload36_code[PAI_G36_CODE_WORDS];
 extern const uint32_t pai_mubufload37_code[];
 extern const uint32_t pai_fdot_serial_code[PAI_FDOT_CODE_WORDS];
 extern const uint32_t pai_fgemv_serial_code[PAI_FGEMV_CODE_WORDS];
+extern const uint32_t pai_fsaxpy_code[PAI_FSAXPY_CODE_WORDS];
 extern const uint32_t pai_hbatch_code[];
 extern const uint32_t pai_hbatch2_code[];
 extern const uint32_t pai_hbatch3_code[PAI_H10_CODE_WORDS];

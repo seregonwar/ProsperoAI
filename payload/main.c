@@ -3342,6 +3342,60 @@ m0_exp_v0model(m0_ctx_t *ctx) {
     }
   }
 
+  /* G41: VALU float SAXPY, per-group (C[g] = 0.5*A[g] + B[g]). */
+  if (!host) {
+    pai_gpu_reset(gpu);
+  }
+  {
+    uint32_t n = 64u;
+    uint32_t *ab32 = (uint32_t *)ctx->a.cpu_addr;
+    uint32_t *c41 = (uint32_t *)ctx->c.cpu_addr;
+    uint32_t stream_len = 0;
+    float want[64];
+    memcpy(ctx->code.cpu_addr, pai_fsaxpy_code,
+           PAI_FSAXPY_CODE_WORDS * sizeof(uint32_t));
+    if (host) {
+      pai_gpu_host_register_shader(gpu, ctx->code.gpu_addr,
+                                   pai_host_kernel_g8, NULL);
+    }
+    for (uint32_t g = 0; g < n; g++) {
+      float av = 0.25f * (float)g;
+      float bv = 1.0f - 0.01f * (float)g;
+      memcpy(&ab32[2u * g], &av, 4);
+      memcpy(&ab32[2u * g + 1u], &bv, 4);
+      want[g] = PAI_FSAXPY_K * av + bv;
+    }
+    pai_gpu_buffer_flush(ctx->gpu, &ctx->a);
+    ud[0] = 0;
+    ud[1] = 0;
+    ud[2] = (uint32_t)(ctx->a.gpu_addr & 0xFFFFFFFFu);
+    ud[3] = (uint32_t)(ctx->a.gpu_addr >> 32);
+    ud[4] = (uint32_t)(ctx->c.gpu_addr & 0xFFFFFFFFu);
+    ud[5] = (uint32_t)(ctx->c.gpu_addr >> 32);
+    ud[6] = 0;
+    m0_build_dispatch_stream(ctx, stream, M0_PM4_CAP, PAI_FSAXPY_RSRC2,
+                             PAI_FSAXPY_THREADS, n, ud, 7, &stream_len);
+    m0_run_gpu(ctx, stream, stream_len, c41, 64, 0xCC, "G41");
+    {
+      float got[8];
+      int ok = 1;
+      memcpy(got, c41, sizeof(got));
+      PAI_LOG_INFO_(PAI_SUB_GPU,
+                    "[M0-G41] c[0..3] = %.4f %.4f %.4f %.4f\n",
+                    (double)got[0], (double)got[1], (double)got[2],
+                    (double)got[3]);
+      for (uint32_t g = 0; g < n; g++) {
+        float gg;
+        memcpy(&gg, &c41[g], 4);
+        if (gg != want[g]) {
+          ok = 0;
+          break;
+        }
+      }
+      m0_exp_report("G41", ok);
+    }
+  }
+
   /* G17: load from the kernel's own acqrb VA - does ANY load complete,
    * or only our dmem pages hang? */
   if (!host) {
