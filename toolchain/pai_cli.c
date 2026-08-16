@@ -24,6 +24,7 @@
 #include <pai/error.h>
 #include <pai/pai.h>
 #include <pai/version.h>
+#include <protocol/protocol.h>
 #include <scheduler/scheduler.h>
 
 #include <tokenizer.h>
@@ -45,7 +46,9 @@ usage(void) {
       "  pai benchmark <model.pai> [--steps N] [--prompt P]\n"
       "               time end-to-end generation\n"
       "  pai serve    <model.pai>... [--host H] [--port N]\n"
-      "               OpenAI-compatible gateway (§26)\n");
+      "               OpenAI-compatible gateway (§26)\n"
+      "  pai proto-ping <host> <port> [--count N]\n"
+      "               Prospero Protocol connectivity check (§24/§25)\n");
 }
 
 /* ------------------------------------------------------------------ */
@@ -347,6 +350,129 @@ cmd_benchmark(int argc, char **argv) {
 }
 
 /* ------------------------------------------------------------------ */
+/* proto-ping (whitepaper §24/§25 connectivity check)                  */
+/* ------------------------------------------------------------------ */
+
+static void
+print_caps(uint32_t caps) {
+  static const struct {
+    uint32_t bit;
+    const char *name;
+  } k_caps[] = {
+      {PAI_PROTO_CAP_STREAMS, "streams"},     {PAI_PROTO_CAP_SESSIONS, "sessions"},
+      {PAI_PROTO_CAP_GENERATE, "generate"},   {PAI_PROTO_CAP_EMBED, "embed"},
+      {PAI_PROTO_CAP_TRANSFER, "transfer"},   {PAI_PROTO_CAP_TELEMETRY, "telemetry"},
+      {PAI_PROTO_CAP_COMPRESSION, "compression"},
+  };
+  int first = 1;
+  for (size_t i = 0; i < sizeof(k_caps) / sizeof(k_caps[0]); i++) {
+    if (caps & k_caps[i].bit) {
+      printf("%s%s", first ? "" : ", ", k_caps[i].name);
+      first = 0;
+    }
+  }
+  if (first) {
+    printf("(none)");
+  }
+}
+
+static int
+cmd_proto_ping(int argc, char **argv) {
+  const char *host;
+  uint16_t port;
+  uint32_t count = 5;
+  uint32_t caps = 0;
+  pai_proto_ping_result_t results[64];
+  pai_status_t st;
+  int i;
+
+  if (argc < 4) {
+    usage();
+    return 2;
+  }
+  host = argv[2];
+  {
+    unsigned long p = strtoul(argv[3], NULL, 10);
+    if (p < 1 || p > 65535) {
+      fprintf(stderr, "proto-ping: invalid port\n");
+      return 2;
+    }
+    port = (uint16_t)p;
+  }
+  for (i = 4; i < argc; i++) {
+    if (strcmp(argv[i], "--count") == 0 && i + 1 < argc) {
+      count = (uint32_t)strtoul(argv[++i], NULL, 10);
+    } else {
+      usage();
+      return 2;
+    }
+  }
+  if (count == 0 || count > 64) {
+    fprintf(stderr, "proto-ping: count must be 1..64\n");
+    return 2;
+  }
+
+  st = pai_proto_ping(host, port, count, results, &caps, 2000);
+  if (st != PAI_OK) {
+    fprintf(stderr, "proto-ping: %s:%u: %s\n", host, (unsigned)port,
+            pai_status_str(st));
+    return 1;
+  }
+
+  printf("proto-ping %s:%u — %u ping(s)\n", host, (unsigned)port, count);
+  printf("  negotiated caps 0x%08x (", caps);
+  print_caps(caps);
+  printf(")\n");
+
+  {
+    uint64_t *samples = (uint64_t *)malloc(count * sizeof(uint64_t));
+    uint32_t ns = 0;
+    uint32_t lost = 0;
+    uint64_t mn = 0;
+    uint64_t mx = 0;
+    uint64_t med = 0;
+    if (samples == NULL) {
+      return 2;
+    }
+    for (i = 0; i < (int)count; i++) {
+      if (results[i].lost) {
+        printf("  #%-2d  timeout\n", i + 1);
+        lost++;
+      } else {
+        printf("  #%-2d  rtt %.3f ms\n", i + 1,
+               (double)results[i].rtt_ns / 1e6);
+        samples[ns++] = results[i].rtt_ns;
+        if (ns == 1) {
+          mn = mx = results[i].rtt_ns;
+        } else {
+          if (results[i].rtt_ns < mn) {
+            mn = results[i].rtt_ns;
+          }
+          if (results[i].rtt_ns > mx) {
+            mx = results[i].rtt_ns;
+          }
+        }
+      }
+    }
+    if (ns > 0) {
+      med = pai_bench_median(samples, ns);
+    }
+    if (ns > 0) {
+      printf("  min %.3f ms | median %.3f ms | max %.3f ms | %u/%u lost\n",
+             (double)mn / 1e6, (double)med / 1e6, (double)mx / 1e6, lost,
+             count);
+    } else {
+      printf("  %u/%u lost — peer unreachable or unresponsive\n", lost,
+             count);
+    }
+    free(samples);
+    /* All pings lost: report failure to scripts even though the TCP
+     * connection and negotiation succeeded. */
+    return lost == count ? 1 : 0;
+  }
+}
+
+/* ------------------------------------------------------------------ */
 /* serve (whitepaper §26 OpenAI-compatible gateway)                    */
 /* ------------------------------------------------------------------ */
 
@@ -443,6 +569,9 @@ main(int argc, char **argv) {
   }
   if (strcmp(argv[1], "serve") == 0) {
     return cmd_serve(argc, argv);
+  }
+  if (strcmp(argv[1], "proto-ping") == 0) {
+    return cmd_proto_ping(argc, argv);
   }
   fprintf(stderr, "unknown command: %s\n", argv[1]);
   usage();

@@ -12,7 +12,7 @@ set(PAI_PROTOCOL_SOURCES
   transport_pipe.c
 )
 if(PAI_PLATFORM STREQUAL "host")
-  list(APPEND PAI_PROTOCOL_SOURCES transport_tcp.c)
+  list(APPEND PAI_PROTOCOL_SOURCES transport_tcp.c ping.c)
 endif()
 
 pai_define_library(pai_protocol ${PAI_PROTOCOL_SOURCES})

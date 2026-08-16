@@ -1,8 +1,17 @@
 #include "test.h"
 
+#include <gateway/gwsys.h>
 #include <protocol/protocol.h>
 
 #include <string.h>
+
+#ifdef _WIN32
+#include <windows.h>
+#define TEST_SLEEP_MS(ms) Sleep(ms)
+#else
+#include <unistd.h>
+#define TEST_SLEEP_MS(ms) usleep((ms) * 1000)
+#endif
 
 /* ------------------------------------------------------------------ */
 /* helpers                                                             */
@@ -181,6 +190,68 @@ close_observer(void *user, uint32_t reason) {
   close_client_t *c = (close_client_t *)user;
   c->on_close = 1;
   c->reason = reason;
+}
+
+/* ------------------------------------------------------------------ */
+/* pai_proto_ping server thread                                       */
+/* ------------------------------------------------------------------ */
+
+typedef struct ping_server_ctx {
+  pai_proto_tcp_listener_t *lst;
+  pai_proto_conn_t *conn;   /* owned by the thread                    */
+  int refuse;               /* on_hello returns 0 -> HELLO_NACK       */
+  int no_answer;            /* negotiate but never poll PINGs         */
+  volatile int stop;
+  volatile int finished;
+} ping_server_ctx_t;
+
+static uint32_t
+refuse_hello(void *user, uint32_t remote_caps) {
+  (void)user;
+  (void)remote_caps;
+  return 0;
+}
+
+/* Accept one connection and pump a bare server conn: the protocol core
+ * auto-answers HELLO (via on_hello) and PING (PONG). */
+static void
+ping_server_thread(void *arg) {
+  ping_server_ctx_t *s = (ping_server_ctx_t *)arg;
+  pai_proto_transport_t t;
+  pai_proto_callbacks_t cb;
+  uint32_t frames = 0;
+
+  if (pai_proto_tcp_accept(s->lst, &t) != PAI_OK) {
+    s->finished = 1;
+    return;
+  }
+  memset(&cb, 0, sizeof(cb));
+  cb.on_hello = s->refuse ? refuse_hello : accept_hello;
+  if (pai_proto_conn_init(s->conn, PAI_PROTO_ROLE_SERVER,
+                          PAI_PROTO_CAP_KNOWN, &t, &cb, NULL) != PAI_OK) {
+    pai_proto_tcp_transport_destroy(&t);
+    s->finished = 1;
+    return;
+  }
+
+  /* Reach OPEN (or CLOSED when refused), then either stop answering or
+   * keep pumping until told to stop. */
+  while (pai_proto_conn_state(s->conn) != PAI_PROTO_STATE_OPEN &&
+         pai_proto_conn_state(s->conn) != PAI_PROTO_STATE_CLOSED) {
+    (void)pai_proto_conn_poll(s->conn, &frames);
+  }
+  if (s->no_answer &&
+      pai_proto_conn_state(s->conn) == PAI_PROTO_STATE_OPEN) {
+    TEST_SLEEP_MS(800); /* connection stays up, PINGs unanswered */
+  } else {
+    while (!s->stop &&
+           pai_proto_conn_state(s->conn) != PAI_PROTO_STATE_CLOSED) {
+      (void)pai_proto_conn_poll(s->conn, &frames);
+    }
+  }
+  pai_proto_conn_destroy(s->conn);
+  pai_proto_tcp_transport_destroy(&t);
+  s->finished = 1;
 }
 
 TEST_MAIN_BEGIN()
@@ -398,6 +469,118 @@ TEST_MAIN_BEGIN()
 
   CHECK(pai_proto_tcp_connect("127.0.0.1", port, &t) == PAI_ERR_IO);
   CHECK(pai_proto_tcp_connect("nonexistent.invalid", 9, &t) == PAI_ERR_IO);
+}
+
+/* ------------------------------------------------------------------ */
+/* pai_proto_ping over a real TCP connection (server thread)           */
+/* ------------------------------------------------------------------ */
+
+{
+  pai_proto_tcp_listener_t *lst = NULL;
+  pai_proto_conn_t server_conn;
+  ping_server_ctx_t srv;
+  pai_proto_ping_result_t results[4];
+  uint32_t caps = 0;
+  uint16_t port = 0;
+  int waited = 0;
+
+  CHECK(pai_proto_tcp_listen(&lst, "127.0.0.1", 0) == PAI_OK);
+  CHECK(pai_proto_tcp_listener_port(lst, &port) == PAI_OK);
+
+  memset(&srv, 0, sizeof(srv));
+  srv.lst = lst;
+  srv.conn = &server_conn;
+  CHECK(pai_gw_thread_create(ping_server_thread, &srv) == PAI_OK);
+
+  /* The helper connects on its own; 4 pings, all must be answered. */
+  CHECK(pai_proto_ping("127.0.0.1", port, 4, results, &caps, 2000) ==
+        PAI_OK);
+  CHECK(caps != 0);
+  for (int i = 0; i < 4; i++) {
+    CHECK_EQ_UINT(results[i].lost, 0);
+    CHECK(results[i].rtt_ns > 0);
+  }
+
+  /* Stop the server thread and wait for it to exit before the stack
+   * conn/transport go out of scope (bounded: ~2 s). */
+  srv.stop = 1;
+  while (!srv.finished && waited < 200) {
+    TEST_SLEEP_MS(10);
+    waited++;
+  }
+  CHECK_EQ_UINT(srv.finished, 1);
+
+  pai_proto_tcp_listener_destroy(lst);
+}
+
+/* ------------------------------------------------------------------ */
+/* pai_proto_ping: negotiation refusal -> PAI_ERR_CAPABILITY           */
+/* ------------------------------------------------------------------ */
+
+{
+  pai_proto_tcp_listener_t *lst = NULL;
+  pai_proto_conn_t server_conn;
+  ping_server_ctx_t srv;
+  pai_proto_ping_result_t results[2];
+  uint16_t port = 0;
+  int waited = 0;
+
+  CHECK(pai_proto_tcp_listen(&lst, "127.0.0.1", 0) == PAI_OK);
+  CHECK(pai_proto_tcp_listener_port(lst, &port) == PAI_OK);
+
+  memset(&srv, 0, sizeof(srv));
+  srv.lst = lst;
+  srv.conn = &server_conn;
+  srv.refuse = 1;
+  CHECK(pai_gw_thread_create(ping_server_thread, &srv) == PAI_OK);
+
+  CHECK(pai_proto_ping("127.0.0.1", port, 2, results, NULL, 2000) ==
+        PAI_ERR_CAPABILITY);
+
+  srv.stop = 1;
+  while (!srv.finished && waited < 200) {
+    TEST_SLEEP_MS(10);
+    waited++;
+  }
+  CHECK_EQ_UINT(srv.finished, 1);
+  pai_proto_tcp_listener_destroy(lst);
+}
+
+/* ------------------------------------------------------------------ */
+/* pai_proto_ping: unresponsive server -> all pings lost               */
+/* ------------------------------------------------------------------ */
+
+{
+  pai_proto_tcp_listener_t *lst = NULL;
+  pai_proto_conn_t server_conn;
+  ping_server_ctx_t srv;
+  pai_proto_ping_result_t results[2];
+  uint16_t port = 0;
+  int waited = 0;
+
+  CHECK(pai_proto_tcp_listen(&lst, "127.0.0.1", 0) == PAI_OK);
+  CHECK(pai_proto_tcp_listener_port(lst, &port) == PAI_OK);
+
+  memset(&srv, 0, sizeof(srv));
+  srv.lst = lst;
+  srv.conn = &server_conn;
+  srv.no_answer = 1;
+  CHECK(pai_gw_thread_create(ping_server_thread, &srv) == PAI_OK);
+
+  /* 300 ms per-ping timeout; the server never answers. */
+  CHECK(pai_proto_ping("127.0.0.1", port, 2, results, NULL, 300) == PAI_OK);
+  for (int i = 0; i < 2; i++) {
+    CHECK_EQ_UINT(results[i].lost, 1);
+    CHECK_EQ_UINT(results[i].rtt_ns, 0);
+  }
+
+  srv.stop = 1;
+  while (!srv.finished && waited < 200) {
+    TEST_SLEEP_MS(10);
+    waited++;
+  }
+  CHECK_EQ_UINT(srv.finished, 1);
+  pai_proto_tcp_listener_destroy(lst);
 }
 
 /* ------------------------------------------------------------------ */

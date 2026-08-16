@@ -107,8 +107,10 @@ Implemented so far:
 - **`pai` CLI** (whitepaper §20 official tooling): `pai convert`
   (import + quantize), `pai inspect` (sections / meta / manifest / IR /
   tokenizer dump), `pai validate` (CRC + bounds + full model load),
-  `pai benchmark` (end-to-end generation timing) and `pai serve`
-  (OpenAI-compatible gateway, §26).
+  `pai benchmark` (end-to-end generation timing), `pai serve`
+  (OpenAI-compatible gateway, §26) and `pai proto-ping <host> <port>`
+  (Prospero Protocol connectivity check — negotiate, then report
+  per-ping RTT with min/median/max and loss via `pai_proto_ping`).
 - **Benchmark harness** (whitepaper §31): monotonic ns clock + median
   stats; `bench_gemm` validates correctness against the reference
   before timing, then reports min/median GFLOPS for the f32 and w8
@@ -144,8 +146,11 @@ Implemented so far:
   transport** (the desktop ↔ PS5 link): `pai_proto_tcp_connect`,
   `pai_proto_tcp_listen`/`accept` with ephemeral-port support, and
   pipe-compatible recv semantics (SO_RCVTIMEO-bounded, EOF →
-  `PAI_PROTO_CLOSE_PEER_GONE`). `test_tcp` runs the full §24 exchange,
-  pipelined PING/PONG, EOF and refused-connect over real sockets.
+  `PAI_PROTO_CLOSE_PEER_GONE`), plus a `pai_proto_ping` health check
+  (negotiate + timed PING/PONG with per-ping timeout and loss
+  accounting). `test_tcp` runs the full §24 exchange, pipelined
+  PING/PONG, EOF, refused-connect, negotiation-refusal and
+  lost-ping paths over real sockets.
 - CPU reference backend (correctness oracle): vecadd / vecmul / GEMM /
   relu / softmax / RMSNorm / LayerNorm / concat / copy / memset16
 - PM4 command-stream builder (hardware-qualified packet encodings)

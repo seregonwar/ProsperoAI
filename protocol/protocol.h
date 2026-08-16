@@ -368,6 +368,26 @@ void pai_proto_tcp_transport_destroy(pai_proto_transport_t *t);
  * seconds). Loopback and LAN peers return immediately.
  */
 
+/*
+ * Convenience health check (desktop tooling): connect to host:port,
+ * negotiate, then send `count` PINGs, waiting up to `timeout_ms` per
+ * ping for the core-auto-replied PONG. Per-ping outcome in
+ * results[].rtt_ns / results[].lost; the negotiated capability mask is
+ * returned through *out_caps (may be NULL). Returns PAI_ERR_IO when
+ * the connection cannot be established, PAI_ERR_CAPABILITY when the
+ * server refuses negotiation, PAI_ERR_TIMEOUT when negotiation itself
+ * times out, PAI_OK otherwise (individual ping losses are reported via
+ * results, not the status). `timeout_ms` 0 selects a 2000 ms default.
+ */
+typedef struct pai_proto_ping_result {
+  uint64_t rtt_ns; /* round-trip latency; 0 when lost              */
+  int lost;        /* 1 = no PONG within the per-ping timeout      */
+} pai_proto_ping_result_t;
+
+pai_status_t pai_proto_ping(const char *host, uint16_t port, uint32_t count,
+                            pai_proto_ping_result_t *results,
+                            uint32_t *out_caps, uint64_t timeout_ms);
+
 /* ------------------------------------------------------------------ */
 /* Connection                                                          */
 /* ------------------------------------------------------------------ */
