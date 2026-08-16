@@ -3147,6 +3147,44 @@ m0_exp_v0model(m0_ctx_t *ctx) {
     }
   }
 
+  /* G36: MUBUF with the T# in non-zeroed s[4:7], base = VA>>8.
+   * The G20/G21 used s[0:3] (s0-s1 hardware-zeroed) and the raw VA
+   * (unshifted). c[0] = 0xA5A5A5A5 + 3 = 0xA5A5A5A8 on a working read. */
+  if (!host) {
+    pai_gpu_reset(gpu);
+  }
+  {
+    uint32_t *c36 = (uint32_t *)ctx->c.cpu_addr;
+    uint64_t cva = ctx->c.gpu_addr;
+    memcpy(ctx->code.cpu_addr, pai_mubufload36_code,
+           PAI_G36_CODE_WORDS * sizeof(uint32_t));
+    if (host) {
+      pai_gpu_host_register_shader(gpu, ctx->code.gpu_addr,
+                                   pai_host_kernel_g8, NULL);
+    }
+    ud[0] = 0;
+    ud[1] = 0;
+    ud[2] = (uint32_t)(cva & 0xFFFFFFFFu);
+    ud[3] = (uint32_t)(cva >> 32);
+    ud[4] = (uint32_t)(cva >> 8);
+    ud[5] = 0;
+    ud[6] = 4096u;
+    ud[7] = PAI_G20_TBUF_WORD3;
+    m0_build_dispatch_stream(ctx, stream, M0_PM4_CAP, PAI_G36_RSRC2,
+                             PAI_EXP_THREADS_X, 1, ud, 8, &stream_len);
+    m0_run_gpu(ctx, stream, stream_len, c36, 128, 0xA5, "G36");
+    PAI_LOG_INFO_(PAI_SUB_GPU,
+                  "[M0-G36] c[0..3] = %08x %08x %08x %08x (want c0=%08x)\n",
+                  c36[0], c36[1], c36[2], c36[3],
+                  PAI_G20_VALUE + 3u);
+    {
+      uint32_t want0 = PAI_G20_VALUE + 3u;
+      uint32_t want1 = PAI_G20_VALUE + 4u + 3u;
+      int ok = (c36[0] == want0) && (c36[1] == want1);
+      m0_exp_report("G36", ok);
+    }
+  }
+
   /* G17: load from the kernel's own acqrb VA - does ANY load complete,
    * or only our dmem pages hang? */
   if (!host) {

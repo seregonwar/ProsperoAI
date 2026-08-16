@@ -127,6 +127,9 @@ const uint32_t pai_fbatch4_code[PAI_G33_CODE_WORDS] = {
 const uint32_t pai_fbatch5_code[] = {
 #include "gfx1013/pai_fbatch5.inc"
 };
+const uint32_t pai_mubufload36_code[PAI_G36_CODE_WORDS] = {
+#include "gfx1013/pai_mubufload36.inc"
+};
 
 const uint32_t pai_hbatch_code[] = {
 #include "gfx1013/pai_hbatch.inc"
