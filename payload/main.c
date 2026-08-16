@@ -1280,6 +1280,67 @@ m0_exp_v0model(m0_ctx_t *ctx) {
     }
   }
 
+  /* G7/G8: x4 per-thread broadcast + integer arithmetic. */
+  {
+    static const uint32_t g_offs[2] = {PAI_G7_OFF, PAI_G8_OFF};
+    static const uint32_t g_lens[2] = {PAI_G7_WORDS, PAI_G8_WORDS};
+    static const char *const g_names[2] = {"G7", "G8"};
+    uint32_t k = 0x00001000u;
+
+    for (uint32_t variant = 0; variant < 2; variant++) {
+      const char *name = g_names[variant];
+      uint32_t off = g_offs[variant];
+      uint32_t words = g_lens[variant];
+      if (!host) {
+        pai_gpu_reset(gpu);
+      }
+      memcpy(ctx->code.cpu_addr, &pai_gbatch_code[off],
+             words * sizeof(uint32_t));
+      if (host) {
+        pai_gpu_host_register_shader(gpu, ctx->code.gpu_addr,
+                                     variant == 0 ? pai_host_kernel_g7
+                                                  : pai_host_kernel_g8,
+                                     NULL);
+      }
+      ud[0] = 0;
+      ud[1] = 0;
+      ud[2] = (uint32_t)(ctx->c.gpu_addr & 0xFFFFFFFFu);
+      ud[3] = (uint32_t)(ctx->c.gpu_addr >> 32);
+      ud[4] = k;
+      ud[5] = 0;
+      m0_build_dispatch_stream(ctx, stream, M0_PM4_CAP, PAI_G8_RSRC2,
+                               PAI_EXP_THREADS_X, 1, ud, 6, &stream_len);
+      m0_run_gpu(ctx, stream, stream_len, c32, 128 * 4, 0xCC, name);
+
+      {
+        int ok = 1;
+        for (uint32_t i = 0; i < 8; i++) {
+          uint32_t want = variant == 0 ? i : i * 4 + k;
+          for (uint32_t j = 0; j < 4; j++) {
+            if (c32[i * 4 + j] != want) {
+              ok = 0;
+              PAI_LOG_ERROR_(PAI_SUB_GPU, "[M0-%s] c[%u] = %08x want %08x\n",
+                             name, i * 4 + j, c32[i * 4 + j], want);
+              break;
+            }
+          }
+          if (!ok) {
+            break;
+          }
+        }
+        m0_exp_report(name, ok);
+        if (!ok) {
+          PAI_LOG_ERROR_(PAI_SUB_GPU, "[M0-%s] c[0..15] = %08x %08x %08x "
+                         "%08x %08x %08x %08x %08x %08x %08x %08x %08x "
+                         "%08x %08x %08x %08x\n",
+                         name, c32[0], c32[1], c32[2], c32[3], c32[4], c32[5],
+                         c32[6], c32[7], c32[8], c32[9], c32[10], c32[11],
+                         c32[12], c32[13], c32[14], c32[15]);
+        }
+      }
+    }
+  }
+
   /* F5: shotgun — value in v0, v4, v5 at the store. */
   if (!host) {
     pai_gpu_reset(gpu);

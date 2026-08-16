@@ -270,6 +270,43 @@ pai_host_kernel_fbatch(void *ctx, const uint32_t user_data[16],
   return PAI_OK;
 }
 
+/* G7: x4 per-thread tid broadcast — c[4i..4i+3] = i. */
+pai_status_t
+pai_host_kernel_g7(void *ctx, const uint32_t user_data[16],
+                   uint32_t threads_x, uint32_t group_x) {
+  uint32_t *c = (uint32_t *)(uintptr_t)pai_ud64(user_data, 2);
+
+  (void)ctx;
+  (void)group_x;
+
+  for (uint32_t i = 0; i < threads_x; i++) {
+    c[i * 4 + 0] = i;
+    c[i * 4 + 1] = i;
+    c[i * 4 + 2] = i;
+    c[i * 4 + 3] = i;
+  }
+  return PAI_OK;
+}
+
+/* G8: per-thread int arithmetic — c[4i..4i+3] = tid*4 + k. */
+pai_status_t
+pai_host_kernel_g8(void *ctx, const uint32_t user_data[16],
+                   uint32_t threads_x, uint32_t group_x) {
+  uint32_t *c = (uint32_t *)(uintptr_t)pai_ud64(user_data, 2);
+  uint32_t k = user_data[4];
+
+  (void)ctx;
+  (void)group_x;
+
+  for (uint32_t i = 0; i < threads_x; i++) {
+    c[i * 4 + 0] = i * 4 + k;
+    c[i * 4 + 1] = i * 4 + k;
+    c[i * 4 + 2] = i * 4 + k;
+    c[i * 4 + 3] = i * 4 + k;
+  }
+  return PAI_OK;
+}
+
 pai_status_t
 pai_host_kernel_loadstore(void *ctx, const uint32_t user_data[16],
                           uint32_t threads_x, uint32_t group_x) {

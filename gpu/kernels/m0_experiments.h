@@ -109,6 +109,13 @@
 #define PAI_VECSCALAR_CODE_WORDS 14u
 #define PAI_VECSCALAR_K 1.5f
 
+/* G7/G8: x4 broadcast + per-thread integer arithmetic (pai_gbatch.inc). */
+#define PAI_G7_OFF 0u
+#define PAI_G7_WORDS 11u
+#define PAI_G8_OFF 11u
+#define PAI_G8_WORDS 15u
+#define PAI_G8_RSRC2 0x0000000Cu
+
 /* E31: loadstore with vaddr pairs 1 (v[2:3]) only. */
 #define PAI_LOADSTORE_GOLD_RSRC2 0x0000000Cu
 #define PAI_LOADSTORE_GOLD_CODE_WORDS 20u
@@ -155,6 +162,7 @@ extern const uint32_t pai_arith4_code[];
 extern const uint32_t pai_fbatch_code[];
 extern const uint32_t pai_shotgun_code[PAI_SHOTGUN_CODE_WORDS];
 extern const uint32_t pai_vecscalar_code[PAI_VECSCALAR_CODE_WORDS];
+extern const uint32_t pai_gbatch_code[];
 extern const uint32_t pai_v0model_code[];
 extern const uint32_t pai_loadstore_gold_code[PAI_LOADSTORE_GOLD_CODE_WORDS];
 extern const uint32_t pai_loadstore_code[PAI_LOADSTORE_CODE_WORDS];
