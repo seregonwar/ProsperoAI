@@ -1,33 +1,15 @@
 /*
  * ProsperoAI — OpenAI-compatible gateway (whitepaper §26)
  *
- * The network layer that makes a PS5 (or host) running ProsperoAI
- * usable as a local AI endpoint by existing applications: it exposes
- * the OpenAI REST surface and translates requests into runtime
- * operations.
+ * OpenAI REST surface over a local registry of .pai models (lazy open,
+ * per-model mutex). v0 endpoints: GET /healthz, /v1/models,
+ * /v1/models/{id}, POST /v1/completions, /v1/chat/completions,
+ * /v1/embeddings. Streaming uses chunked SSE frames
+ * (`data: {...}\n\n`, terminal `data: [DONE]`).
  *
- * v0 endpoints (the §26 minimum):
- *
- *   GET  /healthz                     liveness
- *   GET  /v1/models                   model listing
- *   GET  /v1/models/{id}              single model
- *   POST /v1/completions              text completions (streamable)
- *   POST /v1/chat/completions         chat completions (streamable)
- *   POST /v1/embeddings               embeddings (mean-pooled token
- *                                     embeddings, Phase 9 seed)
- *
- * Streaming uses chunked transfer encoding with OpenAI-style SSE
- * frames (`data: {...}\n\n`, terminal `data: [DONE]`).
- *
- * The gateway owns a small model registry (§22 repository seed):
- * entries are added by .pai path (or by scanning a directory); models
- * and their sessions are opened lazily on first use and guarded by a
- * per-model mutex so concurrent requests serialize only per model.
- *
- * The core handler pai_gw_handle_request is transport-agnostic: the
- * HTTP server (http.h) feeds it parsed requests and it writes through
- * the pai_http_resp_t sink — which also makes the whole OpenAI layer
- * unit-testable without sockets.
+ * pai_gw_handle_request is transport-agnostic: the HTTP server feeds
+ * it parsed requests and it writes through pai_http_resp_t, so the
+ * OpenAI layer is unit-testable without sockets.
  */
 
 #ifndef PAI_GATEWAY_GATEWAY_H
@@ -49,12 +31,17 @@ extern "C" {
 #define PAI_GW_MAX_MODELS 16u
 
 typedef struct pai_gw_model_entry {
-  char name[256];        /* registry id (file basename minus .pai)     */
-  char path[1024];       /* .pai container path                        */
-  pai_model_t *model;    /* lazy; NULL until first use                 */
+  char name[256];        /* registry id (basename minus .pai)          */
+  char path[1024];       /* local .pai container path                  */
+  pai_model_t *model;    /* lazy; NULL until first use (NULL: remote)  */
   pai_session_t *session;
   pai_gw_mutex_t *lock;  /* serializes generation on this model        */
   uint32_t broken;       /* set when open/session init failed          */
+  /* Remote (Prospero Protocol) entries: model stays NULL and each
+   * generation is bridged to the payload endpoint over TCP (§24/§25). */
+  int remote;
+  char remote_host[256];
+  uint16_t remote_port;
 } pai_gw_model_entry_t;
 
 typedef struct pai_gw {
@@ -69,6 +56,14 @@ pai_status_t pai_gw_init(pai_gw_t *gw);
 pai_status_t pai_gw_add_file(pai_gw_t *gw, const char *path);
 /* Scan `dir` for *.pai files and add each (best effort). */
 pai_status_t pai_gw_add_dir(pai_gw_t *gw, const char *dir);
+/*
+ * Register a remote payload model (Prospero Protocol endpoint,
+ * §24/§25). Generation is bridged per request over TCP; v0 transmits
+ * only the prompt (payload defaults for sampling) and does not bridge
+ * embeddings. PAI_ERR_MISMATCH on a duplicate name.
+ */
+pai_status_t pai_gw_add_remote(pai_gw_t *gw, const char *name,
+                               const char *host, uint16_t port);
 void pai_gw_destroy(pai_gw_t *gw);
 
 /* Find a registry entry by model name; NULL when absent. */
@@ -77,10 +72,9 @@ const pai_gw_model_entry_t *pai_gw_find(const pai_gw_t *gw,
 
 /*
  * Process one OpenAI request. `target` is the raw request target
- * (path + optional query); `body`/`body_len` the request body (may be
- * NULL/0). The response is written through `resp` (begin/write/end).
- * Returns PAI_OK when the request was answered (including 4xx/5xx
- * responses); PAI_ERR_INVALID_ARG on bad arguments.
+ * (path + optional query); `body`/`body_len` may be NULL/0. The
+ * response is written through `resp` (begin/write/end). PAI_OK even
+ * when the answer is a 4xx/5xx; PAI_ERR_INVALID_ARG on bad arguments.
  */
 pai_status_t pai_gw_handle_request(pai_gw_t *gw, const char *method,
                                    const char *target, const uint8_t *body,

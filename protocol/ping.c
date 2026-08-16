@@ -7,8 +7,8 @@
  * auto-replies PONG to PING, so no application callbacks are needed on
  * the server side; this is purely a client-side loop.
  *
- * Host-side only (like transport_tcp.c). Carries its own monotonic
- * clock to stay dependency-free inside the core.
+ * Host-side only (like transport_tcp.c). Uses the protocol library's
+ * shared monotonic clock (clock.c) for deadlines.
  */
 
 #include <protocol/protocol.h>
@@ -16,31 +16,6 @@
 #include <pai/log.h>
 
 #include <string.h>
-
-#ifdef _WIN32
-#define WIN32_LEAN_AND_MEAN
-#include <windows.h>
-static uint64_t
-proto_now_ns(void) {
-  static LARGE_INTEGER freq;
-  static int have_freq = 0;
-  LARGE_INTEGER c;
-  if (!have_freq) {
-    QueryPerformanceFrequency(&freq);
-    have_freq = 1;
-  }
-  QueryPerformanceCounter(&c);
-  return (uint64_t)((double)c.QuadPart * 1e9 / (double)freq.QuadPart);
-}
-#else
-#include <time.h>
-static uint64_t
-proto_now_ns(void) {
-  struct timespec ts;
-  clock_gettime(CLOCK_MONOTONIC, &ts);
-  return (uint64_t)ts.tv_sec * 1000000000ull + (uint64_t)ts.tv_nsec;
-}
-#endif
 
 /* ------------------------------------------------------------------ */
 /* client-side PONG tracking                                           */
@@ -60,7 +35,7 @@ ping_on_message(void *user, const pai_proto_frame_t *frame) {
       (frame->flags & PAI_PROTO_FLAG_REPLY) &&
       frame->request_id == c->expected_req) {
     c->got_pong = 1;
-    c->arrival_ns = proto_now_ns();
+    c->arrival_ns = pai_proto_now_ns();
   }
   return PAI_OK;
 }
@@ -68,7 +43,7 @@ ping_on_message(void *user, const pai_proto_frame_t *frame) {
 /* Pump the connection until OPEN, CLOSED (refused/EOF) or timeout. */
 static pai_status_t
 wait_open(pai_proto_conn_t *conn, uint64_t timeout_ms) {
-  uint64_t deadline = proto_now_ns() + timeout_ms * 1000000ull;
+  uint64_t deadline = pai_proto_now_ns() + timeout_ms * 1000000ull;
   uint32_t frames = 0;
 
   for (;;) {
@@ -82,7 +57,7 @@ wait_open(pai_proto_conn_t *conn, uint64_t timeout_ms) {
     if (pai_proto_conn_state(conn) == PAI_PROTO_STATE_CLOSED) {
       return PAI_ERR_IO; /* refused or peer vanished mid-negotiation */
     }
-    if (proto_now_ns() >= deadline) {
+    if (pai_proto_now_ns() >= deadline) {
       return PAI_ERR_TIMEOUT;
     }
   }
@@ -150,7 +125,7 @@ pai_proto_ping(const char *host, uint16_t port, uint32_t count,
 
   for (i = 0; i < count; i++) {
     uint64_t req = pai_proto_conn_new_request_id(&conn);
-    uint64_t t0 = proto_now_ns();
+    uint64_t t0 = pai_proto_now_ns();
     uint64_t deadline = t0 + timeout_ms * 1000000ull;
     uint32_t frames = 0;
 
@@ -171,7 +146,7 @@ pai_proto_ping(const char *host, uint16_t port, uint32_t count,
         results[i].rtt_ns = ctx.arrival_ns - t0;
         break;
       }
-      if (proto_now_ns() >= deadline) {
+      if (pai_proto_now_ns() >= deadline) {
         break; /* lost */
       }
       st = pai_proto_conn_poll(&conn, &frames);

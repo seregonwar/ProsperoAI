@@ -184,6 +184,14 @@ typedef struct pai_proto_frame {
 #define PAI_PROTO_U32_PAIR_SIZE 8u
 
 /* ------------------------------------------------------------------ */
+/* Timing                                                              */
+/* ------------------------------------------------------------------ */
+
+/* Monotonic clock in nanoseconds for protocol-side deadlines (host
+ * tooling: ping, the gateway remote bridge). */
+uint64_t pai_proto_now_ns(void);
+
+/* ------------------------------------------------------------------ */
 /* CRC-32 (ISO-HDLC, zlib polynomial 0xEDB88320)                       */
 /* ------------------------------------------------------------------ */
 

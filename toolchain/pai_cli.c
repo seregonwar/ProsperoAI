@@ -45,8 +45,8 @@ usage(void) {
       "  pai validate <model.pai>            full integrity + load check\n"
       "  pai benchmark <model.pai> [--steps N] [--prompt P]\n"
       "               time end-to-end generation\n"
-      "  pai serve    <model.pai>... [--host H] [--port N]\n"
-      "               OpenAI-compatible gateway (§26)\n"
+      "  pai serve    <model.pai>... [--remote [name@]host:port]...\n"
+      "               [--host H] [--port N]  OpenAI-compatible gateway (§26)\n"
       "  pai proto-ping <host> <port> [--count N]\n"
       "               Prospero Protocol connectivity check (§24/§25)\n");
 }
@@ -503,6 +503,69 @@ cmd_serve(int argc, char **argv) {
         return 2;
       }
       port = (uint16_t)p;
+    } else if (strcmp(argv[i], "--remote") == 0 && i + 1 < argc) {
+      /* Remote payload model: [name@]host:port (Prospero Protocol). */
+      const char *spec = argv[++i];
+      const char *at = strchr(spec, '@');
+      const char *colon = strrchr(spec, ':');
+      char name[256];
+      char hostbuf[256];
+      long p;
+      size_t name_n, host_n;
+
+      if (nmodels == 0) {
+        st = pai_gw_init(&gw);
+        if (st != PAI_OK) {
+          fprintf(stderr, "serve: %s\n", pai_status_str(st));
+          return 1;
+        }
+      }
+      if (colon == NULL) {
+        fprintf(stderr, "serve: --remote wants [name@]host:port\n");
+        pai_gw_destroy(&gw);
+        return 2;
+      }
+      {
+        char *endp = NULL;
+        p = strtol(colon + 1, &endp, 10);
+        if (endp == colon + 1 || *endp != '\0' || p < 1 || p > 65535) {
+          fprintf(stderr, "serve: --remote: invalid port\n");
+          pai_gw_destroy(&gw);
+          return 2;
+        }
+      }
+      host_n = (size_t)(colon - (at != NULL ? at + 1 : spec));
+      if (host_n == 0 || host_n >= sizeof(hostbuf)) {
+        fprintf(stderr, "serve: --remote: invalid host\n");
+        pai_gw_destroy(&gw);
+        return 2;
+      }
+      memcpy(hostbuf, at != NULL ? at + 1 : spec, host_n);
+      hostbuf[host_n] = '\0';
+      if (at != NULL) {
+        name_n = (size_t)(at - spec);
+        if (name_n == 0 || name_n >= sizeof(name)) {
+          fprintf(stderr, "serve: --remote: invalid name\n");
+          pai_gw_destroy(&gw);
+          return 2;
+        }
+        memcpy(name, spec, name_n);
+        name[name_n] = '\0';
+      } else {
+        if (strlen(hostbuf) >= sizeof(name)) {
+          fprintf(stderr, "serve: --remote: invalid name\n");
+          pai_gw_destroy(&gw);
+          return 2;
+        }
+        strcpy(name, hostbuf); /* default registry id: the host */
+      }
+      st = pai_gw_add_remote(&gw, name, hostbuf, (uint16_t)p);
+      if (st != PAI_OK) {
+        fprintf(stderr, "serve: remote %s: %s\n", spec, pai_status_str(st));
+        pai_gw_destroy(&gw);
+        return 1;
+      }
+      nmodels++;
     } else if (argv[i][0] != '-') {
       /* Model path. */
       if (nmodels == 0) {

@@ -4,8 +4,8 @@
 # Not compiled into PS5 payload builds (the payload talks the Prospero
 # Protocol; the gateway is the desktop/local-endpoint side of §26).
 if(PAI_PLATFORM STREQUAL "host")
-  pai_define_library(pai_gateway json.c gwsys.c http.c gateway.c)
-  target_link_libraries(pai_gateway PRIVATE pai_models)
+  pai_define_library(pai_gateway json.c gwsys.c http.c gateway.c remote.c)
+  target_link_libraries(pai_gateway PRIVATE pai_models pai_protocol)
   if(WIN32)
     target_link_libraries(pai_gateway PRIVATE ws2_32)
   else()

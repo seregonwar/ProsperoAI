@@ -108,17 +108,20 @@ Implemented so far:
   (import + quantize), `pai inspect` (sections / meta / manifest / IR /
   tokenizer dump), `pai validate` (CRC + bounds + full model load),
   `pai benchmark` (end-to-end generation timing), `pai serve`
-  (OpenAI-compatible gateway, §26) and `pai proto-ping <host> <port>`
-  (Prospero Protocol connectivity check — negotiate, then report
-  per-ping RTT with min/median/max and loss via `pai_proto_ping`).
+  (OpenAI-compatible gateway, §26; local `.pai` models and/or remote
+  payloads via `--remote [name@]host:port`) and
+  `pai proto-ping <host> <port>` (Prospero Protocol connectivity
+  check — negotiate, then report per-ping RTT with min/median/max and
+  loss via `pai_proto_ping`).
 - **Benchmark harness** (whitepaper §31): monotonic ns clock + median
   stats; `bench_gemm` validates correctness against the reference
   before timing, then reports min/median GFLOPS for the f32 and w8
   paths on the detected backend.
 - **OpenAI-compatible Gateway** (whitepaper §26, the first Desktop
   serving rung): a host-side HTTP/1.1 server speaking the OpenAI wire
-  protocol against `.pai` models. `pai serve <model.pai>... [--host H]
-  [--port N]` exposes:
+  protocol against local `.pai` models **and remote payloads over the
+  Prospero Protocol**. `pai serve <model.pai>... [--remote
+  [name@]host:port]... [--host H] [--port N]` exposes:
   - `GET /v1/models` — registry listing (and per-model lookup)
   - `POST /v1/completions` and `/v1/chat/completions` — tokenizer +
     sampler parameters (`temperature`/`top_p`/`top_k`/`max_tokens`),
@@ -128,6 +131,14 @@ Implemented so far:
     `pai_embed` SDK bridge (`pai_model_embed` / `pai_model_embed_dim`)
   - `stream: true` → SSE with per-token `chat.completion.chunk`
     frames and `data: [DONE]`
+  Remote entries (`pai_gw_add_remote` / the CLI `--remote` flag) are
+  served by **bridging each generation over the protocol**: the
+  gateway connects to the payload, negotiates, sends GENERATE, and
+  relays each TOKEN chunk straight into the response (`remote.c`,
+  `pai_gw_remote_generate`). Unreachable payloads and negotiation
+  refusals answer 502 Bad Gateway; remote embeddings are reported as
+  501 in v0 (no EMBED message yet), and v0 GENERATE carries only the
+  prompt, so remote sampling uses payload defaults.
   Ships its own dependency-free stack: `json.{h,c}` (bounds-checked
   JSON DOM parser with depth/node caps + writer), `gwsys.{h,c}`
   (Win32/POSIX sockets, threads, mutexes), `http.{h,c}` (request
@@ -135,7 +146,7 @@ Implemented so far:
   connection keep-alive-free v0). Models are lazily loaded and served
   under a per-model mutex; response ids are registry-unique. Error
   responses follow the OpenAI envelope (`error.message/type/param/
-  code`) with 400/404/500 semantics, including a friendly 400 for
+  code`) with 400/404/500/502 semantics, including a friendly 400 for
   prompts containing tokens outside the model's vocabulary.
 - **Prospero Protocol** (whitepaper §24/§25): transport-independent
   binary protocol — 40-byte frames with CRC-32, request ids with

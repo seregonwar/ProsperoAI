@@ -1,9 +1,11 @@
 #include "test.h"
 
 #include <gateway/gateway.h>
+#include <gateway/remote.h>
 
 #include <importer.h>
 #include <model.h>
+#include <protocol/protocol.h>
 
 #include <math.h>
 #include <stdio.h>
@@ -256,6 +258,154 @@ static void
 server_run_thread(void *p) {
   /* Returns when the listener is closed from another thread. */
   (void)pai_http_server_run((pai_http_server_t *)p);
+}
+
+/* ---- remote payload probe (Prospero protocol server thread) ---- */
+
+typedef struct remote_probe {
+  pai_proto_tcp_listener_t *lst;
+  volatile int stop;
+  volatile int finished;
+  volatile int refuse;     /* 1 = HELLO_NACK on negotiation            */
+  volatile int no_answer;  /* 1 = accept GENERATE but never reply       */
+  volatile int n_served;
+} remote_probe_t;
+
+typedef struct probe_gen {
+  pai_proto_conn_t *conn;
+  remote_probe_t *probe;
+} probe_gen_t;
+
+static uint32_t
+probe_hello(void *user, uint32_t remote_caps) {
+  probe_gen_t *g = (probe_gen_t *)user;
+  (void)remote_caps;
+  return g->probe->refuse ? 0 : PAI_PROTO_CAP_KNOWN;
+}
+
+/* Echo the prompt back as 2-char TOKEN chunks (§24 example). */
+static pai_status_t
+probe_on_message(void *user, const pai_proto_frame_t *frame) {
+  probe_gen_t *g = (probe_gen_t *)user;
+  const char *prompt;
+  uint32_t plen;
+  uint32_t off = 0;
+  uint64_t sid = 0;
+
+  if (frame->msg_type != PAI_PROTO_MSG_GENERATE) {
+    return PAI_OK;
+  }
+  CHECK(pai_proto_msg_decode_generate(frame->payload, frame->payload_len,
+                                      &prompt, &plen) == PAI_OK);
+  if (g->probe->no_answer) {
+    return PAI_OK; /* negotiates, then goes silent */
+  }
+  CHECK(pai_proto_conn_session_open(g->conn, &sid) == PAI_OK);
+  CHECK(pai_proto_conn_send_raw(g->conn, PAI_PROTO_MSG_ACCEPTED,
+                                PAI_PROTO_FLAG_REPLY, frame->request_id, sid,
+                                NULL, 0) == PAI_OK);
+  while (off < plen) {
+    uint32_t n = plen - off;
+    uint32_t flags = 0;
+    uint8_t pay[128];
+    uint32_t tlen = 0;
+    if (n > 2) {
+      n = 2;
+    }
+    if (off == 0) {
+      flags |= PAI_PROTO_FLAG_STREAM_START;
+    }
+    if (off + n >= plen) {
+      flags |= PAI_PROTO_FLAG_STREAM_END;
+    }
+    CHECK(pai_proto_msg_encode_token(pay, sizeof(pay),
+                                     (const uint8_t *)prompt + off, n,
+                                     &tlen) == PAI_OK);
+    CHECK(pai_proto_conn_send_raw(g->conn, PAI_PROTO_MSG_TOKEN, flags,
+                                  frame->request_id, sid, pay, tlen) ==
+          PAI_OK);
+    off += n;
+  }
+  CHECK(pai_proto_conn_send_raw(g->conn, PAI_PROTO_MSG_COMPLETE, 0,
+                                frame->request_id, sid, NULL, 0) == PAI_OK);
+  return PAI_OK;
+}
+
+/* Accept connections and pump a server conn until closed. */
+static void
+remote_probe_thread(void *arg) {
+  remote_probe_t *p = (remote_probe_t *)arg;
+
+  while (!p->stop) {
+    pai_proto_transport_t t;
+    pai_proto_conn_t conn;
+    pai_proto_callbacks_t cb;
+    probe_gen_t gen;
+    uint32_t frames = 0;
+
+    if (pai_proto_tcp_accept(p->lst, &t) != PAI_OK) {
+      break; /* listener closed */
+    }
+    memset(&gen, 0, sizeof(gen));
+    gen.conn = &conn;
+    gen.probe = p;
+    memset(&cb, 0, sizeof(cb));
+    cb.on_hello = probe_hello;
+    cb.on_message = probe_on_message;
+    if (pai_proto_conn_init(&conn, PAI_PROTO_ROLE_SERVER, PAI_PROTO_CAP_KNOWN,
+                            &t, &cb, &gen) != PAI_OK) {
+      pai_proto_tcp_transport_destroy(&t);
+      break;
+    }
+    while (!p->stop &&
+           pai_proto_conn_state(&conn) != PAI_PROTO_STATE_CLOSED) {
+      (void)pai_proto_conn_poll(&conn, &frames);
+    }
+    if (p->stop) {
+      pai_proto_conn_destroy(&conn);
+      pai_proto_tcp_transport_destroy(&t);
+      break;
+    }
+    p->n_served++;
+    pai_proto_conn_destroy(&conn);
+    pai_proto_tcp_transport_destroy(&t);
+  }
+  p->finished = 1;
+}
+
+/* Start a probe on an ephemeral port; *out_port receives it. */
+static int
+probe_start(remote_probe_t *p, pai_proto_tcp_listener_t **out_lst,
+            uint16_t *out_port) {
+  pai_proto_tcp_listener_t *lst = NULL;
+  uint16_t port = 0;
+  if (pai_proto_tcp_listen(&lst, "127.0.0.1", 0) != PAI_OK) {
+    return -1;
+  }
+  if (pai_proto_tcp_listener_port(lst, &port) != PAI_OK) {
+    pai_proto_tcp_listener_destroy(lst);
+    return -1;
+  }
+  memset(p, 0, sizeof(*p));
+  p->lst = lst;
+  if (pai_gw_thread_create(remote_probe_thread, p) != PAI_OK) {
+    pai_proto_tcp_listener_destroy(lst);
+    return -1;
+  }
+  *out_lst = lst;
+  *out_port = port;
+  return 0;
+}
+
+static void
+probe_stop(remote_probe_t *p, pai_proto_tcp_listener_t *lst) {
+  int waited = 0;
+  p->stop = 1;
+  pai_proto_tcp_listener_destroy(lst); /* unblock accept */
+  while (!p->finished && waited < 200) {
+    TEST_SLEEP_MS(10);
+    waited++;
+  }
 }
 
 TEST_MAIN_BEGIN()
@@ -649,6 +799,158 @@ CHECK(build_fixture());
   pai_gw_sock_close(cli);
   pai_http_server_close(&srv); /* aborts the accept loop */
   TEST_SLEEP_MS(100);
+}
+
+/* ---- remote models over the Prospero protocol ---- */
+{
+  pai_proto_tcp_listener_t *lst = NULL;
+  remote_probe_t probe;
+  pai_gw_t gw;
+  cap_t cap;
+  pai_json_doc_t doc;
+  int32_t root, choices, c0, msg;
+  uint16_t port = 0;
+
+  CHECK(probe_start(&probe, &lst, &port) == 0);
+
+  CHECK(pai_gw_init(&gw) == PAI_OK);
+  CHECK(pai_gw_add_remote(&gw, "remote-lm", "127.0.0.1", port) == PAI_OK);
+  CHECK(pai_gw_add_remote(&gw, "remote-lm", "127.0.0.1", port) ==
+        PAI_ERR_MISMATCH);
+  CHECK(pai_gw_add_remote(&gw, "", "127.0.0.1", port) == PAI_ERR_INVALID_ARG);
+  CHECK(pai_gw_add_remote(&gw, "x", NULL, port) == PAI_ERR_INVALID_ARG);
+  CHECK(pai_gw_add_remote(&gw, "x", "127.0.0.1", 0) == PAI_ERR_INVALID_ARG);
+
+  /* The registry lists remote entries like any other model. */
+  CHECK(gw_call(&gw, "GET", "/v1/models", NULL, &cap) == PAI_OK);
+  CHECK_EQ_INT(resp_status(&cap), 200);
+  CHECK(count_substr(&cap, "\"id\":\"remote-lm\"") == 1);
+
+  /* Non-stream completion: the probe echoes the prompt as 2-char
+   * chunks, so the response text is the prompt itself. */
+  CHECK(gw_call(&gw, "POST", "/v1/completions",
+                "{\"model\":\"remote-lm\",\"prompt\":\"abcde\","
+                "\"max_tokens\":8}",
+                &cap) == PAI_OK);
+  CHECK_EQ_INT(resp_status(&cap), 200);
+  CHECK(parse_resp_json(&cap, &doc) == 0);
+  root = pai_json_root(&doc);
+  choices = pai_json_member(&doc, root, "choices");
+  c0 = pai_json_array_at(&doc, choices, 0);
+  CHECK(strcmp(pai_json_str_member(&doc, c0, "text"), "abcde") == 0);
+  {
+    int32_t usage = pai_json_member(&doc, root, "usage");
+    /* 3 relayed chunks; prompt tokens are unknown to the gateway. */
+    CHECK_EQ_INT(
+        (int)pai_json_num(&doc, pai_json_member(&doc, usage,
+                                                "completion_tokens")),
+        3);
+    CHECK_EQ_INT(
+        (int)pai_json_num(&doc, pai_json_member(&doc, usage,
+                                                "prompt_tokens")),
+        0);
+  }
+  pai_json_destroy(&doc);
+
+  /* Streaming: one SSE frame per relayed chunk + [DONE]. */
+  CHECK(gw_call(&gw, "POST", "/v1/completions",
+                "{\"model\":\"remote-lm\",\"prompt\":\"abcdef\","
+                "\"max_tokens\":8,\"stream\":true}",
+                &cap) == PAI_OK);
+  CHECK_EQ_INT(resp_status(&cap), 200);
+  {
+    char sse[4096];
+    uint32_t sse_len = dechunk_body(&cap, sse, sizeof(sse));
+    CHECK_EQ_INT(count_substr_in(sse, sse_len, "data: {"), 3);
+    CHECK_EQ_INT(count_substr_in(sse, sse_len, "data: [DONE]"), 1);
+    CHECK(count_substr_in(sse, sse_len, "\"text\":\"ab\"") > 0);
+    CHECK(count_substr_in(sse, sse_len, "\"text\":\"ef\"") > 0);
+  }
+
+  /* Chat completions over remote. */
+  CHECK(gw_call(&gw, "POST", "/v1/chat/completions",
+                "{\"model\":\"remote-lm\",\"messages\":[{\"role\":\"user\","
+                "\"content\":\"hi\"}],\"max_tokens\":8}",
+                &cap) == PAI_OK);
+  CHECK_EQ_INT(resp_status(&cap), 200);
+  CHECK(parse_resp_json(&cap, &doc) == 0);
+  root = pai_json_root(&doc);
+  choices = pai_json_member(&doc, root, "choices");
+  c0 = pai_json_array_at(&doc, choices, 0);
+  msg = pai_json_member(&doc, c0, "message");
+  /* The gateway builds "role: content" prompts, which the probe
+   * echoes verbatim. */
+  CHECK(strcmp(pai_json_str_member(&doc, msg, "content"), "user: hi") == 0);
+  pai_json_destroy(&doc);
+
+  /* Embeddings are not bridged in v0. */
+  CHECK(gw_call(&gw, "POST", "/v1/embeddings",
+                "{\"model\":\"remote-lm\",\"input\":\"a\"}", &cap) ==
+        PAI_OK);
+  CHECK_EQ_INT(resp_status(&cap), 501);
+
+  probe_stop(&probe, lst);
+  CHECK_EQ_UINT(probe.finished, 1);
+  /* Three generation requests: the accept loop must have been reused. */
+  CHECK(probe.n_served >= 3);
+  pai_gw_destroy(&gw);
+}
+
+/* ---- remote: negotiation refusal and unreachable payload -> 502 ---- */
+{
+  pai_proto_tcp_listener_t *lst = NULL;
+  pai_proto_tcp_listener_t *dead = NULL;
+  remote_probe_t probe;
+  pai_gw_t gw;
+  cap_t cap;
+  uint16_t port = 0;
+  uint16_t dead_port = 0;
+
+  CHECK(probe_start(&probe, &lst, &port) == 0);
+  probe.refuse = 1;
+
+  /* Bind an ephemeral port and release it: nothing is listening. */
+  CHECK(pai_proto_tcp_listen(&dead, "127.0.0.1", 0) == PAI_OK);
+  CHECK(pai_proto_tcp_listener_port(dead, &dead_port) == PAI_OK);
+  pai_proto_tcp_listener_destroy(dead);
+
+  CHECK(pai_gw_init(&gw) == PAI_OK);
+  CHECK(pai_gw_add_remote(&gw, "refuse", "127.0.0.1", port) == PAI_OK);
+  CHECK(pai_gw_add_remote(&gw, "dead", "127.0.0.1", dead_port) == PAI_OK);
+
+  CHECK(gw_call(&gw, "POST", "/v1/completions",
+                "{\"model\":\"refuse\",\"prompt\":\"a\"}", &cap) == PAI_OK);
+  CHECK_EQ_INT(resp_status(&cap), 502);
+  CHECK(gw_call(&gw, "POST", "/v1/completions",
+                "{\"model\":\"dead\",\"prompt\":\"a\"}", &cap) == PAI_OK);
+  CHECK_EQ_INT(resp_status(&cap), 502);
+
+  probe_stop(&probe, lst);
+  pai_gw_destroy(&gw);
+}
+
+/* ---- remote bridge: unresponsive payload -> PAI_ERR_TIMEOUT ---- */
+{
+  pai_proto_tcp_listener_t *lst = NULL;
+  remote_probe_t probe;
+  uint32_t tokens = 0;
+  uint16_t port = 0;
+
+  CHECK(probe_start(&probe, &lst, &port) == 0);
+  probe.no_answer = 1;
+
+  CHECK(pai_gw_remote_generate("127.0.0.1", port, "hi", NULL, NULL,
+                               &tokens, 300) == PAI_ERR_TIMEOUT);
+  CHECK_EQ_UINT(tokens, 0);
+
+  /* Bad arguments. */
+  CHECK(pai_gw_remote_generate(NULL, port, "hi", NULL, NULL, NULL, 0) ==
+        PAI_ERR_INVALID_ARG);
+  CHECK(pai_gw_remote_generate("127.0.0.1", 0, "hi", NULL, NULL, NULL, 0) ==
+        PAI_ERR_INVALID_ARG);
+
+  probe_stop(&probe, lst);
+  CHECK_EQ_UINT(probe.finished, 1);
 }
 
 TEST_MAIN_END()

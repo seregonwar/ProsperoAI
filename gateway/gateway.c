@@ -3,6 +3,7 @@
  */
 
 #include "gateway.h"
+#include "remote.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -148,6 +149,37 @@ pai_gw_add_file(pai_gw_t *gw, const char *path) {
 }
 
 pai_status_t
+pai_gw_add_remote(pai_gw_t *gw, const char *name, const char *host,
+                  uint16_t port) {
+  pai_gw_model_entry_t *e;
+
+  if (gw == NULL || name == NULL || name[0] == '\0' || host == NULL ||
+      host[0] == '\0' || port == 0) {
+    return PAI_ERR_INVALID_ARG;
+  }
+  if (strpbrk(name, "/\\") != NULL) {
+    return PAI_ERR_INVALID_ARG; /* registry ids are path-safe */
+  }
+  if (gw->num_models >= PAI_GW_MAX_MODELS) {
+    return PAI_ERR_NOMEM;
+  }
+  if (strlen(name) >= sizeof(e->name) ||
+      strlen(host) >= sizeof(e->remote_host)) {
+    return PAI_ERR_INVALID_ARG;
+  }
+  if (find_entry(gw, name) != NULL) {
+    return PAI_ERR_MISMATCH; /* duplicate registry id */
+  }
+  e = &gw->models[gw->num_models];
+  strcpy(e->name, name);
+  strcpy(e->remote_host, host);
+  e->remote_port = port;
+  e->remote = 1;
+  gw->num_models++;
+  return PAI_OK;
+}
+
+pai_status_t
 pai_gw_add_dir(pai_gw_t *gw, const char *dir) {
   pai_status_t st = PAI_OK;
   uint32_t added = 0;
@@ -252,13 +284,18 @@ bool_member(const pai_json_doc_t *doc, int32_t obj, const char *key,
   return pai_json_type(doc, m) == PAI_JSON_BOOL ? pai_json_bool(doc, m) : def;
 }
 
-/* Open the model + session behind an entry (under its lock). */
+/* Open the model + session behind an entry (under its lock). Remote
+ * entries have nothing to open locally: generation is bridged over the
+ * Prospero Protocol per request. */
 static pai_status_t
 ensure_ready(pai_gw_model_entry_t *e) {
   pai_status_t st;
 
   if (e->broken) {
     return PAI_ERR_INVALID_ARG;
+  }
+  if (e->remote) {
+    return PAI_OK;
   }
   if (e->model == NULL) {
     st = pai_model_open(NULL, e->path, &e->model);
@@ -339,6 +376,7 @@ typedef struct gw_gen_ctx {
   int failed;
   uint64_t created;
   char id[64];
+  uint32_t generated;   /* completion tokens (usage reporting)     */
 } gw_gen_ctx_t;
 
 static void
@@ -522,11 +560,17 @@ handle_completions(pai_gw_t *gw, const uint8_t *body, uint32_t body_len,
       return PAI_OK;
     }
 
-    /* Apply request sampling config + generation cap. */
-    entry->session->sampler.temperature = (float)temp;
-    entry->session->sampler.top_k = (uint32_t)top_k;
-    entry->session->sampler.top_p = (float)top_p;
-    pai_session_set_generation(entry->session, max_tokens, 0);
+    if (!entry->remote) {
+      /* Apply request sampling config + generation cap (local only:
+       * the v0 GENERATE message carries just the prompt, so remote
+       * generation uses the payload's default settings). The prompt
+       * buffer above (GW_PROMPT_MAX, 65536) already bounds the length
+       * below the wire's u16 limit, so no extra check is needed. */
+      entry->session->sampler.temperature = (float)temp;
+      entry->session->sampler.top_k = (uint32_t)top_k;
+      entry->session->sampler.top_p = (float)top_p;
+      pai_session_set_generation(entry->session, max_tokens, 0);
+    }
 
     if (ctx.stream) {
       pai_http_resp_begin(resp, 200, "text/event-stream", 1);
@@ -547,20 +591,39 @@ handle_completions(pai_gw_t *gw, const uint8_t *body, uint32_t body_len,
         pai_http_resp_write(resp, "\n\n", 2);
         pai_json_wb_destroy(&wb);
       }
-      st = pai_session_generate(entry->session, prompt, gen_on_token, &ctx);
+      if (entry->remote) {
+        st = pai_gw_remote_generate(entry->remote_host, entry->remote_port,
+                                    prompt, gen_on_token, &ctx,
+                                    &ctx.generated, 0);
+        ctx.failed = ctx.failed || st != PAI_OK;
+      } else {
+        st = pai_session_generate(entry->session, prompt, gen_on_token, &ctx);
+        ctx.generated = (uint32_t)entry->session->generated_tokens;
+      }
       pai_http_resp_write(resp, "data: [DONE]\n\n", 15);
       pai_http_resp_end(resp);
     } else {
-      st = pai_session_generate(entry->session, prompt, gen_on_token, &ctx);
+      if (entry->remote) {
+        st = pai_gw_remote_generate(entry->remote_host, entry->remote_port,
+                                    prompt, gen_on_token, &ctx,
+                                    &ctx.generated, 0);
+        ctx.failed = ctx.failed || st != PAI_OK;
+      } else {
+        st = pai_session_generate(entry->session, prompt, gen_on_token, &ctx);
+        ctx.generated = (uint32_t)entry->session->generated_tokens;
+      }
       if (st == PAI_OK && !ctx.failed) {
-        /* Prompt token count for usage reporting. */
+        /* Prompt token count for usage reporting (remote: the payload
+         * owns the tokenizer, so v0 reports prompt_tokens as 0). */
         uint32_t ptok = 0;
-        uint32_t ids[4096];
-        uint32_t nids = 0;
-        if (pai_tok_encode(&entry->model->tokenizer, prompt,
-                           (uint32_t)strlen(prompt), ids, 4096, &nids) ==
-                            PAI_OK) {
-          ptok = nids;
+        if (!entry->remote) {
+          uint32_t ids[4096];
+          uint32_t nids = 0;
+          if (pai_tok_encode(&entry->model->tokenizer, prompt,
+                             (uint32_t)strlen(prompt), ids, 4096, &nids) ==
+                              PAI_OK) {
+            ptok = nids;
+          }
         }
         {
           pai_json_wb_t wb;
@@ -585,16 +648,17 @@ handle_completions(pai_gw_t *gw, const uint8_t *body, uint32_t body_len,
             pai_json_wb_puts(&wb, ",\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":");
           }
           pai_json_wb_putf(&wb, "%u,\"completion_tokens\":%llu,\"total_tokens\":%u}}",
-                           ptok,
-                           (unsigned long long)entry->session->generated_tokens,
-                           ptok + (uint32_t)entry->session->generated_tokens);
+                           ptok, (unsigned long long)ctx.generated,
+                           ptok + ctx.generated);
           send_raw(resp, 200, "application/json", wb.buf, wb.len);
           pai_json_wb_destroy(&wb);
         }
       } else {
-        if (st == PAI_ERR_MISMATCH) {
+        if (st == PAI_ERR_MISMATCH && !entry->remote) {
           send_error(resp, 400, "invalid_request_error",
                      "input contains tokens outside the model's vocabulary");
+        } else if (entry->remote && st != PAI_OK) {
+          send_error(resp, 502, "server_error", "remote payload error");
         } else {
           send_error(resp, 500, "server_error",
                      st == PAI_OK ? "generation failed" : pai_status_str(st));
@@ -648,6 +712,12 @@ handle_embeddings(pai_gw_t *gw, const uint8_t *body, uint32_t body_len,
   if (entry == NULL) {
     pai_json_destroy(&doc);
     send_error(resp, 404, "invalid_request_error", "model not found");
+    return PAI_OK;
+  }
+  if (entry->remote) {
+    pai_json_destroy(&doc);
+    send_error(resp, 501, "server_error",
+               "remote models do not expose embeddings in v0");
     return PAI_OK;
   }
   input_node = pai_json_member(&doc, root, "input");
