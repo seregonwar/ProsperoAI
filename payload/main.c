@@ -1008,6 +1008,16 @@ m0_stage_e(m0_ctx_t *ctx) {
   if (!host) {
     pai_gpu_reset(gpu);
   }
+  m0_exp_golden_mutant(ctx, "G5", 0, 0x007D0602u); /* data v6, vaddr pair 1 */
+
+  if (!host) {
+    pai_gpu_reset(gpu);
+  }
+  m0_exp_golden_mutant(ctx, "G6", 0, 0x007D0404u); /* data v4, vaddr pair 2 */
+
+  if (!host) {
+    pai_gpu_reset(gpu);
+  }
   m0_exp_golden_mutant(ctx, "G4", 0xDC780000u, 0x007D0604u); /* my store */
 
   if (!host) {
