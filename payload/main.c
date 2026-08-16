@@ -1151,6 +1151,97 @@ m0_exp_v0model(m0_ctx_t *ctx) {
   return 0;
 }
 
+/* E38: MUBUF per-thread load. E39: arithmetic milestone (no loads). */
+static int
+m0_exp_loads_arith(m0_ctx_t *ctx) {
+  pai_gpu_device_t *gpu = ctx->gpu;
+  uint32_t stream[M0_PM4_CAP];
+  uint32_t stream_len;
+  uint32_t ud[8];
+  uint32_t *a32 = (uint32_t *)ctx->a.cpu_addr;
+  uint32_t *c32 = (uint32_t *)ctx->c.cpu_addr;
+  int host = pai_gpu_device_backend(gpu) == PAI_GPU_BACKEND_HOST_REF;
+
+  /* E38: MUBUF load copy. T# candidate A (radv-style). */
+  if (!host) {
+    pai_gpu_reset(gpu);
+  }
+  {
+    memcpy(ctx->code.cpu_addr, pai_mubufload_code,
+           PAI_MUBUFLOAD_CODE_WORDS * sizeof(uint32_t));
+    if (host) {
+      pai_gpu_host_register_shader(gpu, ctx->code.gpu_addr,
+                                   pai_host_kernel_mubufload, NULL);
+    }
+    for (uint32_t i = 0; i < PAI_EXP_THREADS_X; i++) {
+      a32[i] = 0x38383838u + i;
+    }
+    ud[0] = (uint32_t)(ctx->a.gpu_addr & 0xFFFFFFFFu);
+    ud[1] = (uint32_t)(ctx->a.gpu_addr >> 32);
+    ud[2] = 1024u;       /* num_records */
+    ud[3] = 0x00097688u; /* dst_sel x/y/z/w, float, 32, elem 4B */
+    ud[4] = (uint32_t)(ctx->c.gpu_addr & 0xFFFFFFFFu);
+    ud[5] = (uint32_t)(ctx->c.gpu_addr >> 32);
+    m0_build_dispatch_stream(ctx, stream, M0_PM4_CAP, PAI_MUBUFLOAD_RSRC2,
+                             PAI_EXP_THREADS_X, 1, ud, 6, &stream_len);
+    m0_run_gpu(ctx, stream, stream_len, c32, 128, 0xCC, "E38");
+    {
+      int ok = 1;
+      for (uint32_t i = 0; i < PAI_EXP_THREADS_X; i++) {
+        if (c32[i] != a32[i]) {
+          ok = 0;
+          break;
+        }
+      }
+      m0_exp_report("E38", ok);
+      if (!ok) {
+        PAI_LOG_ERROR_(PAI_SUB_GPU, "[M0-E38] c[0..7] = %08x %08x %08x "
+                       "%08x %08x %08x %08x %08x\n",
+                       c32[0], c32[1], c32[2], c32[3], c32[4], c32[5], c32[6],
+                       c32[7]);
+      }
+    }
+  }
+
+  /* E39: THE MILESTONE — GPU arithmetic, no loads: c[i] = (float)i + k. */
+  if (!host) {
+    pai_gpu_reset(gpu);
+  }
+  {
+    float k = 1.5f;
+    memcpy(ctx->code.cpu_addr, pai_arith_code,
+           PAI_ARITH_CODE_WORDS * sizeof(uint32_t));
+    if (host) {
+      pai_gpu_host_register_shader(gpu, ctx->code.gpu_addr,
+                                   pai_host_kernel_arith, NULL);
+    }
+    ud[0] = 0;
+    ud[1] = 0;
+    ud[2] = (uint32_t)(ctx->c.gpu_addr & 0xFFFFFFFFu);
+    ud[3] = (uint32_t)(ctx->c.gpu_addr >> 32);
+    memcpy(&ud[4], &k, sizeof(k));
+    m0_build_dispatch_stream(ctx, stream, M0_PM4_CAP, PAI_ARITH_RSRC2,
+                             PAI_EXP_THREADS_X, 1, ud, 5, &stream_len);
+    m0_run_gpu(ctx, stream, stream_len, c32, 128, 0xCC, "E39");
+    {
+      float *cf = (float *)ctx->c.cpu_addr;
+      int ok = 1;
+      for (uint32_t i = 0; i < PAI_EXP_THREADS_X; i++) {
+        float want = (float)i + k;
+        if (cf[i] != want) {
+          ok = 0;
+          PAI_LOG_ERROR_(PAI_SUB_GPU, "[M0-E39] c[%u] = %f want %f\n", i,
+                         (double)cf[i], (double)want);
+          break;
+        }
+      }
+      m0_exp_report("E39", ok);
+    }
+  }
+
+  return 0;
+}
+
 static int
 m0_stage_e(m0_ctx_t *ctx) {
   pai_gpu_device_t *gpu = ctx->gpu;
@@ -1160,6 +1251,9 @@ m0_stage_e(m0_ctx_t *ctx) {
   PAI_LOG_INFO_(PAI_SUB_GPU,
                 "[M0-E] order: safe (patched/proven) first, controls last; "
                 "gc reset between experiments\n");
+
+  /* E38/E39: MUBUF loads + the arithmetic milestone. */
+  m0_exp_loads_arith(ctx);
 
   /* E34-E37: the flat v0-broadcast model (loads + vecadd milestone). */
   m0_exp_v0model(ctx);

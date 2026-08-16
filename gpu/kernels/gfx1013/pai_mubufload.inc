@@ -1,0 +1,5 @@
+/* Generated from mubufload.s by llvm-mc 18 (gfx1013). Do not edit. */
+    0x7E020300u, 0x34020282u, 0xE0301000u, 0x80000001u,
+    0xBF8C3F70u, 0x7E040204u, 0x7E060205u, 0xD70F6A02u,
+    0x00020302u, 0xD5286A03u, 0x01A90103u, 0xDC700000u,
+    0x007D0402u, 0xBF810000u,
