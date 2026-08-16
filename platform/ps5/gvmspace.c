@@ -171,15 +171,37 @@ pai_gvmspace_fix(uint64_t gpu_va, uint64_t phys, uint64_t size) {
         continue;
       }
 
-      if (start >= 0x100000000ULL && size2 >= 0x1000 &&
-          size2 < 0x4000000000ULL && gpu_va >= start &&
-          gpu_va < start + size2) {
+      /* Strict validation: sane GPU VA base, sane size, and the probe
+       * VA must sit inside the range. */
+      if (start < 0x100000000ULL || start >= 0x400000000ULL ||
+          size2 < 0x100000ULL || size2 >= 0x100000000ULL ||
+          gpu_va < start || gpu_va >= start + size2) {
+        continue;
+      }
+
+      {
         uint64_t pdir = 0;
+        uint64_t n_start = 0, n_size = 0;
         if (kernel_copyout(data_base + off + PAI_GVM_PAGE_DIR_OFF, &pdir, 8) !=
             0) {
           continue;
         }
-        if ((pdir & 0xFFF) != 0 || pdir < 0x1000) {
+        /* The page directory must be a real physical page. */
+        if (pdir < 0x1000 || pdir >= 0x400000000ULL || (pdir & 0xFFF) != 0) {
+          continue;
+        }
+        /* Array sanity: the next entry must be empty or plausible. */
+        if (kernel_copyout(data_base + off + PAI_GVM_ENTRY_SIZE +
+                               PAI_GVM_START_VA_OFF,
+                           &n_start, 8) != 0 ||
+            kernel_copyout(data_base + off + PAI_GVM_ENTRY_SIZE +
+                               PAI_GVM_SIZE_OFF,
+                           &n_size, 8) != 0) {
+          continue;
+        }
+        if (!(n_start == 0 ||
+              (n_start >= 0x100000000ULL && n_start < 0x400000000ULL &&
+               n_size < 0x100000000ULL))) {
           continue;
         }
         g.entry_addr = data_base + off;
