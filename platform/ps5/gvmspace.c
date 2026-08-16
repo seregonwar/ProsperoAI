@@ -270,22 +270,19 @@ pai_cpu_phys_of_va(uint64_t va, uint64_t *out_phys) {
     return -1;
   }
 
-  /* The inline vm_pmap starts with pm_cr3: a physical address < 4 GB.
-   * Scan the vmspace for a qword that looks like a CR3. */
-  for (intptr_t off = 0; off < 0x800; off += 8) {
-    uint64_t v = kernel_getlong(vmspace + off);
-    if (v < 0x400000000ULL && (v & 0xFFFULL) == 0) {
-      uint64_t next = kernel_getlong(vmspace + off + 8);
-      /* pm_cr3 followed by a kernel VA or another phys: plausible. */
-      if ((next == 0) || (next < 0x400000000ULL) ||
-          (next > 0xFFFF800000000000ULL)) {
+  /* The inline vm_pmap holds pm_cr3 (FreeBSD amd64: after the mutex). */
+  {
+    intptr_t pmap = vmspace + KERNEL_OFFSET_VMSPACE_VM_PMAP;
+    for (int off = 0; off <= 0x18; off += 8) {
+      uint64_t v = kernel_getlong(pmap + off);
+      if (v < 0x400000000ULL && (v & 0xFFFULL) == 0) {
         cr3 = v;
         break;
       }
     }
   }
   if (!cr3) {
-    PAI_LOG_INFO_(PAI_SUB_GPU, "cpu phys: no CR3 candidate in vmspace\n");
+    PAI_LOG_INFO_(PAI_SUB_GPU, "cpu phys: no CR3 in vm_pmap\n");
     return -1;
   }
   PAI_LOG_INFO_(PAI_SUB_GPU, "cpu phys: cr3=0x%llx for va=0x%llx\n",
