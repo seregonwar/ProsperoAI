@@ -156,6 +156,11 @@ pai_gvm_walk(pai_gvmspace_ctx_t *g, uint64_t va, uint64_t *out_pde_addr,
 /* Diagnostic: dump the process vmspace pointer landscape so the real
  * 9.40 GPU-pmap layout can be derived from hardware instead of from
  * the 11.20 spoofer assumptions. Read-only. */
+/* Live values captured by the diagnostic (read-only). */
+static uint64_t g_diag_gpu_pml4_phys;
+static intptr_t g_diag_dmap;
+static int g_diag_have_layout;
+
 pai_status_t
 pai_gvmspace_diag(void) {
   intptr_t proc = kernel_get_proc(getpid());
@@ -200,15 +205,45 @@ pai_gvmspace_diag(void) {
   {
     intptr_t pmap = (intptr_t)kernel_getlong(vmspace + 0x1D8);
     if (pmap && pmap != -1) {
+      uint64_t va20 = kernel_getlong(pmap + 0x20);
+      uint64_t ph28 = kernel_getlong(pmap + 0x28);
+
       for (int i = 8; i < 32; i++) {
         v = kernel_getlong(pmap + i * 8);
         PAI_LOG_INFO_(PAI_SUB_GPU, "gvm diag: pmap2+0x%lx = 0x%llx\n",
                       (unsigned long)(i * 8), (unsigned long long)v);
       }
+
+      /* The (VA, phys) pair at +0x20/+0x28 is the page-table mapping;
+       * VA - phys = the direct-map base, phys = the pml4. */
+      if (va20 > 0xFFFF800000000000ULL && ph28 < 0x400000000ULL &&
+          va20 - ph28 > 0xFFFF800000000000ULL) {
+        g_diag_gpu_pml4_phys = ph28;
+        g_diag_dmap = (intptr_t)(va20 - ph28);
+        g_diag_have_layout = 1;
+        PAI_LOG_INFO_(PAI_SUB_GPU,
+                      "gvm diag: derived pml4=0x%llx dmap=0x%llx\n",
+                      (unsigned long long)ph28,
+                      (unsigned long long)(va20 - ph28));
+      }
     }
   }
 
   return PAI_OK;
+}
+
+/* Public accessors for the probe. */
+int pai_gvmspace_layout(uint64_t *out_pml4_phys, intptr_t *out_dmap) {
+  if (!g_diag_have_layout) {
+    return -1;
+  }
+  if (out_pml4_phys) {
+    *out_pml4_phys = g_diag_gpu_pml4_phys;
+  }
+  if (out_dmap) {
+    *out_dmap = g_diag_dmap;
+  }
+  return 0;
 }
 
 /* Read-only probe: walk a candidate GPU pml4 for `va` and report the

@@ -402,12 +402,16 @@ pai_gc_init(pai_gpu_device_t *device) {
   /* Read-only layout diagnostic for the GPU page-table work. */
   (void)pai_gvmspace_diag();
 
-  /* Probe the static GPU pml4 candidate (0x1430000, constant across
-   * boots per the diag) against a typical GPU VA. Read-only. */
+  /* Probe the LIVE GPU pml4 (from the diag) against a typical GPU VA.
+   * Read-only. */
   {
-    intptr_t dmap = 0xFFFFD79F00000000LL;
-    uint64_t probe_va = 0x200400000ULL;
-    (void)pai_gvmspace_probe(0x1430000ULL, probe_va, dmap);
+    uint64_t pml4_phys = 0;
+    intptr_t dmap = 0;
+    if (pai_gvmspace_layout(&pml4_phys, &dmap) == 0) {
+      (void)pai_gvmspace_probe(pml4_phys, 0x200400000ULL, dmap);
+    } else {
+      PAI_LOG_WARN_(PAI_SUB_GPU, "gvm probe: no layout available\n");
+    }
   }
 
   st->cb_buf = (pai_gpu_buffer_t *)calloc(1, sizeof(*st->cb_buf));

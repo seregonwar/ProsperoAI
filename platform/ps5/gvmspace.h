@@ -10,6 +10,13 @@
 #include <stdint.h>
 
 /*
+ * Retrieve the layout values the diagnostic derived (read-only):
+ * the GPU pml4 physical address and the direct-map base.
+ * Returns -1 when the layout is not known yet.
+ */
+int pai_gvmspace_layout(uint64_t *out_pml4_phys, intptr_t *out_dmap);
+
+/*
  * Read-only probe: walk a candidate GPU pml4 (physical address) for
  * `va` through the direct map and report the resulting PDE. No writes.
  */
