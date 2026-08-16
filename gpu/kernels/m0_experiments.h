@@ -259,6 +259,15 @@
 /* G36: MUBUF with the T# in non-zeroed s[4:7] (pai_mubufload36.inc). */
 #define PAI_G36_RSRC2 0x00000010u
 #define PAI_G36_CODE_WORDS 19u
+
+/* G37/G38: MUBUF format matrix (pai_mubufload37.inc). */
+#define PAI_G37_OFF 0u
+#define PAI_G37_WORDS 19u
+#define PAI_G38_OFF 19u
+#define PAI_G38_WORDS 19u
+#define PAI_G37_TBUF_WORD2 0x20002000u
+#define PAI_G37_TBUF_WORD3 0x31044FACu
+#define PAI_G38_TBUF_WORD3 0x31040080u
 #define PAI_G35_WORDS 15u
 #define PAI_G32_WORDS 16u
 #define PAI_G25_VALUE 0xDEAD0001u
@@ -366,6 +375,7 @@ extern const uint32_t pai_fbatch3_code[];
 extern const uint32_t pai_fbatch4_code[PAI_G33_CODE_WORDS];
 extern const uint32_t pai_fbatch5_code[];
 extern const uint32_t pai_mubufload36_code[PAI_G36_CODE_WORDS];
+extern const uint32_t pai_mubufload37_code[];
 extern const uint32_t pai_hbatch_code[];
 extern const uint32_t pai_hbatch2_code[];
 extern const uint32_t pai_hbatch3_code[PAI_H10_CODE_WORDS];

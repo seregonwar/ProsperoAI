@@ -3185,6 +3185,53 @@ m0_exp_v0model(m0_ctx_t *ctx) {
     }
   }
 
+  /* G37/G38: MUBUF format matrix - 32-bit DATA_FORMAT, OpenAGC cache
+   * word2, record counts 0x4FAC vs 128. */
+  if (!host) {
+    pai_gpu_reset(gpu);
+  }
+  {
+    static const uint32_t g_offs[2] = {PAI_G37_OFF, PAI_G38_OFF};
+    static const char *const g_names[2] = {"G37", "G38"};
+    static const uint32_t g_w3[2] = {PAI_G37_TBUF_WORD3,
+                                     PAI_G38_TBUF_WORD3};
+    uint32_t *c3x = (uint32_t *)ctx->c.cpu_addr;
+    uint64_t cva = ctx->c.gpu_addr;
+
+    for (uint32_t variant = 0; variant < 2; variant++) {
+      const char *name = g_names[variant];
+      if (!host) {
+        pai_gpu_reset(gpu);
+      }
+      memcpy(ctx->code.cpu_addr, &pai_mubufload37_code[g_offs[variant]],
+             PAI_G37_WORDS * sizeof(uint32_t));
+      if (host) {
+        pai_gpu_host_register_shader(gpu, ctx->code.gpu_addr,
+                                     pai_host_kernel_g8, NULL);
+      }
+      ud[0] = 0;
+      ud[1] = 0;
+      ud[2] = (uint32_t)(cva & 0xFFFFFFFFu);
+      ud[3] = (uint32_t)(cva >> 32);
+      ud[4] = (uint32_t)(cva >> 8);
+      ud[5] = 0;
+      ud[6] = PAI_G37_TBUF_WORD2;
+      ud[7] = g_w3[variant];
+      m0_build_dispatch_stream(ctx, stream, M0_PM4_CAP, PAI_G36_RSRC2,
+                               PAI_EXP_THREADS_X, 1, ud, 8, &stream_len);
+      m0_run_gpu(ctx, stream, stream_len, c3x, 128, 0xA5, name);
+      PAI_LOG_INFO_(PAI_SUB_GPU,
+                    "[M0-%s] word3 %08x: c[0..3] = %08x %08x %08x %08x\n",
+                    name, g_w3[variant], c3x[0], c3x[1], c3x[2], c3x[3]);
+      {
+        uint32_t want0 = PAI_G20_VALUE + 3u;
+        uint32_t want1 = PAI_G20_VALUE + 4u + 3u;
+        int ok = (c3x[0] == want0) && (c3x[1] == want1);
+        m0_exp_report(name, ok);
+      }
+    }
+  }
+
   /* G17: load from the kernel's own acqrb VA - does ANY load complete,
    * or only our dmem pages hang? */
   if (!host) {
