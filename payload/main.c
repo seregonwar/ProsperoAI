@@ -1818,6 +1818,40 @@ m0_exp_v0model(m0_ctx_t *ctx) {
     }
   }
 
+  /* G22: SMEM load + G15 store formula - the clean SMEM confirmation. */
+  if (!host) {
+    pai_gpu_reset(gpu);
+  }
+  {
+    uint32_t *c22 = (uint32_t *)ctx->c.cpu_addr;
+    memcpy(ctx->code.cpu_addr, pai_smemload_g15_code,
+           PAI_G22_CODE_WORDS * sizeof(uint32_t));
+    if (host) {
+      pai_gpu_host_register_shader(gpu, ctx->code.gpu_addr,
+                                   pai_host_kernel_g8, NULL);
+    }
+    ud[0] = 0;
+    ud[1] = 0;
+    ud[2] = (uint32_t)(ctx->c.gpu_addr & 0xFFFFFFFFu);
+    ud[3] = (uint32_t)(ctx->c.gpu_addr >> 32);
+    ud[4] = (uint32_t)(ctx->c.gpu_addr & 0xFFFFFFFFu);
+    ud[5] = (uint32_t)(ctx->c.gpu_addr >> 32);
+    m0_build_dispatch_stream(ctx, stream, M0_PM4_CAP, PAI_G22_RSRC2,
+                             PAI_EXP_THREADS_X, 1, ud, 6, &stream_len);
+    m0_run_gpu(ctx, stream, stream_len, c22, 128, 0xA5, "G22");
+    PAI_LOG_INFO_(PAI_SUB_GPU,
+                  "[M0-G22] c[0..7] = %08x %08x %08x %08x %08x %08x "
+                  "%08x %08x\n",
+                  c22[0], c22[1], c22[2], c22[3], c22[4], c22[5], c22[6],
+                  c22[7]);
+    {
+      uint32_t want0 = PAI_G20_VALUE + 3u;
+      uint32_t want1 = PAI_G20_VALUE + 4u + 3u;
+      int ok = (c22[0] == want0) && (c22[1] == want1);
+      m0_exp_report("G22", ok);
+    }
+  }
+
   /* G17: load from the kernel's own acqrb VA - does ANY load complete,
    * or only our dmem pages hang? */
   if (!host) {
