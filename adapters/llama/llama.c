@@ -1,28 +1,19 @@
 /*
- * ProsperoAI — LLaMA-family adapter (see llama.h)
+ * ProsperoAI — LLaMA-family adapter (see llama.h).
+ * Rebuilds the model as a sequence-mode compute graph:
  *
- * The translator rebuilds the model as a sequence-mode compute graph:
- *
- *   input [ctx, vocab] (one-hot) -> embed gemm -> per-layer block ->
+ *   input [ctx, vocab] one-hot -> embed gemm -> per-layer block ->
  *   final rmsnorm -> lm_head gemm -> logits [ctx, vocab]
  *
- * Per layer (input x [ctx, n_embd]):
- *   xn   = rmsnorm(x, attn_gamma)
- *   q/k/v = gemm(xn, wq/wk/wv)          (weights stored k-major for the
- *                                        C[m,n]=A[m,k]*B[k,n] executor)
- *   q/k/v reshaped to [heads, seq, hd] for RoPE + attention
- *   a    = causal_mha(rope(q), rope(k), v)
- *   o    = gemm(a, wo)
- *   x    = x + o
- *   xn2  = rmsnorm(x, ffn_gamma)
- *   gated= silu(gemm(xn2, wgate)) * gemm(xn2, wup)
- *   x    = x + gemm(gated, wdown)
+ * Per layer (x: [ctx, n_embd]):
+ *   xn  = rmsnorm(x, attn_gamma); q/k/v = gemm(xn, wq/wk/wv)
+ *   a   = causal_mha(rope(q), rope(k), v); x += gemm(a, wo)
+ *   x  += gemm(silu(gemm(rmsnorm(x), wgate)) * gemm(xn2, wup), wdown)
  *
- * All rank-2 GGUF weights are transposed from their native [out, in]
- * layout to [in, out]; token embeddings stay native (they already
- * match the executor's k-major convention). RoPE cos/sin tables are
- * params excluded from quantization (values in [-1, 1] would not
- * survive the q8/q4 packers).
+ * Rank-2 GGUF weights are transposed from native [out, in] to [in, out]
+ * (weights stored k-major for the C[m,n]=A[m,k]*B[k,n] executor); token
+ * embeddings stay native. RoPE cos/sin tables are params excluded from
+ * quantization (values in [-1, 1] would not survive the q8/q4 packers).
  */
 
 #include "llama.h"
@@ -468,7 +459,7 @@ pai_llama_import(const char *gguf_path, const char *out_path,
         }
       } else {
         slots[slot] = transpose2d(slots[0], vocab_n, n_embd);
-        n = vocab_n * n_embd;
+        n = (uint64_t)vocab_n * (uint64_t)n_embd; /* no u32 wrap */
         if (slots[slot] == NULL) {
           st = PAI_ERR_NOMEM;
           goto slots_done;
