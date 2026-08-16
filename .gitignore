@@ -38,3 +38,4 @@ __pycache__/
 *.zip
 /.desktop-runtime
 /desktop/.deps
+/.freebuff-collab
