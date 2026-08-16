@@ -96,6 +96,15 @@ pai_gpu_submit_q(pai_gpu_device_t *device, const uint32_t *pm4, uint32_t dwords,
 }
 
 pai_status_t
+pai_gpu_submit_acb(pai_gpu_device_t *device, const uint32_t *pm4,
+                   uint32_t dwords) {
+  /* ACB path: queue type 0xc = the special compute queue, and the CB
+   * descriptor uses the const-IB header (0x33). Implemented via the
+   * submit op with the queue_type's high bit marking const-IB mode. */
+  return device->ops->submit(device, pm4, dwords, 0x8000000Cu);
+}
+
+pai_status_t
 pai_gpu_wait_label(pai_gpu_device_t *device, uint64_t label_addr,
                    uint32_t label_value, uint64_t timeout_ns) {
   return device->ops->wait_label(device, label_addr, label_value, timeout_ns);

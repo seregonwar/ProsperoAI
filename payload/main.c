@@ -1,24 +1,13 @@
 /*
- * prosperoai.elf — PAI-M0 bring-up harness
+ * prosperoai.elf — PAI-M0 bring-up harness.
  *
- * First vertical slice (whitepaper §43):
+ * Stage A: /dev/gc DMA copy. Stage E: compute experiment matrix
+ * (bisecting gfx1013 dispatch on 9.40). Stage B0/B: golden memset +
+ * vecadd vs CPU reference. Stage C: dispatch latency.
  *
- *   bootstrap -> capability detection -> GPU memory allocation ->
- *   command submission -> simple tensor kernel -> readback ->
- *   CPU reference comparison -> benchmark
- *
- * Stage A proves the /dev/gc submission path with a raw IT_DMA_DATA
- * copy (hardware-proven packet layout).
- * Stage B dispatches the gfx1013 vecadd compute kernel and validates
- * the result against the CPU reference backend.
- * Stage C measures sustained dispatch+wait latency.
- *
- * Bring-up diagnostics: each stage submits on queue type 3 first, then
- * queue type 0, and falls back to polling the output buffer when the
- * EOP label never fires — so we can tell "the stream ran but the fence
- * did not" apart from "the stream never ran".
- *
- * Exit code: bit 0 = stage A failed, bit 1 = stage B failed.
+ * m0_run_gpu falls back to polling the output buffer when the EOP
+ * label never fires, to tell "ran but fence broken" from "never ran".
+ * Exit code: bit 0 = A failed, bit 1 = B failed.
  */
 
 #include <pai/api.h>
@@ -58,6 +47,7 @@ typedef struct m0_ctx {
   pai_gpu_buffer_t code;
   pai_gpu_buffer_t label;
   uint32_t label_value;
+  int acb_mode; /* 1 = submit via the special compute queue (pipe 0xc) */
   pai_bench_result_t bench;
 } m0_ctx_t;
 
@@ -114,23 +104,11 @@ m0_ctx_alloc_buffers(m0_ctx_t *ctx) {
   return 0;
 }
 
-/* ------------------------------------------------------------------ */
-/* Submission runner with bring-up diagnostics                         */
-/* ------------------------------------------------------------------ */
-
-/*
- * Append a completion signal to `stream` and run it on queue type 3.
- * `watch` is filled with `watch_fill` before each attempt; if the label
- * never fires but the GPU visibly modified `watch`, we know the stream
- * executed and only the fence path is broken.
- *
- * Fence ladder (all hardware-qualified layouts):
- *   1. action-based RELEASE_MEM EOP (OpenAGC runtime fence)
- *   2. IT_WRITE_DATA store (no event machinery)
- *   3. legacy SetEopFlip RELEASE_MEM
- *
- * Returns 0 on success, -1 when the stream never executed.
- */
+/* Runs `stream` on queue 3 with a completion signal appended. Fence
+ * ladder (hardware-qualified): eop-action → write-data → eop-legacy.
+ * `watch` is pre-filled with `watch_fill`; if the label times out but
+ * `watch` changed, the stream ran and only the fence is broken.
+ * Returns 0 on success, -1 when the stream never executed. */
 static int
 m0_run_gpu(m0_ctx_t *ctx, uint32_t *stream, uint32_t stream_len,
            void *watch, uint32_t watch_bytes, uint32_t watch_fill,
@@ -177,7 +155,9 @@ m0_run_gpu(m0_ctx_t *ctx, uint32_t *stream, uint32_t stream_len,
                    fence_names[fence], (unsigned long long)ctx->label.gpu_addr,
                    ctx->label_value);
 
-    st = pai_gpu_submit_q(ctx->gpu, stream, pb.len, 3);
+    st = ctx->acb_mode
+             ? pai_gpu_submit_acb(ctx->gpu, stream, pb.len)
+             : pai_gpu_submit_q(ctx->gpu, stream, pb.len, 3);
     if (st != PAI_OK) {
       PAI_LOG_ERROR_(PAI_SUB_GPU, "[%s] submit failed (fence=%s): %s\n",
                      stage, fence_names[fence], pai_status_str(st));
@@ -193,7 +173,7 @@ m0_run_gpu(m0_ctx_t *ctx, uint32_t *stream, uint32_t stream_len,
   return 0;
 }
 
-    /* Label timed out: did the GPU execute the stream anyway? */
+    /* Label timed out: did the GPU run the stream anyway? */
     {
       const uint8_t *w = (const uint8_t *)watch;
       uint32_t i;
@@ -222,9 +202,7 @@ m0_run_gpu(m0_ctx_t *ctx, uint32_t *stream, uint32_t stream_len,
   return -1;
 }
 
-/* ------------------------------------------------------------------ */
-/* Stage A: raw IT_DMA_DATA copy through /dev/gc                       */
-/* ------------------------------------------------------------------ */
+/* Stage A — raw IT_DMA_DATA copy through /dev/gc. */
 
 static int
 m0_stage_a(m0_ctx_t *ctx) {
@@ -269,9 +247,7 @@ m0_stage_a(m0_ctx_t *ctx) {
   return 0;
 }
 
-/* ------------------------------------------------------------------ */
-/* Stage E: compute bring-up experiment matrix (batch diagnostics)     */
-/* ------------------------------------------------------------------ */
+/* Stage E — compute bring-up experiment matrix. */
 
 static void
 m0_build_dispatch_stream(m0_ctx_t *ctx, uint32_t *stream, uint32_t cap,
@@ -308,12 +284,10 @@ m0_build_dispatch_stream(m0_ctx_t *ctx, uint32_t *stream, uint32_t cap,
   *out_len = pb.len;
 }
 
-/*
- * Full OpenAGC compute preamble (agcGfx1013DispatchComputeCommon):
- * context-control shadow enable + resource limits + destination enables
- * + START/NUM thread registers. The hardware-proven dispatch sequence
- * on the real driver; our minimal sequence skipped it.
- */
+/* Full OpenAGC dispatch preamble (agcGfx1013DispatchComputeCommon):
+ * context-control shadow enable, resource limits, destination enables,
+ * START/NUM thread registers — the driver sequence our minimal one
+ * skipped. */
 static void
 m0_emit_compute_preamble(pai_pm4_builder_t *pb, uint32_t threads_x) {
   uint32_t vals[6];
@@ -382,21 +356,11 @@ m0_exp_report(const char *name, int ok) {
   PAI_LOG_INFO_(PAI_SUB_GPU, "[M0-%s] %s\n", name, ok ? "PASS" : "FAIL");
 }
 
-/*
- * The OpenAGC (ACO-compiled, hardware-qualified) memset kernel sets bit 15
- * of every FLAT instruction word0 (e.g. 0xDC788000 for its global store);
- * llvm-mc 14 for gfx1013 does not (0xDC700000). Patch the flag into
- * uploaded experiment kernels to test whether gfx1013 requires it.
- *
- * A FLAT word0 is the first of the two instruction words: it carries the
- * 0xDC prefix in the top byte, the sub-opcode in bits 23:16 and zero low
- * bits (bit 15 clear); word1 carries ADDR/DATA. The patch targets
- * (PAI_*_FLAT_WORD, m0_experiments.h) index word0 of each FLAT
- * instruction in the checked-in encodings.
- *
- * Returns -1 if the target word is not a FLAT word0 (guard against
- * silently corrupting an immediate or a register field).
- */
+/* ACO's hardware-qualified memset kernel sets bit 15 of every FLAT
+ * word0 (e.g. 0xDC788000); llvm-mc 14 emits 0xDC700000. The patch
+ * targets (PAI_*_FLAT_WORD) index word0 — the DC-prefixed first word;
+ * word1 holds ADDR/DATA and must not be patched. Returns -1 if the
+ * target word is not a FLAT word0. */
 static int
 m0_patch_flat_bit15(uint32_t *code, uint32_t word_index) {
   if ((code[word_index] & 0xFF000000u) != 0xDC000000u) {
@@ -565,7 +529,7 @@ m0_exp_store_const64(m0_ctx_t *ctx, const char *name, int preamble) {
     pai_gpu_host_register_shader(ctx->gpu, ctx->code.gpu_addr,
                                  pai_host_kernel_store_const64, NULL);
   }
-  ud[0] = 0; /* ring offsets */
+  ud[0] = 0;
   ud[1] = 0;
   ud[2] = (uint32_t)(ctx->dst.gpu_addr & 0xFFFFFFFFu);
   ud[3] = (uint32_t)(ctx->dst.gpu_addr >> 32);
@@ -653,8 +617,8 @@ m0_exp_memset_preamble(m0_ctx_t *ctx, uint32_t blocks, const char *name) {
   return 0;
 }
 
-/* E8: user-data probe — 9 distinct slot values through the golden kernel;
- * reveals which SGPR slots feed the store data on this hardware. */
+/* E8: user-data probe — 9 distinct slot values through the golden
+ * kernel reveal which SGPR slots feed the store data. */
 static int
 m0_exp_ud_probe(m0_ctx_t *ctx, const char *name) {
   pai_pm4_builder_t pb;
@@ -708,9 +672,9 @@ m0_exp_ud_probe(m0_ctx_t *ctx, const char *name) {
   return 0;
 }
 
-/* E11: my store_const64 kernel with the exact golden register config
- * (RSRC2=0x92, TGID_X_EN, 9 user SGPRs) — isolates whether the golden
- * register config is what makes waves launch. */
+/* E11: store_const64 with the golden register config (RSRC2=0x92,
+ * TGID_X_EN, 9 user SGPRs) — isolates whether that config launches
+ * waves. */
 static int
 m0_exp_store_const64_golden_cfg(m0_ctx_t *ctx, const char *name) {
   pai_pm4_builder_t pb;
@@ -744,7 +708,7 @@ m0_exp_store_const64_golden_cfg(m0_ctx_t *ctx, const char *name) {
   vals[2] = 1;
   pai_pm4_set_sh_reg_compute(&pb, PAI_REG_COMPUTE_NUM_THREAD_X, 3, vals);
 
-  vals[0] = 0; /* ring offsets */
+  vals[0] = 0;
   vals[1] = 0;
   vals[2] = (uint32_t)(ctx->dst.gpu_addr & 0xFFFFFFFFu);
   vals[3] = (uint32_t)(ctx->dst.gpu_addr >> 32);
@@ -779,8 +743,7 @@ m0_exp_store_const64_golden_cfg(m0_ctx_t *ctx, const char *name) {
   return 0;
 }
 
-/* E12/E13: FLAT store variant probe — x2/x4 stores instead of the
- * single-dword flat_store_dword. */
+/* E12/E13: FLAT x2/x4 store variants vs flat_store_dword. */
 static int
 m0_exp_store64_variant(m0_ctx_t *ctx, const char *name,
                        const uint32_t *code, uint32_t code_words,
@@ -829,8 +792,8 @@ m0_exp_store64_variant(m0_ctx_t *ctx, const char *name,
   return 0;
 }
 
-/* E14: golden memset with the pattern placed IN the destination buffer
- * at offset 0x27C (the kernel's SMEM load reads it from there). */
+/* E14: golden memset with the pattern pre-placed in the destination at
+ * offset 0x27C (the kernel's SMEM load reads it from there). */
 static int
 m0_exp_memset_pattern_in_buf(m0_ctx_t *ctx, const char *name) {
   pai_pm4_builder_t pb;
@@ -843,14 +806,13 @@ m0_exp_memset_pattern_in_buf(m0_ctx_t *ctx, const char *name) {
   memcpy(ctx->code.cpu_addr, pai_memset16_code,
          PAI_MEMSET16_CODE_WORDS * sizeof(uint32_t));
   if (pai_gpu_device_backend(ctx->gpu) == PAI_GPU_BACKEND_HOST_REF) {
-    /* Host-only probe: the real kernel reads the pattern from the
-     * buffer (psbc ABI), which the host interpreter cannot emulate. */
+    /* The real kernel reads the pattern from the buffer (psbc ABI);
+     * the host interpreter cannot emulate that. */
     PAI_LOG_INFO_(PAI_SUB_GPU, "[M0-%s] skipped on host (buffer ABI test)\n",
                   name);
     return 0;
   }
 
-  /* Place the pattern at dst + 0x27C before dispatch. */
   memset(dst32, 0, 4096);
   memcpy((uint8_t *)dst32 + 0x27C, pattern, 16);
 
@@ -893,9 +855,8 @@ m0_exp_memset_pattern_in_buf(m0_ctx_t *ctx, const char *name) {
 }
 
 /* E15-E19: instruction bisection — each kernel adds one instruction
- * family to a minimal program; the first that stops executing on the
- * PS5 pinpoints the toxic instruction. Check = wave ran to completion
- * (label fired), except E19 which must also write the constant. */
+ * family; the first that hangs pinpoints the toxic instruction.
+ * Check = label fired, except E19 which must also write the constant. */
 static int
 m0_exp_bisect(m0_ctx_t *ctx, const char *name, uint32_t off,
               uint32_t words, int check_store, int patched) {
@@ -948,9 +909,8 @@ m0_exp_bisect(m0_ctx_t *ctx, const char *name, uint32_t off,
   return 0;
 }
 
-/* G-series: mutate the golden (executing) kernel toward my kernel, one
- * step at a time, until execution breaks. The mutation step that kills
- * it is the real difference. */
+/* G-series: mutate the golden kernel toward mine one step at a time;
+ * the mutation that breaks execution is the real difference. */
 static int
 m0_exp_golden_mutant(m0_ctx_t *ctx, const char *name, uint32_t store_word0,
                      uint32_t store_word1) {
@@ -1149,10 +1109,8 @@ m0_exp_v0model(m0_ctx_t *ctx) {
       m0_exp_report("E37", ok);
     }
   }
-  /* E48-E50: value-path bisect under the 4-SGPR config.
-   * E48: v0 = v1 (pure tid copy as value, no arithmetic)
-   * E49: v0 = v4 (k copy as value)
-   * E50: VOP3 e64 add v0 = v1 + v4 (hand-encoded) */
+  /* E48-E50: value-path bisect under the 4-SGPR config (tid copy,
+   * k copy, hand-encoded VOP3 add). */
   {
     static const uint32_t e48_code[12] = {
         0x7E020300u, /* v_mov_b32 v1, v0 */
@@ -1231,7 +1189,7 @@ m0_exp_v0model(m0_ctx_t *ctx) {
       }
     }
   }
-  /* F6 (vecscalar): THE MILESTONE — c[i] = (float)i + k vs CPU. */
+/* F6 (vecscalar): THE MILESTONE — c[i] = (float)i + k vs CPU. */
   if (!host) {
     pai_gpu_reset(gpu);
   }
@@ -1280,7 +1238,8 @@ m0_exp_v0model(m0_ctx_t *ctx) {
     }
   }
 
-  /* H12/H13: zeroed-s0-s1 workaround — loads into s4+ / T# at s4+. */
+    /* H12/H13: zeroed-s0-s1 workaround — loads into s4+ / T# at s4+. */
+    ctx->acb_mode = 1; /* route through the special compute queue */
   {
     uint32_t *a32 = (uint32_t *)ctx->a.cpu_addr;
     uint32_t a0;
@@ -1371,6 +1330,7 @@ m0_exp_v0model(m0_ctx_t *ctx) {
       }
       m0_exp_report("H13", ok);
     }
+    ctx->acb_mode = 0; /* back to the GFX ring for the other experiments */
   }
 
   /* H11: SMEM load with proven sbase s[2:3] — in-place on A. */
@@ -1397,8 +1357,8 @@ m0_exp_v0model(m0_ctx_t *ctx) {
     ud[3] = (uint32_t)(ctx->a.gpu_addr >> 32);
     m0_build_dispatch_stream(ctx, stream, M0_PM4_CAP, PAI_H11_RSRC2,
                              PAI_EXP_THREADS_X, 1, ud, 4, &stream_len);
-    /* Prepend IT_ACQUIRE_MEM: invalidate caches so the shader load sees
-     * the CPU-written buffer (OpenAGC acquire-before-read rule). */
+    /* Prepend IT_ACQUIRE_MEM: invalidate caches so the shader load
+     * sees the CPU-written buffer (OpenAGC acquire-before-read rule). */
     memmove(stream + 8, stream, stream_len * sizeof(uint32_t));
     {
       pai_pm4_builder_t acq;
@@ -1651,8 +1611,8 @@ m0_exp_v0model(m0_ctx_t *ctx) {
     m0_run_gpu(ctx, stream, stream_len, c32, 128, 0xCC, "G15");
 
     for (uint32_t i = 0; i < PAI_EXP_THREADS_X; i++) {
-      /* Observed 9.40 store semantics: k + (addr_offset) + 3, where the
-       * address offset = tid*4. Deterministic, per-thread, k-dependent. */
+      /* Observed 9.40 store semantics: k + tid*4 + 3 — deterministic,
+       * per-thread, k-dependent. */
       ref[i] = k + (i << 2) + 3u;
     }
     {
@@ -2000,7 +1960,7 @@ m0_exp_loads_arith(m0_ctx_t *ctx) {
       ud[1] = 0;
       ud[2] = (uint32_t)(ctx->c.gpu_addr & 0xFFFFFFFFu);
       ud[3] = (uint32_t)(ctx->c.gpu_addr >> 32);
-      /* k goes in s0 for the arith4 ABI; the host kernel reads s4, so
+      /* k sits in s0 for the arith4 ABI; the host kernel reads s4, so
        * keep both for host parity. */
       memcpy(&ud[0], &k, sizeof(k));
       memcpy(&ud[4], &k, sizeof(k));
@@ -2028,7 +1988,7 @@ m0_exp_loads_arith(m0_ctx_t *ctx) {
 }
 
 /* E40: register scan — which VGPR holds the per-thread id?
- * Template kernel: value = addr index = vK; c[i] == i iff vK == tid. */
+ * Template kernel: c[i] == i iff vK == tid. */
 static int
 m0_exp_regscan(m0_ctx_t *ctx) {
   pai_gpu_device_t *gpu = ctx->gpu;
@@ -2070,7 +2030,7 @@ m0_exp_regscan(m0_ctx_t *ctx) {
       pai_gpu_host_register_shader(gpu, ctx->code.gpu_addr,
                                    pai_host_kernel_store_dw, NULL);
       for (uint32_t i = 0; i < PAI_EXP_THREADS_X; i++) {
-        ((uint32_t *)ctx->c.cpu_addr)[i] = k; /* pre-check trick below */
+        ((uint32_t *)ctx->c.cpu_addr)[i] = k;
       }
     }
     ud[0] = 0;
@@ -2353,9 +2313,7 @@ m0_stage_e(m0_ctx_t *ctx) {
   return 0;
 }
 
-/* ------------------------------------------------------------------ */
-/* Stage B0: OpenAGC memset16 kernel (golden dispatch reference)       */
-/* ------------------------------------------------------------------ */
+/* Stage B0 — OpenAGC memset16 golden dispatch reference. */
 
 static void
 m0_build_memset16_stream(m0_ctx_t *ctx, uint32_t *stream, uint32_t cap,
@@ -2467,9 +2425,7 @@ m0_stage_b0(m0_ctx_t *ctx) {
   return 0;
 }
 
-/* ------------------------------------------------------------------ */
-/* Stage B: gfx1013 vecadd compute kernel vs CPU reference             */
-/* ------------------------------------------------------------------ */
+/* Stage B — gfx1013 vecadd vs CPU reference. */
 
 static void
 m0_build_vecadd_stream(m0_ctx_t *ctx, uint32_t *stream, uint32_t cap,
@@ -2530,11 +2486,9 @@ m0_stage_b(m0_ctx_t *ctx) {
     b[i] = (float)(i % 5) * 0.25f - 0.5f;
   }
 
-  /* Upload the gfx1013 kernel into GPU-visible memory. */
   memcpy(ctx->code.cpu_addr, pai_vecadd_code,
          PAI_VECADD_CODE_WORDS * sizeof(uint32_t));
 
-  /* Host reference backend: bind the emulated kernel to the code addr. */
   if (pai_gpu_device_backend(ctx->gpu) == PAI_GPU_BACKEND_HOST_REF) {
     st = pai_gpu_host_register_shader(ctx->gpu, ctx->code.gpu_addr,
                                       pai_host_kernel_vecadd, NULL);
@@ -2546,7 +2500,6 @@ m0_stage_b(m0_ctx_t *ctx) {
 
   m0_build_vecadd_stream(ctx, stream, M0_PM4_CAP, &stream_len);
 
-  /* Watch the C buffer (pre-filled 0xCC) for GPU activity. */
   if (m0_run_gpu(ctx, stream, stream_len, c, n * sizeof(float), 0xCC,
                  "M0-B") != 0) {
     PAI_LOG_ERROR_(PAI_SUB_GPU, "[M0-B] FAIL: GPU never executed the stream\n");
@@ -2573,9 +2526,7 @@ m0_stage_b(m0_ctx_t *ctx) {
   return 0;
 }
 
-/* ------------------------------------------------------------------ */
-/* Stage C: dispatch benchmark                                         */
-/* ------------------------------------------------------------------ */
+/* Stage C — dispatch benchmark. */
 
 static void
 m0_stage_c_run(void *user) {
@@ -2613,8 +2564,8 @@ main(void) {
 
   PAI_LOG_INFO_(PAI_SUB_CORE, "===== PAI-M0 bring-up harness =====\n");
 
-  /* Replace any previous payload instance still running (deploy
-   * automation, same pattern as MemDBG). Best effort: never fatal. */
+  /* Stop any previous payload instance still running (deploy
+   * automation, same pattern as MemDBG). Best effort, never fatal. */
   pai_lifecycle_stop_previous(PAI_LIFECYCLE_PORT);
 
   st = pai_runtime_init(&rt);

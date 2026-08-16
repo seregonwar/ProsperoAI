@@ -1,13 +1,9 @@
 /*
- * ProsperoAI — GPU Hardware Abstraction Layer
+ * ProsperoAI — GPU Hardware Abstraction Layer.
  *
- * Device/buffer/submission interface implemented by:
- *   - backend_ps5_gc.c:  raw PM4 submission through /dev/gc (PS5)
- *   - backend_host_ref.c: reference interpreter for host builds
- *
- * The HAL is deliberately small: Phase 0 only needs GPU-visible
- * buffers and a fire-and-wait submission primitive. Queues, async
- * fences and compute rings arrive with the scheduler (Phase 1+).
+ * Backends: backend_ps5_gc.c (raw /dev/gc PM4 submission, PS5) and
+ * backend_host_ref.c (host interpreter). Phase 0 needs only GPU-visible
+ * buffers and fire-and-wait submission.
  */
 
 #ifndef PAI_GPU_HAL_H
@@ -81,11 +77,8 @@ pai_status_t pai_gpu_buffer_alloc(pai_gpu_device_t *device,
                                   uint32_t flags);
 void pai_gpu_buffer_free(pai_gpu_device_t *device, pai_gpu_buffer_t *buffer);
 
-/*
- * Submit a PM4 command stream. Completion is signaled by the stream
- * itself (the caller appends an EOP/RELEASE_MEM packet writing
- * `label_value` to `label_addr`), then pai_gpu_wait_label() polls it.
- */
+/* Submit a PM4 stream. The caller appends an EOP packet writing
+ * `label_value` to `label_addr`, then polls via pai_gpu_wait_label(). */
 pai_status_t pai_gpu_submit(pai_gpu_device_t *device, const uint32_t *pm4,
                             uint32_t dwords);
 
@@ -93,15 +86,18 @@ pai_status_t pai_gpu_submit(pai_gpu_device_t *device, const uint32_t *pm4,
 pai_status_t pai_gpu_submit_q(pai_gpu_device_t *device, const uint32_t *pm4,
                               uint32_t dwords, uint32_t queue_type);
 
+/* Submit through the authenticated special queue (pipe 0xc, const-IB
+ * descriptor) — the AGC compute-queue path. */
+pai_status_t pai_gpu_submit_acb(pai_gpu_device_t *device, const uint32_t *pm4,
+                                uint32_t dwords);
+
 /* Poll a GPU-written label; PAI_ERR_TIMEOUT if not observed in time. */
 pai_status_t pai_gpu_wait_label(pai_gpu_device_t *device, uint64_t label_addr,
                                 uint32_t label_value, uint64_t timeout_ns);
 
-/*
- * Bring-up recovery: tear down and re-create the underlying device
- * connection (/dev/gc + register-space mmap on PS5) so a wedged ring
- * does not poison subsequent experiments.
- */
+/* Bring-up recovery: tear down and re-create the device connection
+ * (/dev/gc + register-space mmap) so a wedged ring does not poison
+ * later experiments. */
 pai_status_t pai_gpu_reset(pai_gpu_device_t *device);
 
 /* Convenience: submit + wait_label. */
@@ -110,12 +106,9 @@ pai_status_t pai_gpu_submit_wait(pai_gpu_device_t *device,
                                  uint64_t label_addr, uint32_t label_value,
                                  uint64_t timeout_ns);
 
-/*
- * Host reference backend only: register a host function that emulates
- * the GPU shader whose code bytes live at `code_addr` (the address the
- * shader buffer was uploaded to). Called on IT_DISPATCH_DIRECT with the
- * current COMPUTE_USER_DATA_0..15 values, thread count and group count.
- */
+/* Host reference backend only: register the host function emulating
+ * the shader uploaded at `code_addr`. Called on IT_DISPATCH_DIRECT with
+ * the current COMPUTE_USER_DATA_0..15, thread count and group count. */
 typedef pai_status_t (*pai_host_kernel_fn)(void *ctx,
                                            const uint32_t user_data[16],
                                            uint32_t threads_x,

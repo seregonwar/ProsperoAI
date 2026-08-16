@@ -1,23 +1,18 @@
 /*
- * ProsperoAI — PS5 GPU backend (raw /dev/gc submission)
+ * ProsperoAI — PS5 GPU backend (raw /dev/gc submission).
  *
- * Phase 0 bring-up path. No GNM/AGC driver involvement:
- *   - GPU-visible memory via the direct-memory syscalls
- *     (sceKernelAllocateMainDirectMemory / sceKernelMapNamedDirectMemory)
- *   - command submission via the kernel /dev/gc ioctl nr=0x02
- *     (AGC_GC_IOCTL_SUBMIT_16, 0xC0108102), identical across standard
- *     firmwares 3.20-12.70 per OpenAGC's RE
- *   - completion via an appended IT_RELEASE_MEM EOP fence writing a
- *     label that the CPU polls (OpenAGC sceAgcDcbSetEopFlip layout)
+ * Phase 0 bring-up path, no GNM/AGC driver: GPU-visible memory via the
+ * direct-memory syscalls, submission via /dev/gc ioctl nr=0x02
+ * (0xC0108102, identical on 3.20-12.70 per OpenAGC RE), completion via
+ * an EOP fence label the CPU polls.
  *
- * ABI references (see notes/re/940-gc-ioctl.md):
- *   AgcGcSubmitArgs    { u32 queue_type=3; u32 num_cbs; u64 cb_array }
+ * ABI (see notes/re/940-gc-ioctl.md):
+ *   AgcGcSubmitArgs    { u32 queue_type; u32 num_cbs; u64 cb_array }
  *   AgcGcCommandBuffer { u64 header([63:32]=ib_lo,[31:0]=0xC0023F00);
  *                        u64 ib_base([63:32]=ib_size,[31:0]=ib_hi)  }
  *
- * In payload contexts the graphics ring can defer the final descriptor;
- * every submit therefore carries a trailing 16-dword NOP IB
- * (FW 5.50-hardware-proven payload completion sequence, OpenAGC).
+ * In payload contexts the ring can defer the final descriptor, so every
+ * submit carries a trailing 16-dword NOP IB (FW 5.50-proven sequence).
  */
 
 #include <hal/hal.h>
@@ -41,9 +36,8 @@
 #define AGC_GC_IOCTL_CONTEXT_QUERY 0xC004812Eu /* nr=0x2e, R, 4 bytes */
 #define AGC_GC_IOCTL_QUEUE_CREATE 0xC0408121u /* nr=0x21, RW, 64 bytes */
 
-/* GPU register space (OpenAGC agc_ioctl.h, SPRX-confirmed): mapped on
- * the gc fd when the context query reports an uninitialized context
- * (capability lower 16 bits == 0). */
+/* GPU register space (SPRX-confirmed): mapped on the gc fd when the
+ * context query reports an uninitialized context (caps lower 16 == 0). */
 #define AGC_GC_MMIO_BASE 0xFE0200000ULL
 #define AGC_GC_MMIO_SIZE 0x4000u
 #define AGC_GC_MMIO_PROT 0x22u /* WRITE | GPU_WRITE */
@@ -165,9 +159,8 @@ pai_gc_buffer_alloc(pai_gpu_device_t *device, pai_gpu_buffer_t *buffer,
   (void)device;
   (void)flags;
 
-  /* Prefer flexible memory: the kernel maps it CPU+GPU unified with a
-   * complete GPU page-table entry (the SPRX uses type 0x33 for all GPU
-   * regions). The dmem path stays as fallback. */
+  /* Prefer flexible memory (SPRX uses type 0x33 for all GPU regions):
+   * the kernel maps it CPU+GPU unified with a full GPU page table. */
   r = sceKernelMapNamedSystemFlexibleMemory(&va, (size_t)size, 0x33, 0,
                                             "pai-gpu");
   if (r == 0 && va != NULL) {
@@ -197,24 +190,30 @@ pai_gc_buffer_free(pai_gpu_device_t *device, pai_gpu_buffer_t *buffer) {
   }
 }
 
-/*
- * Build the two command-buffer descriptors and submit.
- * cb_descs must hold 2 descriptors; the caller's PM4 stream (including
- * any completion packets) is already in the cb buffer.
- */
+/* Submit the PM4 cb plus the 16-dword NOP trailer as two descriptors.
+ * queue_type: 3 = GFX ring (IB 0x3F); 0x8000000C = special compute
+ * queue pipe 0xc with const-IB (0x33) descriptors. */
 static pai_status_t
 pai_gc_submit(pai_ps5_gc_state_t *st, uint32_t cb_words, uint32_t queue_type) {
   pai_gc_cb_descriptor_t descs[2];
   pai_gc_submit_args_t args;
   uint64_t cb_addr = st->cb_buf->gpu_addr;
   uint64_t trailer_addr = st->trailer_buf->gpu_addr;
+  uint32_t ib_header;
   int r;
 
-  /* Descriptor: IT_INDIRECT_BUFFER header, base, size. The kernel
-   * inserts the VMID into ib_base[63:52] after copyin. */
-  descs[0].header = ((cb_addr & 0xFFFFFFFFu) << 32) | 0xC0023F00u;
+  if ((queue_type & 0x80000000u) != 0) {
+    queue_type &= 0x7FFFFFFFu;
+    ib_header = 0xC0023300u; /* IT_INDIRECT_BUFFER_CNST (compute queue) */
+  } else {
+    ib_header = 0xC0023F00u; /* IT_INDIRECT_BUFFER (GFX ring) */
+  }
+
+  /* Descriptor layout: IB header, base, size. The kernel inserts the
+   * VMID into ib_base[63:52] after copyin. */
+  descs[0].header = ((cb_addr & 0xFFFFFFFFu) << 32) | ib_header;
   descs[0].ib_base = ((uint64_t)cb_words << 32) | ((cb_addr >> 32) & 0xFFFFu);
-  descs[1].header = ((trailer_addr & 0xFFFFFFFFu) << 32) | 0xC0023F00u;
+  descs[1].header = ((trailer_addr & 0xFFFFFFFFu) << 32) | ib_header;
   descs[1].ib_base = ((uint64_t)16u << 32) | ((trailer_addr >> 32) & 0xFFFFu);
 
   args.queue_type = queue_type;
@@ -265,8 +264,8 @@ pai_gc_wait_label(pai_gpu_device_t *device, uint64_t label_addr,
     return PAI_ERR_INVALID_ARG;
   }
 
-  /* Poll the label. Direct memory is GPU-coherent; the CPU observes the
-   * write once the EOP event has completed. */
+  /* Poll the label; direct memory is GPU-coherent, so the CPU observes
+   * the write once the EOP event completed. */
   deadline = pai_gc_now_ns() + timeout_ns;
   for (;;) {
     volatile uint32_t *label = (volatile uint32_t *)(uintptr_t)label_addr;
@@ -315,10 +314,9 @@ pai_gc_init(pai_gpu_device_t *device) {
                   errno);
   }
 
-  /* SPRX-confirmed: when the context is not yet initialized (lower 16
-   * bits of the capability are zero), the driver maps the GPU register
-   * space on the gc fd at the fixed 0xFE0200000 address. Without this
-   * step the kernel never runs compute dispatches for the process. */
+  /* SPRX-confirmed: when the context is not yet initialized (caps lower
+   * 16 == 0), the driver maps the GPU register space on the gc fd at
+   * 0xFE0200000. Without this, compute dispatches never run. */
   if ((st->ctx_caps & 0xFFFFu) == 0) {
     void *mmio = mmap((void *)AGC_GC_MMIO_BASE, AGC_GC_MMIO_SIZE,
                       AGC_GC_MMIO_PROT, MAP_SHARED, st->fd, 0);
@@ -345,8 +343,7 @@ pai_gc_init(pai_gpu_device_t *device) {
   }
 
   /* Driver-style context bring-up: ACQRB + EOP FIFO flexible-memory
-   * regions and the authenticated special queue (SPRX magic tokens).
-   * The queue is the missing piece for the shader read path. */
+   * regions and the authenticated special queue (SPRX magic tokens). */
   if (sceKernelMapNamedSystemFlexibleMemory(&st->acqrb, 0x1E0000, 0x33, 0,
                                             "SceGnmACQRB") != 0 ||
       sceKernelMapNamedSystemFlexibleMemory(&st->eop_fifo, 0x3C000, 0x33, 0,
@@ -390,8 +387,7 @@ pai_gc_init(pai_gpu_device_t *device) {
     return PAI_ERR_NOMEM;
   }
 
-  /* Completion trailer: a 16-dword NOP indirect buffer that forces the
-   * ring to execute the final descriptor in this frame. */
+  /* 16-dword NOP trailer: forces the ring to run the final descriptor. */
   trailer = (pai_gpu_buffer_t *)calloc(1, sizeof(*trailer));
   if (!trailer ||
       pai_gc_alloc_dmem(trailer, PAI_GPU_ALLOC_ALIGN, "pai-trailer") !=
