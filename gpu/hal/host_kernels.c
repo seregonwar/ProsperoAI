@@ -321,3 +321,42 @@ pai_host_kernel_loadstore(void *ctx, const uint32_t user_data[16],
   }
   return PAI_OK;
 }
+
+/* h1: copy a[i] -> c[4i..4i+3] (A in T# words 0-1, C at 4-5). */
+pai_status_t
+pai_host_kernel_h1(void *ctx, const uint32_t user_data[16],
+                   uint32_t threads_x, uint32_t group_x) {
+  uint32_t *a = (uint32_t *)(uintptr_t)pai_ud64(user_data, 0);
+  uint32_t *c = (uint32_t *)(uintptr_t)pai_ud64(user_data, 4);
+
+  (void)ctx;
+  (void)group_x;
+
+  for (uint32_t i = 0; i < threads_x; i++) {
+    c[i * 4 + 0] = a[i];
+    c[i * 4 + 1] = a[i];
+    c[i * 4 + 2] = a[i];
+    c[i * 4 + 3] = a[i];
+  }
+  return PAI_OK;
+}
+
+/* h3: c[4i..4i+3] = a[i] + b[i] (A T# 0-1, B T# 4-5, C 8-9). */
+pai_status_t
+pai_host_kernel_h3(void *ctx, const uint32_t user_data[16],
+                   uint32_t threads_x, uint32_t group_x) {
+  uint32_t *a = (uint32_t *)(uintptr_t)pai_ud64(user_data, 0);
+  uint32_t *b = (uint32_t *)(uintptr_t)pai_ud64(user_data, 4);
+  uint32_t *c = (uint32_t *)(uintptr_t)pai_ud64(user_data, 8);
+
+  (void)ctx;
+  (void)group_x;
+
+  for (uint32_t i = 0; i < threads_x; i++) {
+    c[i * 4 + 0] = a[i] + b[i];
+    c[i * 4 + 1] = a[i] + b[i];
+    c[i * 4 + 2] = a[i] + b[i];
+    c[i * 4 + 3] = a[i] + b[i];
+  }
+  return PAI_OK;
+}

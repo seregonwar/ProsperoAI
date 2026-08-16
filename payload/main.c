@@ -1280,6 +1280,84 @@ m0_exp_v0model(m0_ctx_t *ctx) {
     }
   }
 
+  /* H1/H3: MUBUF loads with the OpenAGC raw T# — the load breakthrough. */
+  {
+    static const uint32_t h_offs[2] = {PAI_H1_OFF, PAI_H3_OFF};
+    static const uint32_t h_lens[2] = {PAI_H1_WORDS, PAI_H3_WORDS};
+    static const uint32_t h_rsrc2[2] = {PAI_H1_RSRC2, PAI_H3_RSRC2};
+    static const char *const h_names[2] = {"H1", "H3"};
+    uint32_t *a32 = (uint32_t *)ctx->a.cpu_addr;
+    uint32_t *b32 = (uint32_t *)ctx->b.cpu_addr;
+
+    for (uint32_t i = 0; i < PAI_EXP_THREADS_X; i++) {
+      a32[i] = 0x11110000u + i;
+      b32[i] = 0x00001111u + i;
+    }
+
+    for (uint32_t variant = 0; variant < 2; variant++) {
+      const char *name = h_names[variant];
+      if (!host) {
+        pai_gpu_reset(gpu);
+      }
+      memcpy(ctx->code.cpu_addr, &pai_hbatch_code[h_offs[variant]],
+             h_lens[variant] * sizeof(uint32_t));
+      if (host) {
+        pai_gpu_host_register_shader(gpu, ctx->code.gpu_addr,
+                                     variant == 0 ? pai_host_kernel_h1
+                                                  : pai_host_kernel_h3,
+                                     NULL);
+      }
+      memset(ud, 0, sizeof(ud));
+      /* T#(A): {lo, hi, size, 0x31014FAC} */
+      ud[0] = (uint32_t)(ctx->a.gpu_addr & 0xFFFFFFFFu);
+      ud[1] = (uint32_t)(ctx->a.gpu_addr >> 32);
+      ud[2] = 4096u;
+      ud[3] = PAI_TBUF_WORD3_RAW;
+      if (variant == 0) {
+        ud[4] = (uint32_t)(ctx->c.gpu_addr & 0xFFFFFFFFu);
+        ud[5] = (uint32_t)(ctx->c.gpu_addr >> 32);
+      } else {
+        ud[4] = (uint32_t)(ctx->b.gpu_addr & 0xFFFFFFFFu);
+        ud[5] = (uint32_t)(ctx->b.gpu_addr >> 32);
+        ud[6] = 4096u;
+        ud[7] = PAI_TBUF_WORD3_RAW;
+        ud[8] = (uint32_t)(ctx->c.gpu_addr & 0xFFFFFFFFu);
+        ud[9] = (uint32_t)(ctx->c.gpu_addr >> 32);
+      }
+      m0_build_dispatch_stream(ctx, stream, M0_PM4_CAP, h_rsrc2[variant],
+                               PAI_EXP_THREADS_X, 1, ud,
+                               variant == 0 ? 6u : 10u, &stream_len);
+      m0_run_gpu(ctx, stream, stream_len, c32, 128 * 4, 0xCC, name);
+
+      {
+        int ok = 1;
+        for (uint32_t i = 0; i < 8; i++) {
+          uint32_t want = variant == 0 ? a32[i] : a32[i] + b32[i];
+          for (uint32_t j = 0; j < 4; j++) {
+            if (c32[i * 4 + j] != want) {
+              ok = 0;
+              PAI_LOG_ERROR_(PAI_SUB_GPU, "[M0-%s] c[%u] = %08x want %08x\n",
+                             name, i * 4 + j, c32[i * 4 + j], want);
+              break;
+            }
+          }
+          if (!ok) {
+            break;
+          }
+        }
+        m0_exp_report(name, ok);
+        if (!ok) {
+          PAI_LOG_ERROR_(PAI_SUB_GPU, "[M0-%s] c[0..15] = %08x %08x %08x "
+                         "%08x %08x %08x %08x %08x %08x %08x %08x %08x "
+                         "%08x %08x %08x %08x\n",
+                         name, c32[0], c32[1], c32[2], c32[3], c32[4], c32[5],
+                         c32[6], c32[7], c32[8], c32[9], c32[10], c32[11],
+                         c32[12], c32[13], c32[14], c32[15]);
+        }
+      }
+    }
+  }
+
   /* G15: THE MILESTONE — c[i] = i + k_int verified vs CPU (lanes 0-7). */
   if (!host) {
     pai_gpu_reset(gpu);

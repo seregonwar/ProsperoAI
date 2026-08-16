@@ -68,6 +68,10 @@ const uint32_t pai_g15_code[PAI_G15_CODE_WORDS] = {
 #include "gfx1013/pai_g15.inc"
 };
 
+const uint32_t pai_hbatch_code[] = {
+#include "gfx1013/pai_hbatch.inc"
+};
+
 const uint32_t pai_v0model_code[] = {
 #include "gfx1013/pai_v0model.inc"
 };

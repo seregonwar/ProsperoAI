@@ -137,6 +137,15 @@
 #define PAI_G15_RSRC2 0x0000000Cu
 #define PAI_G15_CODE_WORDS 14u
 
+/* H1/H3: MUBUF loads with the OpenAGC raw T# (pai_hbatch.inc). */
+#define PAI_H1_OFF 0u
+#define PAI_H1_WORDS 15u
+#define PAI_H1_RSRC2 0x0000000Cu
+#define PAI_H3_OFF 15u
+#define PAI_H3_WORDS 19u
+#define PAI_H3_RSRC2 0x00000014u
+#define PAI_TBUF_WORD3_RAW 0x31014FACu
+
 /* E31: loadstore with vaddr pairs 1 (v[2:3]) only. */
 #define PAI_LOADSTORE_GOLD_RSRC2 0x0000000Cu
 #define PAI_LOADSTORE_GOLD_CODE_WORDS 20u
@@ -187,6 +196,7 @@ extern const uint32_t pai_gbatch_code[];
 extern const uint32_t pai_gbatch2_code[];
 extern const uint32_t pai_gbatch3_code[];
 extern const uint32_t pai_g15_code[PAI_G15_CODE_WORDS];
+extern const uint32_t pai_hbatch_code[];
 extern const uint32_t pai_v0model_code[];
 extern const uint32_t pai_loadstore_gold_code[PAI_LOADSTORE_GOLD_CODE_WORDS];
 extern const uint32_t pai_loadstore_code[PAI_LOADSTORE_CODE_WORDS];
