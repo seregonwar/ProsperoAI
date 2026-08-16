@@ -60,6 +60,10 @@ extern int sceKernelMapNamedDirectMemory(void **addr, size_t len, int prot,
                                          const char *name);
 extern int sceKernelSetVirtualRangeName(const void *addr, size_t len,
                                         const char *name);
+extern int sceKernelMapNamedSystemFlexibleMemory(void **addr, size_t size,
+                                                 int type, int flags,
+                                                 const char *name);
+extern int sceKernelReleaseFlexibleMemory(void *addr, size_t len);
 
 typedef struct {
   uint32_t queue_type;
@@ -135,8 +139,29 @@ pai_gc_alloc_dmem(pai_gpu_buffer_t *buffer, uint64_t size, const char *name) {
 static pai_status_t
 pai_gc_buffer_alloc(pai_gpu_device_t *device, pai_gpu_buffer_t *buffer,
                     uint64_t size, uint32_t flags) {
+  void *va = NULL;
+  int r;
+
   (void)device;
   (void)flags;
+
+  /* Prefer flexible memory: the kernel maps it CPU+GPU unified with a
+   * complete GPU page-table entry (the SPRX uses type 0x33 for all GPU
+   * regions). The dmem path stays as fallback. */
+  r = sceKernelMapNamedSystemFlexibleMemory(&va, (size_t)size, 0x33, 0,
+                                            "pai-gpu");
+  if (r == 0 && va != NULL) {
+    buffer->size = size;
+    buffer->gpu_addr = (uint64_t)(uintptr_t)va;
+    buffer->cpu_addr = va;
+    buffer->flags = PAI_GPU_BUF_CPU_VISIBLE | PAI_GPU_BUF_CPU_COHERENT;
+    return PAI_OK;
+  }
+
+  PAI_LOG_DEBUG_(PAI_SUB_GPU,
+                 "flexible memory alloc failed (0x%08x); falling back to "
+                 "dmem\n",
+                 r);
   return pai_gc_alloc_dmem(buffer, size, "pai-gpu");
 }
 
@@ -144,7 +169,10 @@ static void
 pai_gc_buffer_free(pai_gpu_device_t *device, pai_gpu_buffer_t *buffer) {
   (void)device;
   if (buffer->cpu_addr) {
-    munmap(buffer->cpu_addr, (size_t)buffer->size);
+    if (sceKernelReleaseFlexibleMemory(buffer->cpu_addr,
+                                       (size_t)buffer->size) != 0) {
+      munmap(buffer->cpu_addr, (size_t)buffer->size);
+    }
     buffer->cpu_addr = NULL;
   }
 }
