@@ -188,6 +188,12 @@ pai_gc_buffer_alloc(pai_gpu_device_t *device, pai_gpu_buffer_t *buffer,
     }
   }
 
+  /* Repair the PDE physical frame: the dmem syscall hands out the
+   * GPU-BUS address (aperture +0x2000000000) while the GPU MMU walks
+   * CPU physicals - the kernel's PDE points at a different page, which
+   * is exactly why every shader load returns 0. Existing flags kept. */
+  (void)pai_gvmspace_repair(buffer->gpu_addr, phys);
+
   return PAI_OK;
 }
 

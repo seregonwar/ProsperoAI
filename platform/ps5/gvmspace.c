@@ -377,6 +377,7 @@ pai_gvmspace_repair(uint64_t gpu_va, uint64_t phys) {
   uint64_t pde_addr;
   uint64_t new_pde;
   uint64_t verify;
+  uint64_t cpu_phys;
 
   if (!g_diag_have_layout || !g_ref_pde) {
     PAI_LOG_WARN_(PAI_SUB_GPU,
@@ -385,6 +386,16 @@ pai_gvmspace_repair(uint64_t gpu_va, uint64_t phys) {
   }
   dmap = g_diag_dmap;
   pml4 = g_diag_gpu_pml4_phys;
+
+  /* The dmem syscall returns the GPU-BUS address (aperture at
+   * 0x2000000000); the GPU MMU walks CPU physical addresses. */
+  cpu_phys = (phys >= 0x2000000000ULL) ? (phys - 0x2000000000ULL) : phys;
+  if (cpu_phys >= 0x400000000ULL) {
+    PAI_LOG_ERROR_(PAI_SUB_GPU,
+                   "gvm repair: cpu phys 0x%llx out of RAM range\n",
+                   (unsigned long long)cpu_phys);
+    return PAI_ERR_CAPABILITY;
+  }
 
   if (kernel_copyout(dmap + (intptr_t)(pml4 + idx4 * 8), &e4, 8) != 0 ||
       !(e4 & PAI_GPU_VALID)) {
@@ -407,23 +418,23 @@ pai_gvmspace_repair(uint64_t gpu_va, uint64_t phys) {
   }
 
   if ((e2 & PAI_GPU_VALID) &&
-      (e2 & 0x00003FFFFFE00000ULL) == (phys & 0x00003FFFFFE00000ULL)) {
+      (e2 & 0x00003FFFFFE00000ULL) == (cpu_phys & 0x00003FFFFFE00000ULL)) {
     PAI_LOG_INFO_(PAI_SUB_GPU,
-                  "gvm repair: va=0x%llx already maps phys 0x%llx\n",
-                  (unsigned long long)gpu_va, (unsigned long long)phys);
+                  "gvm repair: va=0x%llx already maps cpu phys 0x%llx\n",
+                  (unsigned long long)gpu_va, (unsigned long long)cpu_phys);
     return PAI_OK;
   }
 
-  /* Build the 2 MB leaf: reference flags + our physical frame. */
-  new_pde = (g_ref_pde & ~0x00003FFFFFE00000ULL) |
-            (phys & 0x00003FFFFFE00000ULL) | PAI_GPU_VALID;
+  /* Rebuild the 2 MB leaf: KEEP THE EXISTING flags, replace only the
+   * physical frame with our page. */
+  new_pde = (e2 & ~0x00003FFFFFE00000ULL) |
+            (cpu_phys & 0x00003FFFFFE00000ULL) | PAI_GPU_VALID;
 
   PAI_LOG_INFO_(PAI_SUB_GPU,
-                "gvm repair: va=0x%llx phys=0x%llx pde 0x%llx -> 0x%llx "
-                "(ref 0x%llx)\n",
-                (unsigned long long)gpu_va, (unsigned long long)phys,
-                (unsigned long long)e2, (unsigned long long)new_pde,
-                (unsigned long long)g_ref_pde);
+                "gvm repair: va=0x%llx cpu_phys=0x%llx pde 0x%llx -> "
+                "0x%llx\n",
+                (unsigned long long)gpu_va, (unsigned long long)cpu_phys,
+                (unsigned long long)e2, (unsigned long long)new_pde);
 
   if (kernel_setlong(pde_addr, new_pde) != 0) {
     PAI_LOG_ERROR_(PAI_SUB_GPU, "gvm repair: PDE write failed\n");
