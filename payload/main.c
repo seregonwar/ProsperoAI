@@ -13,7 +13,7 @@
 #include <pai/api.h>
 #include <pai/log.h>
 
-#include "gvmspace.h"
+#include <ps5/gvmspace.h>
 
 #include <bench.h>
 #include <hal/hal.h>
