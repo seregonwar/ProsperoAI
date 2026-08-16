@@ -23,9 +23,10 @@
 
 #include <ps5/kernel.h>
 
-/* System auth id (MemDBG) and the ptrace-capable auth id used by the
- * ps5-payload-sdk samples. */
-#define PAI_SYSTEM_AUTHID 0x4801000000000013ULL
+/* GPU-required auth id (OpenAGC agcProsperoPrepareGpuCredentials:
+ * 0x4801000000000000). The MemDBG system auth id 0x...0013 is rejected
+ * by the 9.40 GPU paths. */
+#define PAI_SYSTEM_AUTHID 0x4801000000000000ULL
 
 static const uint8_t k_pai_full_caps[16] = {
     0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
