@@ -8,11 +8,10 @@
  * GENERATE(prompt), then relay each TOKEN chunk back through a
  * callback as it arrives.
  *
- * v0 scope: the GENERATE payload carries only the prompt (whitepaper
- * §24 example), so sampling parameters are not transmitted — remote
- * generation uses the payload's default settings. Embeddings are not
- * bridged in v0 (no EMBED message type yet); remote entries report
- * them as unsupported.
+ * v0 scope: GENERATE carries the prompt plus an optional sampler
+ * trailer (§24/§25); zero sampler values fall back to the payload's
+ * defaults. Embeddings are bridged with the one-shot EMBED/EMBEDDING
+ * exchange guarded by PAI_PROTO_CAP_EMBED.
  */
 
 #ifndef PAI_GATEWAY_REMOTE_H
@@ -57,6 +56,29 @@ pai_status_t pai_gw_remote_generate(const char *host, uint16_t port,
                                                      void *user),
                                     void *user, uint32_t *out_tokens,
                                     uint64_t timeout_ms);
+
+/*
+ * One-shot remote embedding (§24/§25): connect to host:port,
+ * negotiate, send EMBED(text), and wait for the EMBEDDING reply.
+ * The returned vector is heap-allocated with malloc() and must be
+ * released by the caller with free(); *out_dim receives its length.
+ *
+ * `text` must be UTF-8 and at most 65535 bytes (u16 wire length);
+ * longer input returns PAI_ERR_INVALID_ARG. `timeout_ms` bounds the
+ * whole exchange including negotiation (0 selects the 30000 ms
+ * default). Other returns:
+ *   PAI_ERR_INVALID_ARG  bad arguments or text too long
+ *   PAI_ERR_IO           connect/negotiate failure, or the peer
+ *                        closed before the reply
+ *   PAI_ERR_CAPABILITY   the server refused negotiation (HELLO_NACK)
+ *   PAI_ERR_UNSUPPORTED  the peer negotiated without PAI_PROTO_CAP_EMBED
+ *   PAI_ERR_TIMEOUT      no reply within the deadline
+ *   PAI_OK               *out_vec / *out_dim set (caller frees)
+ */
+pai_status_t pai_gw_remote_embed(const char *host, uint16_t port,
+                                 const char *text, uint32_t text_len,
+                                 float **out_vec, uint32_t *out_dim,
+                                 uint64_t timeout_ms);
 
 #ifdef __cplusplus
 }

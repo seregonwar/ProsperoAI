@@ -113,8 +113,10 @@ ProsperoAI
 ```
 
 The payload talks to the desktop through the Prospero Protocol; the gateway
-serves local `.pai` models directly and bridges remote generations to PS5
-payloads over the same protocol.
+serves local `.pai` models directly and bridges remote generations and
+embeddings to PS5 payloads over the same protocol (GENERATE/TOKEN/COMPLETE
+with an optional sampler trailer, and the one-shot EMBED/EMBEDDING
+exchange).
 
 ## Quick Start
 

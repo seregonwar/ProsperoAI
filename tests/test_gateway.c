@@ -268,12 +268,21 @@ typedef struct remote_probe {
   volatile int finished;
   volatile int refuse;     /* 1 = HELLO_NACK on negotiation            */
   volatile int no_answer;  /* 1 = accept GENERATE but never reply       */
+  volatile int no_embed;   /* 1 = advertise caps without CAP_EMBED      */
+  volatile int hostile_embed; /* 1 = reply EMBEDDING with a bogus dim   */
   volatile int n_served;
   /* Sampler overrides from the last GENERATE (written by the probe
    * thread; the network round trip orders the main thread's read). */
   pai_proto_sampler_t last_sampler;
   volatile int got_sampler;
+  /* Text from the last EMBED request, and whether it was answered. */
+  char last_embed[64];
+  uint32_t last_embed_len;
+  volatile int got_embed;
 } remote_probe_t;
+
+/* The probe's fixed embedding vector. */
+static const float k_probe_embed[3] = {1.0f, 2.0f, 3.0f};
 
 typedef struct probe_gen {
   pai_proto_conn_t *conn;
@@ -284,7 +293,11 @@ static uint32_t
 probe_hello(void *user, uint32_t remote_caps) {
   probe_gen_t *g = (probe_gen_t *)user;
   (void)remote_caps;
-  return g->probe->refuse ? 0 : PAI_PROTO_CAP_KNOWN;
+  if (g->probe->refuse) {
+    return 0;
+  }
+  return g->probe->no_embed ? (PAI_PROTO_CAP_KNOWN & ~PAI_PROTO_CAP_EMBED)
+                            : PAI_PROTO_CAP_KNOWN;
 }
 
 /* Echo the prompt back as 2-char TOKEN chunks (§24 example). */
@@ -296,6 +309,40 @@ probe_on_message(void *user, const pai_proto_frame_t *frame) {
   uint32_t off = 0;
   uint64_t sid = 0;
 
+  if (frame->msg_type == PAI_PROTO_MSG_EMBED) {
+    const char *text;
+    uint32_t tlen;
+    uint8_t pay[256];
+    uint32_t plen2 = 0;
+    CHECK(pai_proto_msg_decode_embed(frame->payload, frame->payload_len, &text,
+                                     &tlen) == PAI_OK);
+    g->probe->got_embed = 1;
+    g->probe->last_embed_len = tlen < sizeof(g->probe->last_embed)
+                                   ? tlen
+                                   : (uint32_t)sizeof(g->probe->last_embed);
+    memcpy(g->probe->last_embed, text, g->probe->last_embed_len);
+    g->probe->last_embed[g->probe->last_embed_len] = '\0';
+    if (g->probe->hostile_embed) {
+      /* Claim an absurd dim with a tiny payload: the client codec
+       * must reject it (bounded by PAI_PROTO_MAX_EMBED_DIM). */
+      uint8_t bad[8];
+      bad[0] = (uint8_t)(PAI_PROTO_MAX_EMBED_DIM + 1);
+      bad[1] = (uint8_t)((PAI_PROTO_MAX_EMBED_DIM + 1) >> 8);
+      bad[2] = (uint8_t)((PAI_PROTO_MAX_EMBED_DIM + 1) >> 16);
+      bad[3] = (uint8_t)((PAI_PROTO_MAX_EMBED_DIM + 1) >> 24);
+      memset(bad + 4, 0, 4);
+      CHECK(pai_proto_conn_send_raw(g->conn, PAI_PROTO_MSG_EMBEDDING,
+                                    PAI_PROTO_FLAG_REPLY, frame->request_id,
+                                    0, bad, sizeof(bad)) == PAI_OK);
+    } else {
+      CHECK(pai_proto_msg_encode_embedding(pay, sizeof(pay), k_probe_embed, 3,
+                                           &plen2) == PAI_OK);
+      CHECK(pai_proto_conn_send_raw(g->conn, PAI_PROTO_MSG_EMBEDDING,
+                                    PAI_PROTO_FLAG_REPLY, frame->request_id,
+                                    0, pay, plen2) == PAI_OK);
+    }
+    return PAI_OK;
+  }
   if (frame->msg_type != PAI_PROTO_MSG_GENERATE) {
     return PAI_OK;
   }
@@ -908,17 +955,130 @@ CHECK(build_fixture());
   CHECK_EQ_UINT(probe.last_sampler.top_k, 40);
   CHECK_EQ_UINT(probe.last_sampler.max_tokens, 7);
 
-  /* Embeddings are not bridged in v0. */
+  /* Embeddings are bridged over EMBED/EMBEDDING. */
   CHECK(gw_call(&gw, "POST", "/v1/embeddings",
                 "{\"model\":\"remote-lm\",\"input\":\"a\"}", &cap) ==
         PAI_OK);
-  CHECK_EQ_INT(resp_status(&cap), 501);
+  CHECK_EQ_INT(resp_status(&cap), 200);
+  CHECK(parse_resp_json(&cap, &doc) == 0);
+  root = pai_json_root(&doc);
+  {
+    int32_t data = pai_json_member(&doc, root, "data");
+    int32_t e0 = pai_json_array_at(&doc, data, 0);
+    int32_t emb = pai_json_member(&doc, e0, "embedding");
+    CHECK_EQ_INT(pai_json_array_len(&doc, emb), 3);
+    CHECK(fabs(pai_json_num(&doc, pai_json_array_at(&doc, emb, 0)) - 1.0) <
+          1e-4);
+    CHECK(fabs(pai_json_num(&doc, pai_json_array_at(&doc, emb, 2)) - 3.0) <
+          1e-4);
+  }
+  pai_json_destroy(&doc);
+  CHECK_EQ_UINT(probe.got_embed, 1);
+  CHECK_EQ_UINT(probe.last_embed_len, 1);
+  CHECK(strcmp(probe.last_embed, "a") == 0);
+
+  /* Array input: one bridge call per element. */
+  CHECK(gw_call(&gw, "POST", "/v1/embeddings",
+                "{\"model\":\"remote-lm\",\"input\":[\"one\",\"two\"]}",
+                &cap) == PAI_OK);
+  CHECK_EQ_INT(resp_status(&cap), 200);
+  CHECK(parse_resp_json(&cap, &doc) == 0);
+  root = pai_json_root(&doc);
+  {
+    int32_t data = pai_json_member(&doc, root, "data");
+    CHECK_EQ_INT(pai_json_array_len(&doc, data), 2);
+  }
+  pai_json_destroy(&doc);
 
   probe_stop(&probe, lst);
   CHECK_EQ_UINT(probe.finished, 1);
-  /* Three generation requests: the accept loop must have been reused. */
-  CHECK(probe.n_served >= 3);
+  /* Three generation requests + three embedding requests: the accept
+   * loop must have been reused. */
+  CHECK(probe.n_served >= 6);
   pai_gw_destroy(&gw);
+}
+
+/* ---- remote: embedding failure modes (no cap / dead port / hostile) ---- */
+{
+  pai_proto_tcp_listener_t *lst = NULL;
+  pai_proto_tcp_listener_t *dead = NULL;
+  remote_probe_t probe;
+  pai_gw_t gw;
+  cap_t cap;
+  uint16_t port = 0;
+  uint16_t dead_port = 0;
+
+  CHECK(probe_start(&probe, &lst, &port) == 0);
+  probe.no_embed = 1;
+
+  /* Bind an ephemeral port and release it: nothing is listening. */
+  CHECK(pai_proto_tcp_listen(&dead, "127.0.0.1", 0) == PAI_OK);
+  CHECK(pai_proto_tcp_listener_port(dead, &dead_port) == PAI_OK);
+  pai_proto_tcp_listener_destroy(dead);
+
+  CHECK(pai_gw_init(&gw) == PAI_OK);
+  CHECK(pai_gw_add_remote(&gw, "noemb", "127.0.0.1", port) == PAI_OK);
+  CHECK(pai_gw_add_remote(&gw, "dead", "127.0.0.1", dead_port) == PAI_OK);
+
+  /* Payload without CAP_EMBED -> 501 (service not implemented). */
+  CHECK(gw_call(&gw, "POST", "/v1/embeddings",
+                "{\"model\":\"noemb\",\"input\":\"a\"}", &cap) == PAI_OK);
+  CHECK_EQ_INT(resp_status(&cap), 501);
+  /* Unreachable payload -> 502 Bad Gateway. */
+  CHECK(gw_call(&gw, "POST", "/v1/embeddings",
+                "{\"model\":\"dead\",\"input\":\"a\"}", &cap) == PAI_OK);
+  CHECK_EQ_INT(resp_status(&cap), 502);
+
+  probe_stop(&probe, lst);
+  pai_gw_destroy(&gw);
+}
+
+/* ---- remote embed bridge: hostile reply and bad arguments ---- */
+{
+  pai_proto_tcp_listener_t *lst = NULL;
+  remote_probe_t probe;
+  float *vec = (float *)0x1;
+  uint32_t dim = 0;
+  uint16_t port = 0;
+
+  CHECK(probe_start(&probe, &lst, &port) == 0);
+
+  /* Happy path at the bridge level (vector ownership: caller frees). */
+  CHECK(pai_gw_remote_embed("127.0.0.1", port, "text", 4, &vec, &dim, 300) ==
+        PAI_OK);
+  CHECK_EQ_UINT(dim, 3);
+  CHECK(vec[0] == 1.0f);
+  CHECK(vec[2] == 3.0f);
+  free(vec);
+
+  /* Text longer than the u16 wire length. */
+  {
+    char big[0x10000];
+    memset(big, 'x', sizeof(big));
+    CHECK(pai_gw_remote_embed("127.0.0.1", port, big,
+                              (uint32_t)sizeof(big), &vec, &dim, 0) ==
+          PAI_ERR_INVALID_ARG);
+  }
+
+  /* Bad arguments. */
+  CHECK(pai_gw_remote_embed(NULL, port, "x", 1, &vec, &dim, 0) ==
+        PAI_ERR_INVALID_ARG);
+  CHECK(pai_gw_remote_embed("127.0.0.1", 0, "x", 1, &vec, &dim, 0) ==
+        PAI_ERR_INVALID_ARG);
+  CHECK(pai_gw_remote_embed("127.0.0.1", port, "", 0, &vec, &dim, 0) ==
+        PAI_ERR_INVALID_ARG);
+
+  /* Hostile reply (absurd claimed dim) -> protocol rejection, and the
+   * failed call must not leak or return a bogus vector. */
+  vec = (float *)0x1;
+  probe.hostile_embed = 1;
+  CHECK(pai_gw_remote_embed("127.0.0.1", port, "x", 1, &vec, &dim, 300) ==
+        PAI_ERR_PROTOCOL);
+  CHECK(vec == NULL);
+  CHECK_EQ_UINT(dim, 0);
+
+  probe_stop(&probe, lst);
+  CHECK_EQ_UINT(probe.finished, 1);
 }
 
 /* ---- remote: negotiation refusal and unreachable payload -> 502 ---- */

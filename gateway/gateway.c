@@ -725,12 +725,6 @@ handle_embeddings(pai_gw_t *gw, const uint8_t *body, uint32_t body_len,
     send_error(resp, 404, "invalid_request_error", "model not found");
     return PAI_OK;
   }
-  if (entry->remote) {
-    pai_json_destroy(&doc);
-    send_error(resp, 501, "server_error",
-               "remote models do not expose embeddings in v0");
-    return PAI_OK;
-  }
   input_node = pai_json_member(&doc, root, "input");
   if (input_node < 0) {
     pai_json_destroy(&doc);
@@ -740,7 +734,8 @@ handle_embeddings(pai_gw_t *gw, const uint8_t *body, uint32_t body_len,
 
   pai_gw_mutex_lock(entry->lock);
   st = ensure_ready(entry);
-  if (st == PAI_OK) {
+  if (st == PAI_OK && !entry->remote) {
+    /* Remote entries report their dimension with the reply vector. */
     st = pai_model_embed_dim(entry->model, &dim);
   }
   if (st != PAI_OK) {
@@ -802,22 +797,44 @@ handle_embeddings(pai_gw_t *gw, const uint8_t *body, uint32_t body_len,
       } else {
         text = pai_json_str(&doc, input_node);
       }
-      vec = (float *)malloc((size_t)dim * sizeof(float));
-      if (vec == NULL) {
-        pai_gw_mutex_unlock(entry->lock);
-        pai_json_wb_destroy(&wb);
-        pai_json_destroy(&doc);
-        send_error(resp, 500, "server_error", "out of memory");
-        return PAI_OK;
-      }
-      st = pai_model_embed(entry->model, text, dim, vec, &n);
-      if (st != PAI_OK || n < dim) {
-        free(vec);
-        pai_gw_mutex_unlock(entry->lock);
-        pai_json_wb_destroy(&wb);
-        pai_json_destroy(&doc);
-        send_error(resp, 400, "invalid_request_error", "embedding failed");
-        return PAI_OK;
+      if (entry->remote) {
+        /* Bridge the request to the payload (one connection per
+         * input, mirroring the per-request generation bridge). */
+        st = pai_gw_remote_embed(entry->remote_host, entry->remote_port,
+                                 text, (uint32_t)strlen(text), &vec, &n, 0);
+        if (st != PAI_OK) {
+          pai_gw_mutex_unlock(entry->lock);
+          pai_json_wb_destroy(&wb);
+          pai_json_destroy(&doc);
+          send_error(resp, st == PAI_ERR_UNSUPPORTED
+                               ? 501
+                               : (st == PAI_ERR_INVALID_ARG ? 400 : 502),
+                     "server_error",
+                     st == PAI_ERR_UNSUPPORTED
+                         ? "remote payload does not expose embeddings"
+                         : (st == PAI_ERR_INVALID_ARG
+                                ? "input too long"
+                                : "remote payload error"));
+          return PAI_OK;
+        }
+      } else {
+        vec = (float *)malloc((size_t)dim * sizeof(float));
+        if (vec == NULL) {
+          pai_gw_mutex_unlock(entry->lock);
+          pai_json_wb_destroy(&wb);
+          pai_json_destroy(&doc);
+          send_error(resp, 500, "server_error", "out of memory");
+          return PAI_OK;
+        }
+        st = pai_model_embed(entry->model, text, dim, vec, &n);
+        if (st != PAI_OK || n < dim) {
+          free(vec);
+          pai_gw_mutex_unlock(entry->lock);
+          pai_json_wb_destroy(&wb);
+          pai_json_destroy(&doc);
+          send_error(resp, 400, "invalid_request_error", "embedding failed");
+          return PAI_OK;
+        }
       }
       if (i != 0) {
         pai_json_wb_puts(&wb, ",");

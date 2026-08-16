@@ -29,6 +29,8 @@ pai_proto_msg_name(uint32_t msg_type) {
   case PAI_PROTO_MSG_ACCEPTED:     return "accepted";
   case PAI_PROTO_MSG_TOKEN:        return "token";
   case PAI_PROTO_MSG_COMPLETE:     return "complete";
+  case PAI_PROTO_MSG_EMBED:        return "embed";
+  case PAI_PROTO_MSG_EMBEDDING:    return "embedding";
   case PAI_PROTO_MSG_STREAM_DATA:  return "stream_data";
   case PAI_PROTO_MSG_STREAM_CLOSE: return "stream_close";
   default:                         return "unknown";
@@ -345,6 +347,82 @@ pai_proto_msg_decode_token(const uint8_t *payload, uint32_t len,
                            const uint8_t **out_token,
                            uint32_t *out_token_len) {
   return decode_u16_blob(payload, len, out_token, out_token_len);
+}
+
+/* ------------------------------------------------------------------ */
+/* embed / embedding                                                   */
+/* ------------------------------------------------------------------ */
+
+pai_status_t
+pai_proto_msg_encode_embed(uint8_t *out, uint32_t cap, const char *text,
+                           uint32_t text_len, uint32_t *out_len) {
+  return encode_u16_blob(out, cap, text, text_len, out_len);
+}
+
+pai_status_t
+pai_proto_msg_decode_embed(const uint8_t *payload, uint32_t len,
+                           const char **out_text, uint32_t *out_text_len) {
+  const uint8_t *blob;
+  uint32_t blob_len;
+  pai_status_t st;
+
+  st = decode_u16_blob(payload, len, &blob, &blob_len);
+  if (st != PAI_OK) {
+    return st;
+  }
+  /* EMBED has no trailer, so trailing bytes are a protocol violation
+   * (unlike GENERATE, whose v2 trailer is intentionally tolerated). */
+  if (len != 2u + blob_len) {
+    return PAI_ERR_PROTOCOL;
+  }
+  if (out_text != NULL) {
+    *out_text = (const char *)blob;
+  }
+  if (out_text_len != NULL) {
+    *out_text_len = blob_len;
+  }
+  return PAI_OK;
+}
+
+pai_status_t
+pai_proto_msg_encode_embedding(uint8_t *out, uint32_t cap,
+                               const float *values, uint32_t dim,
+                               uint32_t *out_len) {
+  uint32_t total;
+
+  if (!out || !out_len) {
+    return PAI_ERR_INVALID_ARG;
+  }
+  if (dim == 0 || dim > PAI_PROTO_MAX_EMBED_DIM || !values) {
+    return PAI_ERR_INVALID_ARG;
+  }
+  total = 4u + dim * 4u;
+  if (cap < total) {
+    return PAI_ERR_INVALID_ARG;
+  }
+  put_le32(out + 0, dim);
+  /* Float bits verbatim (both target platforms are IEEE-754 LE). */
+  memcpy(out + 4, values, (size_t)dim * sizeof(float));
+  *out_len = total;
+  return PAI_OK;
+}
+
+pai_status_t
+pai_proto_msg_decode_embedding(const uint8_t *payload, uint32_t len,
+                               const float **out_values, uint32_t *out_dim) {
+  uint32_t dim;
+
+  if (!payload || !out_values || !out_dim || len < 4u) {
+    return PAI_ERR_PROTOCOL;
+  }
+  dim = get_le32(payload + 0);
+  if (dim == 0 || dim > PAI_PROTO_MAX_EMBED_DIM ||
+      len != 4u + dim * 4u) {
+    return PAI_ERR_PROTOCOL;
+  }
+  *out_values = (const float *)(const void *)(payload + 4);
+  *out_dim = dim;
+  return PAI_OK;
 }
 
 /* ------------------------------------------------------------------ */

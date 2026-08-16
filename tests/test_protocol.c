@@ -519,6 +519,78 @@ TEST_MAIN_BEGIN()
   CHECK(pai_proto_msg_encode_token(buf, sizeof(buf), NULL, 0x10000u, &len) ==
         PAI_ERR_INVALID_ARG);
 
+  /* embed round-trip */
+  CHECK(pai_proto_msg_encode_embed(buf, sizeof(buf), "search me", 9,
+                                   &len) == PAI_OK);
+  {
+    const char *text = NULL;
+    uint32_t tlen = 0;
+    CHECK(pai_proto_msg_decode_embed(buf, len, &text, &tlen) == PAI_OK);
+    CHECK_EQ_UINT(tlen, 9);
+    CHECK(memcmp(text, "search me", 9) == 0);
+  }
+  /* text longer than the u16 wire length -> rejected */
+  CHECK(pai_proto_msg_encode_embed(buf, sizeof(buf), "x", 0x10000u, &len) ==
+        PAI_ERR_INVALID_ARG);
+  /* declared length beyond payload -> malformed */
+  {
+    uint8_t bad[2] = {0x09, 0x00};
+    const char *text = NULL;
+    uint32_t tlen = 0;
+    CHECK(pai_proto_msg_decode_embed(bad, sizeof(bad), &text, &tlen) ==
+          PAI_ERR_PROTOCOL);
+  }
+  /* EMBED has no trailer: trailing garbage is a protocol violation. */
+  {
+    uint8_t bad[5] = {0x02, 0x00, 'h', 'i', 0xFF};
+    const char *text = NULL;
+    uint32_t tlen = 0;
+    CHECK(pai_proto_msg_decode_embed(bad, sizeof(bad), &text, &tlen) ==
+          PAI_ERR_PROTOCOL);
+  }
+
+  /* embedding round-trip */
+  {
+    const float vals[3] = {0.5f, -1.25f, 2.0f};
+    const float *out = NULL;
+    uint32_t dim = 0;
+    CHECK(pai_proto_msg_encode_embedding(buf, sizeof(buf), vals, 3,
+                                         &len) == PAI_OK);
+    CHECK_EQ_UINT(len, 4u + 3u * 4u);
+    CHECK(pai_proto_msg_decode_embedding(buf, len, &out, &dim) == PAI_OK);
+    CHECK_EQ_UINT(dim, 3);
+    CHECK(out[0] == 0.5f);
+    CHECK(out[1] == -1.25f);
+    CHECK(out[2] == 2.0f);
+  }
+  /* zero dim / missing values rejected */
+  CHECK(pai_proto_msg_encode_embedding(buf, sizeof(buf), NULL, 0, &len) ==
+        PAI_ERR_INVALID_ARG);
+  CHECK(pai_proto_msg_encode_embedding(buf, sizeof(buf), NULL, 4, &len) ==
+        PAI_ERR_INVALID_ARG);
+  /* dim beyond the wire cap rejected */
+  CHECK(pai_proto_msg_encode_embedding(buf, sizeof(buf), NULL,
+                                       PAI_PROTO_MAX_EMBED_DIM + 1,
+                                       &len) == PAI_ERR_INVALID_ARG);
+  /* hostile reply: claimed dim beyond the payload -> PROTOCOL */
+  {
+    uint8_t bad[8];
+    const float *out = NULL;
+    uint32_t dim = 0;
+    put_le32_test(bad + 0, PAI_PROTO_MAX_EMBED_DIM + 1);
+    memset(bad + 4, 0, 4);
+    CHECK(pai_proto_msg_decode_embedding(bad, sizeof(bad), &out, &dim) ==
+          PAI_ERR_PROTOCOL);
+    /* truncated vector (dim 3 but only 2 floats present) */
+    put_le32_test(bad + 0, 3);
+    CHECK(pai_proto_msg_decode_embedding(bad, 4u + 2u * 4u, &out, &dim) ==
+          PAI_ERR_PROTOCOL);
+    /* zero dim */
+    put_le32_test(bad + 0, 0);
+    CHECK(pai_proto_msg_decode_embedding(bad, sizeof(bad), &out, &dim) ==
+          PAI_ERR_PROTOCOL);
+  }
+
   /* stream_data round-trip */
   CHECK(pai_proto_msg_encode_stream_data(buf, sizeof(buf),
                                          PAI_PROTO_STREAM_TELEMETRY, 9,
@@ -535,6 +607,9 @@ TEST_MAIN_BEGIN()
 
   /* names */
   CHECK(strcmp(pai_proto_msg_name(PAI_PROTO_MSG_GENERATE), "generate") == 0);
+  CHECK(strcmp(pai_proto_msg_name(PAI_PROTO_MSG_EMBED), "embed") == 0);
+  CHECK(strcmp(pai_proto_msg_name(PAI_PROTO_MSG_EMBEDDING), "embedding") ==
+        0);
   CHECK(strcmp(pai_proto_msg_name(0xFFFF), "unknown") == 0);
 }
 

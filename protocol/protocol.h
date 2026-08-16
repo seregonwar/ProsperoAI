@@ -118,6 +118,11 @@ enum pai_proto_msg {
   PAI_PROTO_MSG_TOKEN    = 0x0203,
   PAI_PROTO_MSG_COMPLETE = 0x0204,
 
+  /* Embeddings — one-shot request/reply:
+   *   EMBED #r -> EMBEDDING #r (or ERROR #r)                       */
+  PAI_PROTO_MSG_EMBED      = 0x0205, /* client -> server: request  */
+  PAI_PROTO_MSG_EMBEDDING  = 0x0206, /* server -> client: vector   */
+
   /* Generic async stream carrier (telemetry, profiler output,
    * autotuning, transfer progress, logs, long compilations). */
   PAI_PROTO_MSG_STREAM_DATA  = 0x0301,
@@ -322,6 +327,30 @@ pai_status_t pai_proto_msg_encode_token(uint8_t *out, uint32_t cap,
 pai_status_t pai_proto_msg_decode_token(const uint8_t *payload, uint32_t len,
                                         const uint8_t **out_token,
                                         uint32_t *out_token_len);
+
+/*
+ * EMBED: { u16 text_len; u8 text[text_len] } (UTF-8).
+ * EMBEDDING: { u32 dim; f32 values[dim] } little-endian (IEEE-754
+ * bit-copy, matching the sampler trailer). dim is capped at
+ * PAI_PROTO_MAX_EMBED_DIM by both the encoder and the decoder so a
+ * hostile payload cannot claim an absurd vector length.
+ */
+#define PAI_PROTO_MAX_EMBED_DIM (1u << 16)
+
+pai_status_t pai_proto_msg_encode_embed(uint8_t *out, uint32_t cap,
+                                        const char *text, uint32_t text_len,
+                                        uint32_t *out_len);
+pai_status_t pai_proto_msg_decode_embed(const uint8_t *payload, uint32_t len,
+                                        const char **out_text,
+                                        uint32_t *out_text_len);
+pai_status_t pai_proto_msg_encode_embedding(uint8_t *out, uint32_t cap,
+                                            const float *values, uint32_t dim,
+                                            uint32_t *out_len);
+/* `out_values` points into `payload` (valid for the frame's lifetime). */
+pai_status_t pai_proto_msg_decode_embedding(const uint8_t *payload,
+                                            uint32_t len,
+                                            const float **out_values,
+                                            uint32_t *out_dim);
 
 /*
  * STREAM_DATA: { u8 kind; u8 reserved[3]; u32 seq; u32 data_len;
