@@ -402,6 +402,14 @@ pai_gc_init(pai_gpu_device_t *device) {
   /* Read-only layout diagnostic for the GPU page-table work. */
   (void)pai_gvmspace_diag();
 
+  /* Probe the static GPU pml4 candidate (0x1430000, constant across
+   * boots per the diag) against a typical GPU VA. Read-only. */
+  {
+    intptr_t dmap = 0xFFFFD79F00000000LL;
+    uint64_t probe_va = 0x200400000ULL;
+    (void)pai_gvmspace_probe(0x1430000ULL, probe_va, dmap);
+  }
+
   st->cb_buf = (pai_gpu_buffer_t *)calloc(1, sizeof(*st->cb_buf));
   if (!st->cb_buf ||
       pai_gc_alloc_dmem(st->cb_buf, PAI_GC_CB_BUF_SIZE, "pai-cb", NULL) != PAI_OK) {

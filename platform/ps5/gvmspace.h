@@ -10,6 +10,13 @@
 #include <stdint.h>
 
 /*
+ * Read-only probe: walk a candidate GPU pml4 (physical address) for
+ * `va` through the direct map and report the resulting PDE. No writes.
+ */
+pai_status_t pai_gvmspace_probe(uint64_t pml4_phys, uint64_t va,
+                                intptr_t dmap_base);
+
+/*
  * Read-only layout diagnostic: dumps the process vmspace pointer
  * landscape and the candidate pmap structs to the log. No kernel
  * writes are performed — safe to run on a live console.

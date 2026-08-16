@@ -211,6 +211,53 @@ pai_gvmspace_diag(void) {
   return PAI_OK;
 }
 
+/* Read-only probe: walk a candidate GPU pml4 for `va` and report the
+ * PDE. No writes. */
+pai_status_t
+pai_gvmspace_probe(uint64_t pml4_phys, uint64_t va, intptr_t dmap_base) {
+  uint64_t e4, e3, e2;
+  uint64_t idx4 = (va >> 39) & 0x1FFu;
+  uint64_t idx3 = (va >> 30) & 0x1FFu;
+  uint64_t idx2 = (va >> 21) & 0x1FFu;
+  intptr_t l4 = dmap_base + (intptr_t)pml4_phys;
+
+  if (kernel_copyout(l4 + (intptr_t)(idx4 * 8), &e4, 8) != 0) {
+    PAI_LOG_INFO_(PAI_SUB_GPU, "gvm probe: pml4 read failed\n");
+    return PAI_ERR_CAPABILITY;
+  }
+  if (!(e4 & PAI_GPU_VALID)) {
+    PAI_LOG_INFO_(PAI_SUB_GPU, "gvm probe: pml4e invalid (0x%llx)\n",
+                  (unsigned long long)e4);
+    return PAI_ERR_CAPABILITY;
+  }
+
+  if (kernel_copyout(dmap_base + (intptr_t)((e4 & PAI_GPU_WALK_ADDR_MASK) +
+                                           idx3 * 8),
+                     &e3, 8) != 0) {
+    PAI_LOG_INFO_(PAI_SUB_GPU, "gvm probe: pdpe read failed\n");
+    return PAI_ERR_CAPABILITY;
+  }
+  if (!(e3 & PAI_GPU_VALID)) {
+    PAI_LOG_INFO_(PAI_SUB_GPU, "gvm probe: pdpe invalid (0x%llx)\n",
+                  (unsigned long long)e3);
+    return PAI_ERR_CAPABILITY;
+  }
+
+  if (kernel_copyout(dmap_base + (intptr_t)((e3 & PAI_GPU_WALK_ADDR_MASK) +
+                                           idx2 * 8),
+                     &e2, 8) != 0) {
+    PAI_LOG_INFO_(PAI_SUB_GPU, "gvm probe: pde read failed\n");
+    return PAI_ERR_CAPABILITY;
+  }
+
+  PAI_LOG_INFO_(PAI_SUB_GPU,
+                "gvm probe: pml4=0x%llx va=0x%llx pde=0x%llx (%s)\n",
+                (unsigned long long)pml4_phys, (unsigned long long)va,
+                (unsigned long long)e2,
+                (e2 & PAI_GPU_VALID) ? "valid" : "INVALID");
+  return PAI_OK;
+}
+
 pai_status_t
 pai_gvmspace_fix(uint64_t gpu_va, uint64_t phys, uint64_t size) {
   static pai_gvmspace_ctx_t g;
