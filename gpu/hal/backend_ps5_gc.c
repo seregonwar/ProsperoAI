@@ -171,10 +171,17 @@ pai_gc_buffer_alloc(pai_gpu_device_t *device, pai_gpu_buffer_t *buffer,
     return st;
   }
 
-  /* Repair the GPU mapping for this buffer: the walk was validated
-   * against the kernel's own acqrb mapping and the reference PDE was
-   * captured. Writes only the 2 MB leaf and verifies. */
-  (void)pai_gvmspace_repair(buffer->gpu_addr, phys);
+  /* READ-ONLY diagnosis: was the dmem mapping already set up by the
+   * kernel? If the PDE is valid, the repair must NEVER run. */
+  {
+    uint64_t pml4_phys = 0;
+    intptr_t dmap = 0;
+    static int probed = 0;
+    if (!probed && pai_gvmspace_layout(&pml4_phys, &dmap) == 0) {
+      probed = 1;
+      (void)pai_gvmspace_probe(pml4_phys, buffer->gpu_addr, dmap);
+    }
+  }
 
   return PAI_OK;
 }
