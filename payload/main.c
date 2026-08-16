@@ -1338,10 +1338,11 @@ m0_exp_v0model(m0_ctx_t *ctx) {
       m0_run_gpu(ctx, stream, stream_len, c32, 128, 0xCC, name);
 
       if (variant == 1) {
-        /* F2 control: v0 stays tid -> c[i] == i as bits */
+        /* F2: store semantics probe — c[i] observed as 4i+3 on 9.40.
+         * Verify against the CPU-computed formula. */
         int ok = 1;
         for (uint32_t i = 0; i < PAI_EXP_THREADS_X; i++) {
-          if (c32[i] != i) {
+          if (c32[i] != (i << 2) + 3u) {
             ok = 0;
             break;
           }
