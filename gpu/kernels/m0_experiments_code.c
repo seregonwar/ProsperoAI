@@ -36,6 +36,10 @@ const uint32_t pai_arith_code[PAI_ARITH_CODE_WORDS] = {
 #include "gfx1013/pai_arith.inc"
 };
 
+const uint32_t pai_arith4_code[] = {
+#include "gfx1013/pai_arith4.inc"
+};
+
 const uint32_t pai_v0model_code[] = {
 #include "gfx1013/pai_v0model.inc"
 };

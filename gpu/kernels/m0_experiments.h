@@ -82,6 +82,13 @@
 #define PAI_ARITH_RSRC2 0x0000000Cu
 #define PAI_ARITH_CODE_WORDS 13u
 
+/* E45/E46: arith under RSRC2 0x08 (k at s0, C at s2:s3). */
+#define PAI_ARITH4_RSRC2 0x00000008u
+#define PAI_ARITH4_OFF 0u
+#define PAI_ARITH4_WORDS 13u
+#define PAI_ARITH4B_OFF 13u
+#define PAI_ARITH4B_WORDS 12u
+
 /* E31: loadstore with vaddr pairs 1 (v[2:3]) only. */
 #define PAI_LOADSTORE_GOLD_RSRC2 0x0000000Cu
 #define PAI_LOADSTORE_GOLD_CODE_WORDS 20u
@@ -124,6 +131,7 @@ extern const uint32_t pai_store64_gold_code[PAI_STORE64_GOLD_CODE_WORDS];
 extern const uint32_t pai_store64_v0_code[PAI_STORE64_V0_CODE_WORDS];
 extern const uint32_t pai_mubufload_code[PAI_MUBUFLOAD_CODE_WORDS];
 extern const uint32_t pai_arith_code[PAI_ARITH_CODE_WORDS];
+extern const uint32_t pai_arith4_code[];
 extern const uint32_t pai_v0model_code[];
 extern const uint32_t pai_loadstore_gold_code[PAI_LOADSTORE_GOLD_CODE_WORDS];
 extern const uint32_t pai_loadstore_code[PAI_LOADSTORE_CODE_WORDS];

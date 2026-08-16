@@ -1203,40 +1203,47 @@ m0_exp_loads_arith(m0_ctx_t *ctx) {
     }
   }
 
-  /* E42: THE MILESTONE — c[i] = (float)i + k (stride 4, 6 SGPRs). */
-  if (!host) {
-    pai_gpu_reset(gpu);
-  }
+  /* E45/E46: milestone arith under the proven 4-SGPR config. */
   {
     float k = 1.5f;
-    memcpy(ctx->code.cpu_addr, pai_arith_code,
-           PAI_ARITH_CODE_WORDS * sizeof(uint32_t));
-    if (host) {
-      pai_gpu_host_register_shader(gpu, ctx->code.gpu_addr,
-                                   pai_host_kernel_arith, NULL);
-    }
-    ud[0] = 0;
-    ud[1] = 0;
-    ud[2] = (uint32_t)(ctx->c.gpu_addr & 0xFFFFFFFFu);
-    ud[3] = (uint32_t)(ctx->c.gpu_addr >> 32);
-    memcpy(&ud[4], &k, sizeof(k));
-    ud[5] = 0;
-    m0_build_dispatch_stream(ctx, stream, M0_PM4_CAP, PAI_ARITH_RSRC2,
-                             PAI_EXP_THREADS_X, 1, ud, 6, &stream_len);
-    m0_run_gpu(ctx, stream, stream_len, c32, 128, 0xCC, "E42");
-    {
-      float *cf = (float *)ctx->c.cpu_addr;
-      int ok = 1;
-      for (uint32_t i = 0; i < PAI_EXP_THREADS_X; i++) {
-        float want = (float)i + k;
-        if (cf[i] != want) {
-          ok = 0;
-          PAI_LOG_ERROR_(PAI_SUB_GPU, "[M0-E42] c[%u] = %f want %f\n", i,
-                         (double)cf[i], (double)want);
-          break;
-        }
+    for (uint32_t variant = 0; variant < 2; variant++) {
+      const char *name = variant == 0 ? "E45" : "E46";
+      uint32_t off = variant == 0 ? PAI_ARITH4_OFF : PAI_ARITH4B_OFF;
+      uint32_t words = variant == 0 ? PAI_ARITH4_WORDS : PAI_ARITH4B_WORDS;
+      if (!host) {
+        pai_gpu_reset(gpu);
       }
-      m0_exp_report("E42", ok);
+      memcpy(ctx->code.cpu_addr, &pai_arith4_code[off],
+             words * sizeof(uint32_t));
+      if (host) {
+        pai_gpu_host_register_shader(gpu, ctx->code.gpu_addr,
+                                     pai_host_kernel_arith, NULL);
+      }
+      ud[0] = 0;
+      ud[1] = 0;
+      ud[2] = (uint32_t)(ctx->c.gpu_addr & 0xFFFFFFFFu);
+      ud[3] = (uint32_t)(ctx->c.gpu_addr >> 32);
+      /* k goes in s0 for the arith4 ABI; the host kernel reads s4, so
+       * keep both for host parity. */
+      memcpy(&ud[0], &k, sizeof(k));
+      memcpy(&ud[4], &k, sizeof(k));
+      m0_build_dispatch_stream(ctx, stream, M0_PM4_CAP, PAI_ARITH4_RSRC2,
+                               PAI_EXP_THREADS_X, 1, ud, 4, &stream_len);
+      m0_run_gpu(ctx, stream, stream_len, c32, 128, 0xCC, name);
+      {
+        float *cf = (float *)ctx->c.cpu_addr;
+        int ok = 1;
+        for (uint32_t i = 0; i < PAI_EXP_THREADS_X; i++) {
+          float want = (float)i + k;
+          if (cf[i] != want) {
+            ok = 0;
+            PAI_LOG_ERROR_(PAI_SUB_GPU, "[M0-%s] c[%u] = %f want %f\n",
+                           name, i, (double)cf[i], (double)want);
+            break;
+          }
+        }
+        m0_exp_report(name, ok);
+      }
     }
   }
 
