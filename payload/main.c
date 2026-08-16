@@ -1877,18 +1877,18 @@ m0_exp_v0model(m0_ctx_t *ctx) {
                                    pai_host_kernel_g8, NULL);
     }
     for (uint32_t chunk = 0; chunk < 4; chunk++) {
+      uint64_t a_base = ctx->a.gpu_addr + chunk * 128u;
+      uint64_t b_base = ctx->b.gpu_addr + chunk * 128u;
       ud[0] = 0;
       ud[1] = 0;
-      ud[2] = (uint32_t)(ctx->a.gpu_addr & 0xFFFFFFFFu);
-      ud[3] = (uint32_t)(ctx->a.gpu_addr >> 32);
-      ud[4] = (uint32_t)(ctx->b.gpu_addr & 0xFFFFFFFFu);
-      ud[5] = (uint32_t)(ctx->b.gpu_addr >> 32);
+      ud[2] = (uint32_t)(a_base & 0xFFFFFFFFu);
+      ud[3] = (uint32_t)(a_base >> 32);
+      ud[4] = (uint32_t)(b_base & 0xFFFFFFFFu);
+      ud[5] = (uint32_t)(b_base >> 32);
       ud[6] = (uint32_t)(ctx->c.gpu_addr & 0xFFFFFFFFu);
       ud[7] = (uint32_t)(ctx->c.gpu_addr >> 32);
-      ud[8] = chunk * 32u;
-      ud[9] = 0;
-      m0_build_dispatch_stream(ctx, stream, M0_PM4_CAP, PAI_G23_RSRC2,
-                               PAI_EXP_THREADS_X, 1, ud, 10, &stream_len);
+      m0_build_dispatch_stream(ctx, stream, M0_PM4_CAP, 0x00000048u,
+                               PAI_EXP_THREADS_X, 1, ud, 8, &stream_len);
       m0_run_gpu(ctx, stream, stream_len, c23 + chunk * 32, 32 * 4, 0xCC,
                  "G23");
     }

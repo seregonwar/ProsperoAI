@@ -15,9 +15,8 @@
 .globl smemvecadd
 
 smemvecadd:
-    s_lshl_b32 s9, s8, 2
-    s_load_dwordx16 s[16:31], s[2:3], s9
-    s_load_dwordx16 s[32:47], s[4:5], s9
+    s_load_dwordx16 s[16:31], s[2:3], 0
+    s_load_dwordx16 s[32:47], s[4:5], 0
     s_waitcnt lgkmcnt(0)
     v_mov_b32 v1, 0x0
     v_mov_b32 v2, s10
