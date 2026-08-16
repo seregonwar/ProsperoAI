@@ -492,6 +492,37 @@ pai_gvmspace_probe(uint64_t pml4_phys, uint64_t va, intptr_t dmap_base) {
  * kernel-mapped VA) and our physical frame. Verifies the write.
  */
 /*
+ * Read-only: scan physical memory (via the direct map) for `magic`.
+ */
+int
+pai_phys_scan(uint32_t magic, uint64_t start, uint64_t end, uint64_t step,
+              int max_hits) {
+  int hits = 0;
+  uint32_t w[4];
+  if (!g_diag_have_layout || start >= end || step == 0) {
+    return 0;
+  }
+  for (uint64_t p = start; p < end; p += step) {
+    if (kernel_copyout(g_diag_dmap + (intptr_t)p, w, 16) != 0) {
+      continue;
+    }
+    for (int i = 0; i < 4; i++) {
+      if (w[i] == magic) {
+        PAI_LOG_INFO_(PAI_SUB_GPU,
+                      "phys scan: magic 0x%08x at 0x%llx (+0x%x)\n",
+                      magic, (unsigned long long)p, i * 4);
+        hits++;
+        if (hits >= max_hits) {
+          return hits;
+        }
+        break;
+      }
+    }
+  }
+  return hits;
+}
+
+/*
  * Read-only: dump the first 4 words of a raw CPU physical address
  * through the direct map.
  */

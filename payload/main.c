@@ -1680,6 +1680,14 @@ m0_exp_v0model(m0_ctx_t *ctx) {
           }
         }
         m0_exp_report("G14", ok);
+
+        /* Locate the physical landing page of the GPU store (read-only
+         * scan through the direct map). */
+        if (!host) {
+          int n = pai_phys_scan(PAI_G14_VALUE, 0, 0x400000000ULL,
+                                0x200000ULL, 16);
+          PAI_LOG_INFO_(PAI_SUB_GPU, "[M0-G14] phys scan hits: %d\n", n);
+        }
       }
     }
   }

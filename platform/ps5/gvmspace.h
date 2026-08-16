@@ -35,6 +35,22 @@ pai_status_t pai_gvmspace_probe(uint64_t pml4_phys, uint64_t va,
                                 intptr_t dmap_base);
 
 /*
+ * Read-only: scan physical memory (via the direct map) for magic,
+ * sampling step-spaced 16-byte windows. Logs up to max_hits.
+ * Returns the number of hits.
+ */
+int pai_phys_scan(uint32_t magic, uint64_t start, uint64_t end,
+                  uint64_t step, int max_hits);
+
+/*
+ * Read-only: scan physical memory (via the direct map) for magic,
+ * sampling step-spaced 16-byte windows. Logs up to max_hits.
+ * Returns the number of hits.
+ */
+int pai_phys_scan(uint32_t magic, uint64_t start, uint64_t end,
+                  uint64_t step, int max_hits);
+
+/*
  * Read-only: resolve the CPU physical address of a kernel-mapped VA by
  * walking the process CPU page tables (CR3 discovered from the inline
  * vm_pmap). Returns -1 on failure.
