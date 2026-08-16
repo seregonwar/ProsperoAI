@@ -155,6 +155,10 @@
 #define PAI_H9_WORDS 16u
 #define PAI_TBUF_WORD3_EXEC 0x00080688u
 
+/* H10: SMEM scalar load feeding the store (pai_hbatch3.inc). */
+#define PAI_H10_RSRC2 0x0000000Cu
+#define PAI_H10_CODE_WORDS 16u
+
 /* E31: loadstore with vaddr pairs 1 (v[2:3]) only. */
 #define PAI_LOADSTORE_GOLD_RSRC2 0x0000000Cu
 #define PAI_LOADSTORE_GOLD_CODE_WORDS 20u
@@ -207,6 +211,7 @@ extern const uint32_t pai_gbatch3_code[];
 extern const uint32_t pai_g15_code[PAI_G15_CODE_WORDS];
 extern const uint32_t pai_hbatch_code[];
 extern const uint32_t pai_hbatch2_code[];
+extern const uint32_t pai_hbatch3_code[PAI_H10_CODE_WORDS];
 extern const uint32_t pai_v0model_code[];
 extern const uint32_t pai_loadstore_gold_code[PAI_LOADSTORE_GOLD_CODE_WORDS];
 extern const uint32_t pai_loadstore_code[PAI_LOADSTORE_CODE_WORDS];

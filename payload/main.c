@@ -1280,6 +1280,46 @@ m0_exp_v0model(m0_ctx_t *ctx) {
     }
   }
 
+  /* H10: SMEM scalar load feeding the store — c[i] = A[0] + 4i + 3. */
+  if (!host) {
+    pai_gpu_reset(gpu);
+  }
+  {
+    uint32_t *a32 = (uint32_t *)ctx->a.cpu_addr;
+    a32[0] = 0x44440000u;
+    memcpy(ctx->code.cpu_addr, pai_hbatch3_code,
+           PAI_H10_CODE_WORDS * sizeof(uint32_t));
+    if (host) {
+      pai_gpu_host_register_shader(gpu, ctx->code.gpu_addr,
+                                   pai_host_kernel_h1, NULL);
+    }
+    ud[0] = 0;
+    ud[1] = 0;
+    ud[2] = (uint32_t)(ctx->c.gpu_addr & 0xFFFFFFFFu);
+    ud[3] = (uint32_t)(ctx->c.gpu_addr >> 32);
+    ud[4] = (uint32_t)(ctx->a.gpu_addr & 0xFFFFFFFFu);
+    ud[5] = (uint32_t)(ctx->a.gpu_addr >> 32);
+    m0_build_dispatch_stream(ctx, stream, M0_PM4_CAP, PAI_H10_RSRC2,
+                             PAI_EXP_THREADS_X, 1, ud, 6, &stream_len);
+    m0_run_gpu(ctx, stream, stream_len, c32, 128, 0xCC, "H10");
+    PAI_LOG_INFO_(PAI_SUB_GPU, "[M0-H10] c[0..15] = %08x %08x %08x %08x "
+                  "%08x %08x %08x %08x %08x %08x %08x %08x %08x %08x "
+                  "%08x %08x\n",
+                  c32[0], c32[1], c32[2], c32[3], c32[4], c32[5], c32[6],
+                  c32[7], c32[8], c32[9], c32[10], c32[11], c32[12], c32[13],
+                  c32[14], c32[15]);
+    {
+      int ok = 1;
+      for (uint32_t i = 0; i < 8; i++) {
+        if (c32[i] != a32[0] + (i << 2) + 3u) {
+          ok = 0;
+          break;
+        }
+      }
+      m0_exp_report("H10", ok);
+    }
+  }
+
   /* H7-H9: load result register probes (T# 0x80688). */
   {
     static const uint32_t h_offs[3] = {PAI_H7_OFF, PAI_H8_OFF, PAI_H9_OFF};
