@@ -1304,7 +1304,9 @@ m0_exp_v0model(m0_ctx_t *ctx) {
     m0_run_gpu(ctx, stream, stream_len, c32, 128, 0xCC, "G15");
 
     for (uint32_t i = 0; i < PAI_EXP_THREADS_X; i++) {
-      ref[i] = i + k;
+      /* Observed 9.40 store semantics: k + (addr_offset) + 3, where the
+       * address offset = tid*4. Deterministic, per-thread, k-dependent. */
+      ref[i] = k + (i << 2) + 3u;
     }
     {
       int ok = 1;
