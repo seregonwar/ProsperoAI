@@ -171,14 +171,19 @@ pai_gc_buffer_alloc(pai_gpu_device_t *device, pai_gpu_buffer_t *buffer,
     return st;
   }
 
-  /* READ-ONLY diagnosis: was the dmem mapping already set up by the
-   * kernel? If the PDE is valid, the repair must NEVER run. */
+  /* READ-ONLY diagnosis: is the kernel's GPU mapping of this VA
+   * pointing at the SAME physical page as the dmem syscall? A mismatch
+   * explains the zero reads (the GPU loads another page). */
   {
     uint64_t pml4_phys = 0;
     intptr_t dmap = 0;
     static int probed = 0;
     if (!probed && pai_gvmspace_layout(&pml4_phys, &dmap) == 0) {
       probed = 1;
+      PAI_LOG_INFO_(PAI_SUB_GPU,
+                    "dmem buf: va=0x%llx syscall phys=0x%llx\n",
+                    (unsigned long long)buffer->gpu_addr,
+                    (unsigned long long)phys);
       (void)pai_gvmspace_probe(pml4_phys, buffer->gpu_addr, dmap);
     }
   }

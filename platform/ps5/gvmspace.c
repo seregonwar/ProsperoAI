@@ -351,6 +351,10 @@ pai_gvmspace_probe(uint64_t pml4_phys, uint64_t va, intptr_t dmap_base) {
                 (e2 & PAI_GPU_VALID) ? "valid" : "INVALID");
   if (e2 & PAI_GPU_VALID) {
     g_ref_pde = e2;
+    PAI_LOG_INFO_(PAI_SUB_GPU,
+                  "gvm probe: pde phys=0x%llx (syscall phys expected in the "
+                  "caller)\n",
+                  (unsigned long long)(e2 & 0x00003FFFFFE00000ULL));
   }
   return PAI_OK;
 }
