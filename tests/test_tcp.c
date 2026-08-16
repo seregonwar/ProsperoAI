@@ -400,4 +400,35 @@ TEST_MAIN_BEGIN()
   CHECK(pai_proto_tcp_connect("nonexistent.invalid", 9, &t) == PAI_ERR_IO);
 }
 
+/* ------------------------------------------------------------------ */
+/* endpoint destroy is idempotent (safe after conn double-close)       */
+/* ------------------------------------------------------------------ */
+
+{
+  pai_proto_tcp_listener_t *lst = NULL;
+  pai_proto_transport_t t;
+  uint16_t port = 0;
+
+  CHECK(pai_proto_tcp_listen(&lst, "127.0.0.1", 0) == PAI_OK);
+  CHECK(pai_proto_tcp_listener_port(lst, &port) == PAI_OK);
+  CHECK(pai_proto_tcp_connect("127.0.0.1", port, &t) == PAI_OK);
+
+  /* close() twice is safe (conn layer double-close), destroy frees. */
+  t.close(t.ctx);
+  t.close(t.ctx);
+  pai_proto_tcp_transport_destroy(&t);
+  pai_proto_tcp_transport_destroy(&t); /* second destroy is a no-op */
+  CHECK(t.ctx == NULL);
+
+  /* destroy of a never-connected transport is a no-op */
+  {
+    pai_proto_transport_t zero;
+    memset(&zero, 0, sizeof(zero));
+    pai_proto_tcp_transport_destroy(&zero);
+    pai_proto_tcp_transport_destroy(NULL);
+  }
+
+  pai_proto_tcp_listener_destroy(lst);
+}
+
 TEST_MAIN_END()

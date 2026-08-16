@@ -16,6 +16,12 @@
  *
  * send() is a blocking full-write loop. Host-side only (the payload
  * talks its own sockets on the console).
+ *
+ * Note: gateway/gwsys.c carries a sibling socket layer for the HTTP
+ * server. It stays separate on purpose — the protocol core must not
+ * depend on the host-only gateway layer, and the recv contracts differ
+ * (this transport is timeout-bounded for the poll loop, gwsys is
+ * blocking for thread-per-connection).
  */
 
 #include <protocol/protocol.h>
@@ -103,7 +109,7 @@ tcp_set_rcv_timeout(tcp_sock_t s) {
 /* Resolve + open a connected stream socket. */
 static tcp_sock_t
 tcp_socket_connect(const char *host, uint16_t port) {
-  tcp_sock_t s;
+  tcp_sock_t s = TCP_SOCK_INVALID;
   struct addrinfo hints;
   struct addrinfo *res = NULL;
   struct addrinfo *ai;
