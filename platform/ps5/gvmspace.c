@@ -402,6 +402,52 @@ pai_gvmspace_probe(uint64_t pml4_phys, uint64_t va, intptr_t dmap_base) {
  * kernel-mapped VA) and our physical frame. Verifies the write.
  */
 pai_status_t
+int
+pai_gvmspace_dump_pde_page(uint64_t va, uint32_t words[4]) {
+  uint64_t e4, e3, e2;
+  uint64_t idx4 = (va >> 39) & 0x1FFu;
+  uint64_t idx3 = (va >> 30) & 0x1FFu;
+  uint64_t idx2 = (va >> 21) & 0x1FFu;
+  uint64_t p4_phys, p3_phys;
+  uint64_t page_phys;
+
+  if (!g_diag_have_layout) {
+    return -1;
+  }
+
+  if (kernel_copyout(g_diag_dmap + (intptr_t)(g_diag_gpu_pml4_phys +
+                                               idx4 * 8),
+                     &e4, 8) != 0 ||
+      !(e4 & PAI_GPU_VALID)) {
+    return -1;
+  }
+  p4_phys = e4 & PAI_GPU_PHYS_MASK_940 & ~0xFFFULL;
+  if (kernel_copyout(g_diag_dmap + (intptr_t)(p4_phys + idx3 * 8), &e3, 8) !=
+          0 ||
+      !(e3 & PAI_GPU_VALID)) {
+    return -1;
+  }
+  p3_phys = e3 & PAI_GPU_PHYS_MASK_940 & ~0xFFFULL;
+  if (kernel_copyout(g_diag_dmap + (intptr_t)(p3_phys + idx2 * 8), &e2, 8) !=
+          0 ||
+      !(e2 & PAI_GPU_VALID)) {
+    return -1;
+  }
+
+  page_phys = e2 & PAI_GPU_PHYS_MASK_940 & ~0x1FFFFFULL;
+  if (page_phys >= 0x400000000ULL) {
+    return -1;
+  }
+  for (int i = 0; i < 4; i++) {
+    if (kernel_copyout(g_diag_dmap + (intptr_t)(page_phys + i * 4),
+                       &words[i], 4) != 0) {
+      return -1;
+    }
+  }
+  return 0;
+}
+
+pai_status_t
 pai_gvmspace_repair(uint64_t gpu_va, uint64_t phys) {
   uint64_t e4, e3, e2;
   uint64_t idx4 = (gpu_va >> 39) & 0x1FFu;

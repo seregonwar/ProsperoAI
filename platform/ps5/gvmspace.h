@@ -35,6 +35,14 @@ pai_status_t pai_gvmspace_probe(uint64_t pml4_phys, uint64_t va,
                                 intptr_t dmap_base);
 
 /*
+ * Read-only: dump the first 4 words of the physical page the GPU PDE
+ * for a points at. Used to detect kernel-side staging (the VA maps
+ * to a separate physical page that the kernel copies lazily). No
+ * writes; returns the page content words.
+ */
+int pai_gvmspace_dump_pde_page(uint64_t va, uint32_t words[4]);
+
+/*
  * Read-only layout diagnostic: dumps the process vmspace pointer
  * landscape and the candidate pmap structs to the log. No kernel
  * writes are performed — safe to run on a live console.

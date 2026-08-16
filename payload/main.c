@@ -2611,6 +2611,30 @@ main(void) {
     fail |= M0_STAGE_A_FAIL;
   }
 
+  /* Post-DMA staging check (read-only): does the GPU PDE point at a
+   * page that contains the DMA pattern, or a separate zero page? */
+  {
+    uint32_t w[4];
+    const uint32_t *src32 = (const uint32_t *)ctx.src.cpu_addr;
+    PAI_LOG_INFO_(PAI_SUB_CORE,
+                  "staging: src cpu page = %08x %08x %08x %08x\n",
+                  src32[0], src32[1], src32[2], src32[3]);
+    if (pai_gvmspace_dump_pde_page(ctx.src.gpu_addr, w) == 0) {
+      PAI_LOG_INFO_(PAI_SUB_CORE,
+                    "staging: src PDE page = %08x %08x %08x %08x\n",
+                    w[0], w[1], w[2], w[3]);
+    } else {
+      PAI_LOG_INFO_(PAI_SUB_CORE, "staging: src PDE page unreadable\n");
+    }
+    if (pai_gvmspace_dump_pde_page(ctx.dst.gpu_addr, w) == 0) {
+      PAI_LOG_INFO_(PAI_SUB_CORE,
+                    "staging: dst PDE page = %08x %08x %08x %08x\n",
+                    w[0], w[1], w[2], w[3]);
+    } else {
+      PAI_LOG_INFO_(PAI_SUB_CORE, "staging: dst PDE page unreadable\n");
+    }
+  }
+
   m0_stage_e(&ctx);
 
   if (m0_stage_b0(&ctx) != 0) {
