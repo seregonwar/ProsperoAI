@@ -2008,6 +2008,40 @@ m0_exp_v0model(m0_ctx_t *ctx) {
     }
   }
 
+  /* G27: single s_load + ds write/read + G15 formula. */
+  if (!host) {
+    pai_gpu_reset(gpu);
+  }
+  {
+    uint32_t *c27 = (uint32_t *)ctx->c.cpu_addr;
+    memcpy(ctx->code.cpu_addr, pai_dsstaged1_code,
+           PAI_G27_CODE_WORDS * sizeof(uint32_t));
+    if (host) {
+      pai_gpu_host_register_shader(gpu, ctx->code.gpu_addr,
+                                   pai_host_kernel_g8, NULL);
+    }
+    ud[0] = 0;
+    ud[1] = 0;
+    ud[2] = (uint32_t)(ctx->c.gpu_addr & 0xFFFFFFFFu);
+    ud[3] = (uint32_t)(ctx->c.gpu_addr >> 32);
+    ud[4] = (uint32_t)(ctx->c.gpu_addr & 0xFFFFFFFFu);
+    ud[5] = (uint32_t)(ctx->c.gpu_addr >> 32);
+    m0_build_dispatch_stream(ctx, stream, M0_PM4_CAP, PAI_G27_RSRC2,
+                             PAI_EXP_THREADS_X, 1, ud, 6, &stream_len);
+    m0_run_gpu(ctx, stream, stream_len, c27, 128, 0xA5, "G27");
+    PAI_LOG_INFO_(PAI_SUB_GPU,
+                  "[M0-G27] c[0..7] = %08x %08x %08x %08x %08x %08x "
+                  "%08x %08x\n",
+                  c27[0], c27[1], c27[2], c27[3], c27[4], c27[5], c27[6],
+                  c27[7]);
+    {
+      uint32_t want0 = PAI_G20_VALUE + 3u;
+      uint32_t want1 = PAI_G20_VALUE + 4u + 3u;
+      int ok = (c27[0] == want0) && (c27[1] == want1);
+      m0_exp_report("G27", ok);
+    }
+  }
+
   /* G17: load from the kernel's own acqrb VA - does ANY load complete,
    * or only our dmem pages hang? */
   if (!host) {

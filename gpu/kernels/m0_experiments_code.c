@@ -100,6 +100,9 @@ const uint32_t pai_dsprobe_code[PAI_G25_CODE_WORDS] = {
 const uint32_t pai_dsstaged_code[PAI_G26_CODE_WORDS] = {
 #include "gfx1013/pai_dsstaged.inc"
 };
+const uint32_t pai_dsstaged1_code[PAI_G27_CODE_WORDS] = {
+#include "gfx1013/pai_dsstaged1.inc"
+};
 
 const uint32_t pai_hbatch_code[] = {
 #include "gfx1013/pai_hbatch.inc"
