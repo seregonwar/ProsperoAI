@@ -3278,6 +3278,70 @@ m0_exp_v0model(m0_ctx_t *ctx) {
     }
   }
 
+  /* G40: VALU float GEMV, serial-per-row (TGID_X parallel rows). */
+  if (!host) {
+    pai_gpu_reset(gpu);
+  }
+  {
+    uint32_t m = 8u, k = 32u;
+    uint32_t *w32 = (uint32_t *)ctx->a.cpu_addr;
+    uint32_t *x32 = (uint32_t *)ctx->b.cpu_addr;
+    uint32_t *y32 = (uint32_t *)ctx->c.cpu_addr;
+    uint32_t stream_len = 0;
+    float want[8];
+    memcpy(ctx->code.cpu_addr, pai_fgemv_serial_code,
+           PAI_FGEMV_CODE_WORDS * sizeof(uint32_t));
+    if (host) {
+      pai_gpu_host_register_shader(gpu, ctx->code.gpu_addr,
+                                   pai_host_kernel_g8, NULL);
+    }
+    w32[0] = k;
+    w32[1] = 0;
+    w32[2] = (uint32_t)(ctx->b.gpu_addr & 0xFFFFFFFFu);
+    w32[3] = (uint32_t)(ctx->b.gpu_addr >> 32);
+    for (uint32_t g = 0; g < m; g++) {
+      want[g] = 0.0f;
+      for (uint32_t kk = 0; kk < k; kk++) {
+        float wv = 0.5f + 0.1f * (float)g + 0.01f * (float)kk;
+        float xv = 1.0f - 0.02f * (float)kk;
+        memcpy(&w32[4u + g * k + kk], &wv, 4);
+        want[g] += wv * xv;
+      }
+    }
+    for (uint32_t kk = 0; kk < k; kk++) {
+      float xv = 1.0f - 0.02f * (float)kk;
+      memcpy(&x32[kk], &xv, 4);
+    }
+    pai_gpu_buffer_flush(ctx->gpu, &ctx->a);
+    pai_gpu_buffer_flush(ctx->gpu, &ctx->b);
+    ud[0] = 0;
+    ud[1] = 0;
+    ud[2] = (uint32_t)(ctx->a.gpu_addr & 0xFFFFFFFFu);
+    ud[3] = (uint32_t)(ctx->a.gpu_addr >> 32);
+    ud[4] = (uint32_t)(ctx->c.gpu_addr & 0xFFFFFFFFu);
+    ud[5] = (uint32_t)(ctx->c.gpu_addr >> 32);
+    ud[6] = 0;
+    m0_build_dispatch_stream(ctx, stream, M0_PM4_CAP, PAI_FGEMV_RSRC2,
+                             PAI_FGEMV_THREADS, m, ud, 7, &stream_len);
+    m0_run_gpu(ctx, stream, stream_len, y32, 64, 0xCC, "G40");
+    {
+      float got[8];
+      int ok = 1;
+      memcpy(got, y32, sizeof(got));
+      PAI_LOG_INFO_(PAI_SUB_GPU,
+                    "[M0-G40] y[0..3] = %.4f %.4f %.4f %.4f\n",
+                    (double)got[0], (double)got[1], (double)got[2],
+                    (double)got[3]);
+      for (uint32_t g = 0; g < m; g++) {
+        if (got[g] != want[g]) {
+          ok = 0;
+          break;
+        }
+      }
+      m0_exp_report("G40", ok);
+    }
+  }
+
   /* G17: load from the kernel's own acqrb VA - does ANY load complete,
    * or only our dmem pages hang? */
   if (!host) {

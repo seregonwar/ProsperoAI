@@ -136,6 +136,9 @@ const uint32_t pai_mubufload37_code[] = {
 const uint32_t pai_fdot_serial_code[PAI_FDOT_CODE_WORDS] = {
 #include "gfx1013/pai_fdot_serial.inc"
 };
+const uint32_t pai_fgemv_serial_code[PAI_FGEMV_CODE_WORDS] = {
+#include "gfx1013/pai_fgemv_serial.inc"
+};
 
 const uint32_t pai_hbatch_code[] = {
 #include "gfx1013/pai_hbatch.inc"
