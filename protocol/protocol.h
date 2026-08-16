@@ -325,6 +325,49 @@ void pai_proto_pipe_pair_destroy(pai_proto_pipe_pair_t *pair);
 void pai_proto_pipe_endpoint(const pai_proto_pipe_pair_t *pair, int which,
                              pai_proto_transport_t *out);
 
+/*
+ * TCP transports (§25 — the desktop <-> PS5 link). `recv` is
+ * time-bounded (SO_RCVTIMEO, 100 ms default) so poll() keeps the pipe
+ * semantics: PAI_OK with *out_read == 0 when no data is available yet,
+ * PAI_ERR_IO with *out_read == 0 on EOF. `send` blocks until every
+ * byte is accepted. `close` is idempotent.
+ */
+
+/* Client transport: connect to `host` (IP or name) on `port`. */
+pai_status_t pai_proto_tcp_connect(const char *host, uint16_t port,
+                                   pai_proto_transport_t *out);
+
+/* Server listener. */
+typedef struct pai_proto_tcp_listener pai_proto_tcp_listener_t;
+
+/* Bind + listen on `host` (NULL = any) `port` (0 = ephemeral). */
+pai_status_t pai_proto_tcp_listen(pai_proto_tcp_listener_t **out,
+                                  const char *host, uint16_t port);
+
+/* The port actually bound (useful with port 0). */
+pai_status_t pai_proto_tcp_listener_port(const pai_proto_tcp_listener_t *l,
+                                         uint16_t *out_port);
+
+/* Accept one connection (blocking); returns a server-side transport. */
+pai_status_t pai_proto_tcp_accept(pai_proto_tcp_listener_t *l,
+                                  pai_proto_transport_t *out);
+
+void pai_proto_tcp_listener_destroy(pai_proto_tcp_listener_t *l);
+
+/*
+ * Free a TCP transport endpoint. `close` alone only closes the socket
+ * (it survives the connection layer's double-close); the endpoint
+ * itself is heap-owned and must be released with this call after the
+ * connection using it has been destroyed. Idempotent.
+ */
+void pai_proto_tcp_transport_destroy(pai_proto_transport_t *t);
+
+/*
+ * v0 note: pai_proto_tcp_connect uses a blocking connect() — on
+ * unreachable hosts it can take the OS default timeout (tens of
+ * seconds). Loopback and LAN peers return immediately.
+ */
+
 /* ------------------------------------------------------------------ */
 /* Connection                                                          */
 /* ------------------------------------------------------------------ */

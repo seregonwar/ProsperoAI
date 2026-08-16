@@ -19,6 +19,7 @@ set(PAI_TESTS
   test_ref_ops
   test_hal_host
   test_protocol
+  test_tcp
   test_json
   test_gateway
 )

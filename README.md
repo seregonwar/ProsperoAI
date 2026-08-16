@@ -139,8 +139,13 @@ Implemented so far:
   binary protocol — 40-byte frames with CRC-32, request ids with
   pipelining, version + capability negotiation, sessions, structured
   status codes, native async streams (GENERATE → ACCEPTED → TOKEN* →
-  COMPLETE). Ships with an in-memory pipe transport for host tests;
-  TCP/Local transports plug into the same `pai_proto_transport_t`.
+  COMPLETE). Two transports plug into the same `pai_proto_transport_t`:
+  an in-memory pipe pair (host tests / loopback) and a **TCP
+  transport** (the desktop ↔ PS5 link): `pai_proto_tcp_connect`,
+  `pai_proto_tcp_listen`/`accept` with ephemeral-port support, and
+  pipe-compatible recv semantics (SO_RCVTIMEO-bounded, EOF →
+  `PAI_PROTO_CLOSE_PEER_GONE`). `test_tcp` runs the full §24 exchange,
+  pipelined PING/PONG, EOF and refused-connect over real sockets.
 - CPU reference backend (correctness oracle): vecadd / vecmul / GEMM /
   relu / softmax / RMSNorm / LayerNorm / concat / copy / memset16
 - PM4 command-stream builder (hardware-qualified packet encodings)
