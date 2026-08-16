@@ -401,7 +401,9 @@ pai_gvmspace_probe(uint64_t pml4_phys, uint64_t va, intptr_t dmap_base) {
  * 2 MB leaf built from the reference flags (captured from a
  * kernel-mapped VA) and our physical frame. Verifies the write.
  */
-pai_status_t
+/*
+ * Read-only: dump the physical page the GPU PDE for `va` points at.
+ */
 int
 pai_gvmspace_dump_pde_page(uint64_t va, uint32_t words[4]) {
   uint64_t e4, e3, e2;
