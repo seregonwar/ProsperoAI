@@ -2645,6 +2645,42 @@ main(void) {
     fail |= M0_STAGE_B_FAIL;
   }
 
+  /* Post-compute staging check (read-only): compare the CPU pages and
+   * the pages the GPU PDEs point at for the a/b/c buffers. */
+  {
+    uint32_t w[4];
+    const uint32_t *c32 = (const uint32_t *)ctx.c.cpu_addr;
+    const uint32_t *a32 = (const uint32_t *)ctx.a.cpu_addr;
+    const uint32_t *b32 = (const uint32_t *)ctx.b.cpu_addr;
+    PAI_LOG_INFO_(PAI_SUB_CORE,
+                  "staging2: a cpu = %08x %08x %08x %08x\n", a32[0], a32[1],
+                  a32[2], a32[3]);
+    if (pai_gvmspace_dump_pde_page(ctx.a.gpu_addr, w) == 0) {
+      PAI_LOG_INFO_(PAI_SUB_CORE, "staging2: a PDE page = %08x %08x %08x "
+                    "%08x\n", w[0], w[1], w[2], w[3]);
+    } else {
+      PAI_LOG_INFO_(PAI_SUB_CORE, "staging2: a PDE page unreadable\n");
+    }
+    PAI_LOG_INFO_(PAI_SUB_CORE,
+                  "staging2: b cpu = %08x %08x %08x %08x\n", b32[0], b32[1],
+                  b32[2], b32[3]);
+    if (pai_gvmspace_dump_pde_page(ctx.b.gpu_addr, w) == 0) {
+      PAI_LOG_INFO_(PAI_SUB_CORE, "staging2: b PDE page = %08x %08x %08x "
+                    "%08x\n", w[0], w[1], w[2], w[3]);
+    } else {
+      PAI_LOG_INFO_(PAI_SUB_CORE, "staging2: b PDE page unreadable\n");
+    }
+    PAI_LOG_INFO_(PAI_SUB_CORE,
+                  "staging2: c cpu = %08x %08x %08x %08x\n", c32[0], c32[1],
+                  c32[2], c32[3]);
+    if (pai_gvmspace_dump_pde_page(ctx.c.gpu_addr, w) == 0) {
+      PAI_LOG_INFO_(PAI_SUB_CORE, "staging2: c PDE page = %08x %08x %08x "
+                    "%08x\n", w[0], w[1], w[2], w[3]);
+    } else {
+      PAI_LOG_INFO_(PAI_SUB_CORE, "staging2: c PDE page unreadable\n");
+    }
+  }
+
   if (fail == 0) {
     m0_stage_c(&ctx);
   }
