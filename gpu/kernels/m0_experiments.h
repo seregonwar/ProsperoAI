@@ -141,6 +141,10 @@
  * value at +32 words (pai_selfref.inc). */
 #define PAI_G16_RSRC2 0x00000008u
 #define PAI_G16_CODE_WORDS 25u
+
+/* G17: acqrb-VA load probe (pai_acqload.inc). */
+#define PAI_G17_RSRC2 0x0000000Cu
+#define PAI_G17_CODE_WORDS 17u
 #define PAI_G16_VALUE 0x12345678u
 
 /* H1/H3: MUBUF loads with the OpenAGC raw T# (pai_hbatch.inc). */
@@ -224,6 +228,7 @@ extern const uint32_t pai_gbatch2_code[];
 extern const uint32_t pai_gbatch3_code[];
 extern const uint32_t pai_g15_code[PAI_G15_CODE_WORDS];
 extern const uint32_t pai_selfref_code[PAI_G16_CODE_WORDS];
+extern const uint32_t pai_acqload_code[PAI_G17_CODE_WORDS];
 extern const uint32_t pai_hbatch_code[];
 extern const uint32_t pai_hbatch2_code[];
 extern const uint32_t pai_hbatch3_code[PAI_H10_CODE_WORDS];

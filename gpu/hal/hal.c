@@ -53,6 +53,14 @@ pai_gpu_device_create(pai_gpu_backend_t backend, pai_gpu_device_t **out_device) 
   return PAI_OK;
 }
 
+uint64_t
+pai_gpu_aux_va(pai_gpu_device_t *device) {
+  if (!device || !device->ops || !device->ops->aux_va) {
+    return 0ULL;
+  }
+  return device->ops->aux_va(device);
+}
+
 void
 pai_gpu_device_destroy(pai_gpu_device_t *device) {
   if (!device) {

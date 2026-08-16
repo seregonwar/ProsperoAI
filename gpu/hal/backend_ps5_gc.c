@@ -445,6 +445,12 @@ pai_gc_shutdown(pai_gpu_device_t *device) {
   return PAI_OK;
 }
 
+static uint64_t
+pai_gc_aux_va(pai_gpu_device_t *device) {
+  pai_gc_state_t *st = (pai_gc_state_t *)device->state;
+  return st ? (uint64_t)(uintptr_t)st->acqrb : 0ULL;
+}
+
 static pai_status_t
 pai_gc_reset(pai_gpu_device_t *device) {
   pai_ps5_gc_state_t *st = (pai_ps5_gc_state_t *)device->state;
@@ -495,6 +501,7 @@ const pai_gpu_backend_ops_t pai_gpu_ops_ps5_gc = {
     .submit = pai_gc_submit_stream,
     .wait_label = pai_gc_wait_label,
     .reset = pai_gc_reset,
+    .aux_va = pai_gc_aux_va,
 };
 
 #endif /* PAI_PS5 */

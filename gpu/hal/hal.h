@@ -54,6 +54,8 @@ typedef struct pai_gpu_backend_ops {
   pai_status_t (*wait_label)(pai_gpu_device_t *device, uint64_t label_addr,
                              uint32_t label_value, uint64_t timeout_ns);
   pai_status_t (*reset)(pai_gpu_device_t *device);
+  /* Auxiliary GPU VA owned by the backend (acqrb etc.), or 0. */
+  uint64_t (*aux_va)(pai_gpu_device_t *device);
 } pai_gpu_backend_ops_t;
 
 struct pai_gpu_device {
@@ -71,6 +73,9 @@ pai_status_t pai_gpu_device_create(pai_gpu_backend_t backend,
 void pai_gpu_device_destroy(pai_gpu_device_t *device);
 const char *pai_gpu_device_name(const pai_gpu_device_t *device);
 pai_gpu_backend_t pai_gpu_device_backend(const pai_gpu_device_t *device);
+
+/* Backend-owned auxiliary GPU VA (acqrb etc.), or 0 when unavailable. */
+uint64_t pai_gpu_aux_va(pai_gpu_device_t *device);
 
 /* Allocate GPU-visible memory. On PS5 this is direct memory (unified). */
 pai_status_t pai_gpu_buffer_alloc(pai_gpu_device_t *device,

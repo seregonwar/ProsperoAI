@@ -1675,6 +1675,53 @@ m0_exp_v0model(m0_ctx_t *ctx) {
     }
   }
 
+  /* G17: load from the kernel's own acqrb VA - does ANY load complete,
+   * or only our dmem pages hang? */
+  if (!host) {
+    pai_gpu_reset(gpu);
+  }
+  {
+    uint64_t acq = pai_gpu_aux_va(ctx->gpu);
+    uint32_t *c17 = (uint32_t *)ctx->c.cpu_addr;
+    PAI_LOG_INFO_(PAI_SUB_GPU, "[M0-G17] acqrb VA = 0x%llx\n",
+                  (unsigned long long)acq);
+    if (!acq) {
+      m0_exp_report("G17", 0);
+    } else {
+      memset(c17, 0xCC, 128 * sizeof(uint32_t));
+      memcpy(ctx->code.cpu_addr, pai_acqload_code,
+             PAI_G17_CODE_WORDS * sizeof(uint32_t));
+      if (host) {
+        pai_gpu_host_register_shader(gpu, ctx->code.gpu_addr,
+                                     pai_host_kernel_g8, NULL);
+      }
+      ud[0] = 0;
+      ud[1] = 0;
+      ud[2] = (uint32_t)(acq & 0xFFFFFFFFu);
+      ud[3] = (uint32_t)(acq >> 32);
+      ud[4] = (uint32_t)(ctx->c.gpu_addr & 0xFFFFFFFFu);
+      ud[5] = (uint32_t)(ctx->c.gpu_addr >> 32);
+      m0_build_dispatch_stream(ctx, stream, M0_PM4_CAP, PAI_G17_RSRC2,
+                               PAI_EXP_THREADS_X, 1, ud, 6, &stream_len);
+      m0_run_gpu(ctx, stream, stream_len, c17, 128, 0xCC, "G17");
+      PAI_LOG_INFO_(PAI_SUB_GPU,
+                    "[M0-G17] c[0..7] = %08x %08x %08x %08x %08x %08x "
+                    "%08x %08x\n",
+                    c17[0], c17[1], c17[2], c17[3], c17[4], c17[5], c17[6],
+                    c17[7]);
+      {
+        int ok = 1;
+        for (uint32_t i = 0; i < 8; i++) {
+          if (c17[i] == 0xCCCCCCCCu) {
+            ok = 0;
+            break;
+          }
+        }
+        m0_exp_report("G17", ok);
+      }
+    }
+  }
+
   /* G13/G14: literal source probes + formal milestone fill. */
   {
     static const uint32_t g_offs[2] = {PAI_G13_OFF, PAI_G14_OFF};

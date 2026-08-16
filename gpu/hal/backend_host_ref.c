@@ -305,6 +305,12 @@ pai_host_shutdown(pai_gpu_device_t *device) {
   return PAI_OK;
 }
 
+static uint64_t
+pai_host_aux_va(pai_gpu_device_t *device) {
+  (void)device;
+  return 0ULL;
+}
+
 static pai_status_t
 pai_host_reset(pai_gpu_device_t *device) {
   pai_host_ref_state_t *st = (pai_host_ref_state_t *)device->state;
@@ -321,4 +327,5 @@ const pai_gpu_backend_ops_t pai_gpu_ops_host_ref = {
     .submit = pai_host_submit,
     .wait_label = pai_host_wait_label,
     .reset = pai_host_reset,
+    .aux_va = pai_host_aux_va,
 };
