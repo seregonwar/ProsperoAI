@@ -173,7 +173,7 @@ DingDong submission path on the created queue.
   - `flat_store_dwordx4` = v0 broadcast x4 (E30/E32/G9).
   - Only lanes 0-7 of a 32-thread wave write (exec-mask quirk).
   - vaddr must be v[2:3]; v[4:5] hangs.
-- Float ALU: UNLOCKED (G35 PASS). `v_cvt_f32_i32` + `v_add_f32_e64 v1, v1, s4` (direct SGPR scalar operand) = per-thread float add, dst != v0. `v_mov`/add with dst v0 = HANG the wave; e32 (VOP2) mixed VGPR+SGPR = VGPR operand zeroed; `v_mov_b32 vX, s4` = SGPR read 0 (dst != v0 mov). Save tid to v6 before clobbering v0.
+- Float ALU: FULLY UNLOCKED (G35/G39 PASS). SALU float does NOT exist on gfx1013 (llvm-mc: no s_mul_f32/s_add_f32) - float is VALU-only. Validated: v_cvt_f32_i32 (G28), v_add_f32_e64 with direct SGPR scalar (G35), v_mul_f32_e64 with both-SGPR operands + VGPR+VGPR add accumulator (G39 float dot, exact match vs CPU). Forms to avoid: dst-v0 float op = HANG, e32 VOP2 mixed VGPR+SGPR = VGPR zeroed, v_mov_b32 vX, s4 (dst != v0) = SGPR read 0.
 - **PAI-M1 (serial G22 tensor primitives): CLOSED without LDS**
   - M1A integer SAXPY: VALIDATED (N=8..1M, stable multi-iter)
   - M1B `dot_serial_u32`: VALIDATED (correctness reduction; not fast)
@@ -214,4 +214,5 @@ DingDong submission path on the created queue.
   add1d / SAXPY / serial dot / serial GEMV on the G22 path.
 - Open (do not block M1 closeout): MUBUF T# / flat loads, float ALU
   quirk, lane 8+ exec mask, LDS (M1C) pending AGC CS blob @ 0x213.
+
 
