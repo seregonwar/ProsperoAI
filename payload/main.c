@@ -1348,10 +1348,12 @@ m0_exp_v0model(m0_ctx_t *ctx) {
           }
         }
         m0_exp_report(name, ok);
-        PAI_LOG_INFO_(PAI_SUB_GPU, "[M0-%s] c[0..7] = %08x %08x %08x %08x "
-                      "%08x %08x %08x %08x\n",
+        PAI_LOG_INFO_(PAI_SUB_GPU, "[M0-%s] c[0..15] = %08x %08x %08x %08x "
+                      "%08x %08x %08x %08x %08x %08x %08x %08x %08x %08x "
+                      "%08x %08x\n",
                       name, c32[0], c32[1], c32[2], c32[3], c32[4], c32[5],
-                      c32[6], c32[7]);
+                      c32[6], c32[7], c32[8], c32[9], c32[10], c32[11],
+                      c32[12], c32[13], c32[14], c32[15]);
       } else if (variant == 3) {
         /* F4: integer add -> c[i] == i + k_bits */
         int ok = 1;
