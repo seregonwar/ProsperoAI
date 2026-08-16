@@ -392,6 +392,9 @@ pai_gc_init(pai_gpu_device_t *device) {
     }
   }
 
+  /* Read-only layout diagnostic for the GPU page-table work. */
+  (void)pai_gvmspace_diag();
+
   st->cb_buf = (pai_gpu_buffer_t *)calloc(1, sizeof(*st->cb_buf));
   if (!st->cb_buf ||
       pai_gc_alloc_dmem(st->cb_buf, PAI_GC_CB_BUF_SIZE, "pai-cb", NULL) != PAI_OK) {

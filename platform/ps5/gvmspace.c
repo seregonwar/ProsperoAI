@@ -155,12 +155,17 @@ pai_gvm_walk(pai_gvmspace_ctx_t *g, uint64_t va, uint64_t *out_pde_addr,
 
 /* Diagnostic: dump the process vmspace pointer landscape so the real
  * 9.40 GPU-pmap layout can be derived from hardware instead of from
- * the 11.20 spoofer assumptions. */
-static void
-pai_gvm_dump_layout(void) {
+ * the 11.20 spoofer assumptions. Read-only. */
+pai_status_t
+pai_gvmspace_diag(void) {
   intptr_t proc = kernel_get_proc(getpid());
   intptr_t vmspace = kernel_getlong(proc + KERNEL_OFFSET_PROC_P_VMSPACE);
   uint64_t v;
+
+  if (!proc || !vmspace || vmspace == -1) {
+    PAI_LOG_ERROR_(PAI_SUB_GPU, "gvm diag: proc/vmspace resolution failed\n");
+    return PAI_ERR_CAPABILITY;
+  }
 
   PAI_LOG_INFO_(PAI_SUB_GPU, "gvm diag: proc=0x%llx vmspace=0x%llx\n",
                 (unsigned long long)proc, (unsigned long long)vmspace);
@@ -179,10 +184,10 @@ pai_gvm_dump_layout(void) {
   /* Dump the first 0x40 bytes of each pmap-like pointer. */
   for (intptr_t off = 0x1C8; off <= 0x1F0; off += 8) {
     intptr_t pmap = (intptr_t)kernel_getlong(vmspace + off);
-    if (!pmap || pmap == -1) {
+    if (!pmap || pmap == -1 || pmap < (intptr_t)0xFFFF800000000000ULL) {
       continue;
     }
-    PAI_LOG_INFO_(PAI_SUB_GPU, "gvm diag: pmap@+0x%lx = 0x%llx: ", 
+    PAI_LOG_INFO_(PAI_SUB_GPU, "gvm diag: pmap@+0x%lx = 0x%llx: ",
                   (unsigned long)off, (unsigned long long)pmap);
     for (int i = 0; i < 8; i++) {
       v = kernel_getlong(pmap + i * 8);
@@ -190,6 +195,8 @@ pai_gvm_dump_layout(void) {
     }
     PAI_LOG_INFO_(PAI_SUB_GPU, "\n");
   }
+
+  return PAI_OK;
 }
 
 pai_status_t
@@ -204,7 +211,7 @@ pai_gvmspace_fix(uint64_t gpu_va, uint64_t phys, uint64_t size) {
 
   if (!dumped) {
     dumped = 1;
-    pai_gvm_dump_layout();
+    (void)pai_gvmspace_diag();
   }
 
   if (!g.found) {
