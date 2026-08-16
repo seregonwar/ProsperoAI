@@ -171,27 +171,24 @@ pai_gc_buffer_alloc(pai_gpu_device_t *device, pai_gpu_buffer_t *buffer,
     return st;
   }
 
-  /* READ-ONLY diagnosis: is the kernel's GPU mapping of this VA
-   * pointing at the SAME physical page as the dmem syscall? A mismatch
-   * explains the zero reads (the GPU loads another page). */
+  /* READ-ONLY diagnosis: log the syscall phys and the kernel's PDE
+   * for the first few buffers. */
   {
     uint64_t pml4_phys = 0;
     intptr_t dmap = 0;
-    static int probed = 0;
-    if (!probed && pai_gvmspace_layout(&pml4_phys, &dmap) == 0) {
-      probed = 1;
-      PAI_LOG_INFO_(PAI_SUB_GPU,
-                    "dmem buf: va=0x%llx syscall phys=0x%llx\n",
-                    (unsigned long long)buffer->gpu_addr,
-                    (unsigned long long)phys);
+    static int nbuf = 0;
+    PAI_LOG_INFO_(PAI_SUB_GPU,
+                  "dmem buf[%d]: va=0x%llx syscall phys=0x%llx size=0x%llx\n",
+                  nbuf, (unsigned long long)buffer->gpu_addr,
+                  (unsigned long long)phys, (unsigned long long)buffer->size);
+    if (nbuf < 4 && pai_gvmspace_layout(&pml4_phys, &dmap) == 0) {
       (void)pai_gvmspace_probe(pml4_phys, buffer->gpu_addr, dmap);
     }
+    nbuf++;
   }
 
-  /* Repair the PDE physical frame: the dmem syscall hands out the
-   * GPU-BUS address (aperture +0x2000000000) while the GPU MMU walks
-   * CPU physicals - the kernel's PDE points at a different page, which
-   * is exactly why every shader load returns 0. Existing flags kept. */
+  /* Repair rehearsal per pai_gvmspace_set_mode (0 probe / 1 no-op /
+   * 2 full). */
   (void)pai_gvmspace_repair(buffer->gpu_addr, phys);
 
   return PAI_OK;

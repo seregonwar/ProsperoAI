@@ -34,7 +34,7 @@
 
 #define M0_TIMEOUT_NS UINT64_C(2000000000) /* 2s per submission */
 
-#define PAI_GVMSPACE_MODE 1 /* 0 probe / 1 no-op write / 2 full repair */
+#define PAI_GVMSPACE_MODE 0 /* 0 probe / 1 no-op write / 2 full repair */
 #define M0_DMA_BYTES   (1u << 20)
 #define M0_PM4_CAP     512
 

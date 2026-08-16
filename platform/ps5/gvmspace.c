@@ -363,11 +363,34 @@ pai_gvmspace_probe(uint64_t pml4_phys, uint64_t va, intptr_t dmap_base) {
                 (unsigned long long)e2,
                 (e2 & PAI_GPU_VALID) ? "valid" : "INVALID");
   if (e2 & PAI_GPU_VALID) {
+    uint64_t pde_phys_940 = e2 & PAI_GPU_PHYS_MASK_940 & ~0x1FFFFFULL;
+    uint64_t pde_phys_2mb = e2 & 0x00003FFFFFE00000ULL;
+    uint32_t words[4];
     g_ref_pde = e2;
     PAI_LOG_INFO_(PAI_SUB_GPU,
-                  "gvm probe: pde phys=0x%llx (syscall phys expected in the "
-                  "caller)\n",
-                  (unsigned long long)(e2 & 0x00003FFFFFE00000ULL));
+                  "gvm probe: pde phys=0x%llx (bits45:21) / 0x%llx (low46) "
+                  "- syscall phys expected in the caller\n",
+                  (unsigned long long)pde_phys_2mb,
+                  (unsigned long long)pde_phys_940);
+    /* Dump the page the PDE points at: staging-page check. */
+    if (pde_phys_940 < 0x400000000ULL) {
+      int ok = 1;
+      for (int i = 0; i < 4; i++) {
+        if (kernel_copyout(dmap_base + (intptr_t)(pde_phys_940 + i * 4),
+                           &words[i], 4) != 0) {
+          ok = 0;
+          break;
+        }
+      }
+      if (ok) {
+        PAI_LOG_INFO_(PAI_SUB_GPU,
+                      "gvm probe: staged page @0x%llx: %08x %08x %08x %08x\n",
+                      (unsigned long long)pde_phys_940, words[0], words[1],
+                      words[2], words[3]);
+      } else {
+        PAI_LOG_INFO_(PAI_SUB_GPU, "gvm probe: staged page unreadable\n");
+      }
+    }
   }
   return PAI_OK;
 }
