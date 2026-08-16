@@ -34,11 +34,13 @@
 #define PAI_STORE64_X2_RSRC2 0x00000008u
 #define PAI_STORE64_X2_CODE_WORDS 14u
 #define PAI_STORE64_X2_VALUE 0xBEADF00Du
+#define PAI_STORE64_X2_FLAT_WORD 11u
 
 /* E13: FLAT_STORE_DWORDX4 variant (16 bytes per thread, golden op). */
 #define PAI_STORE64_X4_RSRC2 0x00000008u
 #define PAI_STORE64_X4_CODE_WORDS 16u
 #define PAI_STORE64_X4_VALUE 0xF00DFEEDu
+#define PAI_STORE64_X4_FLAT_WORD 13u
 
 /* Instruction bisection (E15-E19): word ranges in gfx1013/pai_bisect.inc. */
 #define PAI_BISECT_BARE_OFF 0u
@@ -52,6 +54,7 @@
 #define PAI_BISECT_STORE_OFF 17u
 #define PAI_BISECT_STORE_WORDS 14u
 #define PAI_BISECT_STORE_VALUE 0xDEADBEEFu
+#define PAI_BISECT_STORE_FLAT_WORD 28u /* absolute index into pai_bisect_code */
 
 /* loadstore: 4 user SGPRs (A, C). */
 #define PAI_LOADSTORE_RSRC2 0x00000008u

@@ -783,13 +783,19 @@ static int
 m0_exp_store64_variant(m0_ctx_t *ctx, const char *name,
                        const uint32_t *code, uint32_t code_words,
                        uint32_t value, uint32_t check_words,
-                       pai_host_kernel_fn host_fn) {
+                       pai_host_kernel_fn host_fn, int patched,
+                       uint32_t flat_word) {
   uint32_t stream[M0_PM4_CAP];
   uint32_t stream_len;
   uint32_t ud[4];
   uint32_t *dst32 = (uint32_t *)ctx->dst.cpu_addr;
 
   memcpy(ctx->code.cpu_addr, code, code_words * sizeof(uint32_t));
+  if (patched &&
+      m0_patch_flat_bit15((uint32_t *)ctx->code.cpu_addr, flat_word) != 0) {
+    m0_exp_report(name, 0);
+    return 0;
+  }
   if (pai_gpu_device_backend(ctx->gpu) == PAI_GPU_BACKEND_HOST_REF) {
     pai_gpu_host_register_shader(ctx->gpu, ctx->code.gpu_addr, host_fn, NULL);
   }
@@ -890,7 +896,7 @@ m0_exp_memset_pattern_in_buf(m0_ctx_t *ctx, const char *name) {
  * (label fired), except E19 which must also write the constant. */
 static int
 m0_exp_bisect(m0_ctx_t *ctx, const char *name, uint32_t off,
-              uint32_t words, int check_store) {
+              uint32_t words, int check_store, int patched) {
   uint32_t stream[M0_PM4_CAP];
   uint32_t stream_len;
   uint32_t ud[4];
@@ -898,6 +904,12 @@ m0_exp_bisect(m0_ctx_t *ctx, const char *name, uint32_t off,
 
   memcpy(ctx->code.cpu_addr, &pai_bisect_code[off],
          words * sizeof(uint32_t));
+  if (patched &&
+      m0_patch_flat_bit15((uint32_t *)ctx->code.cpu_addr,
+                          PAI_BISECT_STORE_FLAT_WORD - off) != 0) {
+    m0_exp_report(name, 0);
+    return 0;
+  }
   if (pai_gpu_device_backend(ctx->gpu) == PAI_GPU_BACKEND_HOST_REF) {
     pai_gpu_host_register_shader(ctx->gpu, ctx->code.gpu_addr,
                                  check_store ? pai_host_kernel_bisect_store
@@ -949,27 +961,53 @@ m0_stage_e(m0_ctx_t *ctx) {
   if (!host) {
     pai_gpu_reset(gpu);
   }
-  m0_exp_bisect(ctx, "E15", PAI_BISECT_BARE_OFF, PAI_BISECT_BARE_WORDS, 0);
+  m0_exp_bisect(ctx, "E15", PAI_BISECT_BARE_OFF, PAI_BISECT_BARE_WORDS, 0, 0);
 
   if (!host) {
     pai_gpu_reset(gpu);
   }
-  m0_exp_bisect(ctx, "E16", PAI_BISECT_LSHL_OFF, PAI_BISECT_LSHL_WORDS, 0);
+  m0_exp_bisect(ctx, "E16", PAI_BISECT_LSHL_OFF, PAI_BISECT_LSHL_WORDS, 0, 0);
 
   if (!host) {
     pai_gpu_reset(gpu);
   }
-  m0_exp_bisect(ctx, "E17", PAI_BISECT_ADDCO_OFF, PAI_BISECT_ADDCO_WORDS, 0);
+  m0_exp_bisect(ctx, "E17", PAI_BISECT_ADDCO_OFF, PAI_BISECT_ADDCO_WORDS, 0,
+                0);
 
   if (!host) {
     pai_gpu_reset(gpu);
   }
-  m0_exp_bisect(ctx, "E18", PAI_BISECT_ADDCI_OFF, PAI_BISECT_ADDCI_WORDS, 0);
+  m0_exp_bisect(ctx, "E18", PAI_BISECT_ADDCI_OFF, PAI_BISECT_ADDCI_WORDS, 0,
+                0);
 
   if (!host) {
     pai_gpu_reset(gpu);
   }
-  m0_exp_bisect(ctx, "E19", PAI_BISECT_STORE_OFF, PAI_BISECT_STORE_WORDS, 1);
+  m0_exp_bisect(ctx, "E19", PAI_BISECT_STORE_OFF, PAI_BISECT_STORE_WORDS, 1,
+                0);
+
+  /* The golden store encoding: op 0x78 (x4) + bit 15. */
+  if (!host) {
+    pai_gpu_reset(gpu);
+  }
+  m0_exp_bisect(ctx, "E19b", PAI_BISECT_STORE_OFF, PAI_BISECT_STORE_WORDS, 1,
+                1);
+
+  if (!host) {
+    pai_gpu_reset(gpu);
+  }
+  m0_exp_store64_variant(ctx, "E20", pai_store64_x2_code,
+                         PAI_STORE64_X2_CODE_WORDS, PAI_STORE64_X2_VALUE, 128,
+                         pai_host_kernel_store64_x2, 1,
+                         PAI_STORE64_X2_FLAT_WORD);
+
+  if (!host) {
+    pai_gpu_reset(gpu);
+  }
+  m0_exp_store64_variant(ctx, "E21", pai_store64_x4_code,
+                         PAI_STORE64_X4_CODE_WORDS, PAI_STORE64_X4_VALUE, 256,
+                         pai_host_kernel_store64_x4, 1,
+                         PAI_STORE64_X4_FLAT_WORD);
 
   if (!host) {
     pai_gpu_reset(gpu);
