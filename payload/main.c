@@ -13,6 +13,8 @@
 #include <pai/api.h>
 #include <pai/log.h>
 
+#include "gvmspace.h"
+
 #include <bench.h>
 #include <hal/hal.h>
 #include <host_kernels.h>
@@ -31,6 +33,8 @@
 #define M0_STAGE_B_FAIL (1u << 1)
 
 #define M0_TIMEOUT_NS UINT64_C(2000000000) /* 2s per submission */
+
+#define PAI_GVMSPACE_MODE 1 /* 0 probe / 1 no-op write / 2 full repair */
 #define M0_DMA_BYTES   (1u << 20)
 #define M0_PM4_CAP     512
 
@@ -2563,6 +2567,9 @@ main(void) {
   memset(&ctx, 0, sizeof(ctx));
 
   PAI_LOG_INFO_(PAI_SUB_CORE, "===== PAI-M0 bring-up harness =====\n");
+
+  /* GPU page-table repair rehearsal: 0 probe / 1 no-op write / 2 full. */
+  pai_gvmspace_set_mode(PAI_GVMSPACE_MODE);
 
   /* Stop any previous payload instance still running (deploy
    * automation, same pattern as MemDBG). Best effort, never fatal. */

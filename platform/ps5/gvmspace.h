@@ -9,6 +9,9 @@
 
 #include <stdint.h>
 
+/* Select the repair rehearsal mode (0 probe / 1 no-op write / 2 full). */
+void pai_gvmspace_set_mode(int mode);
+
 /*
  * Repair the GPU mapping for `gpu_va` (2 MB granularity) after the
  * walk has been VALIDATED against a kernel-mapped reference VA.

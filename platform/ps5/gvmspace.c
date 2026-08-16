@@ -167,6 +167,19 @@ static intptr_t g_diag_dmap;
 static int g_diag_have_layout;
 static uint64_t g_ref_pde; /* valid PDE captured from a kernel-mapped VA */
 
+/* Repair rehearsal modes:
+ *   0 = probe only (read-only)
+ *   1 = no-op write rehearsal: write the PDE value back unchanged
+ *   2 = full repair (write the corrected physical frame)
+ */
+static int g_repair_mode;
+
+void
+pai_gvmspace_set_mode(int mode) {
+  g_repair_mode = mode;
+  PAI_LOG_INFO_(PAI_SUB_GPU, "gvm repair mode: %d\n", mode);
+}
+
 pai_status_t
 pai_gvmspace_diag(void) {
   intptr_t proc = kernel_get_proc(getpid());
@@ -415,6 +428,34 @@ pai_gvmspace_repair(uint64_t gpu_va, uint64_t phys) {
 
   if (kernel_copyout(pde_addr, &e2, 8) != 0) {
     return PAI_ERR_CAPABILITY;
+  }
+
+  /* Mode 1: rehearse the write path with the UNCHANGED value. Proves
+   * the kernel write primitive + target address are safe before the
+   * real content change. */
+  if (g_repair_mode == 1) {
+    PAI_LOG_INFO_(PAI_SUB_GPU,
+                  "gvm repair rehearsal: va=0x%llx pde_addr=0x%llx value="
+                  "0x%llx\n",
+                  (unsigned long long)gpu_va,
+                  (unsigned long long)(pde_addr - dmap),
+                  (unsigned long long)e2);
+    if (kernel_setlong(pde_addr, e2) != 0) {
+      PAI_LOG_ERROR_(PAI_SUB_GPU, "gvm repair rehearsal: write failed\n");
+      return PAI_ERR_CAPABILITY;
+    }
+    if (kernel_copyout(pde_addr, &verify, 8) != 0 || verify != e2) {
+      PAI_LOG_ERROR_(PAI_SUB_GPU,
+                     "gvm repair rehearsal: verify failed (0x%llx)\n",
+                     (unsigned long long)verify);
+      return PAI_ERR_CAPABILITY;
+    }
+    PAI_LOG_INFO_(PAI_SUB_GPU, "gvm repair rehearsal: write OK\n");
+    return PAI_OK;
+  }
+
+  if (g_repair_mode < 2) {
+    return PAI_OK;
   }
 
   if ((e2 & PAI_GPU_VALID) &&
