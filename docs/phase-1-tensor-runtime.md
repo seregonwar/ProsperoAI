@@ -83,10 +83,13 @@ Broken / open on 9.40 (do not build on them):
 - **buffer_load_dword (MUBUF): completes but zero-fills** for every
   T# word3 candidate tried so far. The vector read path is not usable
   yet; the T# hunt continues in parallel (§11).
-- **v_add_f32 (float ALU): returns 0 with `dst != v0`.** All Phase 1
-  GPU arithmetic must be integer (i32/u32) or use the CPU reference.
-  Float correctness is demonstrated on the CPU backend; float GPU
-  kernels are blocked on the ALU unlock.
+- **float ALU: UNLOCKED (2026-08-16).** The VALU float form is
+  _cvt_f32_i32 (int->float) + _add_f32_e64/_mul_f32_e64 with
+  direct SGPR operands + VGPR+VGPR accumulator, dst != v0. Validated:
+  float add (G35), float dot (G39, exact vs CPU), float GEMV with
+  parallel rows (G40), float SAXPY per-group (G41). SALU float does not
+  exist on gfx1013 (float is VALU-only). Avoid: dst-v0 float ops (hang),
+  e32 VOP2 mixed VGPR+SGPR (VGPR zeroed), _mov_b32 vX, s4 (SGPR read 0).
 - **LDS (ds ops): writes/reads complete alone, but any s_load + ds
   combination hangs** (G26/G27). The parallel-reduction path is
   blocked pending a real AGC CS RSRC2 dump. Do not invent further
@@ -377,7 +380,7 @@ Tracked, not required by the Phase 1 exit criteria:
 | --- | --- | --- |
 | MUBUF / vector reads | T# zero-fills for all candidates | capture a real AGC shader CS blob; diff T# words; retest per-thread loads |
 | flat loads | ring hang | same as above (likely the same VM read-side issue) |
-| float ALU (`v_add_f32`) | returns 0 with `dst != v0` | VOP3 float form audit; compare against a real float AGC kernel |
+| float ALU | ~~returns 0 with dst != v0~~ | **DONE** - e64 direct-SGPR form (G35/G39/G40/G41) |
 | LDS staging / M1C parallel reduction | `s_load` + `ds` combo hangs | real CS RSRC2 dump (SH offset 0x213); then barrier + LDS re-test |
 | bandwidth | ≈ 2–4 GB/s apparent | profile after the vector-read unlock; investigate async/pipelined submits |
 
@@ -429,3 +432,4 @@ Phase 1 is complete when:
 
 Non-goals (explicitly deferred): quantization kernels, KV cache,
 autotuning, kernel IR codegen, the MUBUF/float/LDS unlocks.
+
