@@ -246,47 +246,70 @@ int pai_gvmspace_layout(uint64_t *out_pml4_phys, intptr_t *out_dmap) {
   return 0;
 }
 
-/* Read-only probe: walk a candidate GPU pml4 for `va` and report the
- * PDE. No writes. */
+/* Read-only probe: walk the candidate GPU page-table root for `va`
+ * and report the PDE. Tries both 3-level and 4-level interpretations
+ * (the 9.40 GPU tables appear to be 3-level: PDPE -> PDE). No writes. */
 pai_status_t
 pai_gvmspace_probe(uint64_t pml4_phys, uint64_t va, intptr_t dmap_base) {
   uint64_t e4, e3, e2;
   uint64_t idx4 = (va >> 39) & 0x1FFu;
   uint64_t idx3 = (va >> 30) & 0x1FFu;
   uint64_t idx2 = (va >> 21) & 0x1FFu;
-  intptr_t l4 = dmap_base + (intptr_t)pml4_phys;
+  intptr_t root = dmap_base + (intptr_t)pml4_phys;
+  uint64_t root_e[8];
 
-  if (kernel_copyout(l4 + (intptr_t)(idx4 * 8), &e4, 8) != 0) {
-    PAI_LOG_INFO_(PAI_SUB_GPU, "gvm probe: pml4 read failed\n");
-    return PAI_ERR_CAPABILITY;
+  for (int i = 0; i < 8; i++) {
+    if (kernel_copyout(root + i * 8, &root_e[i], 8) != 0) {
+      root_e[i] = 0;
+    }
   }
+  PAI_LOG_INFO_(PAI_SUB_GPU,
+                "gvm probe: root[0..7] = %llx %llx %llx %llx %llx %llx "
+                "%llx %llx\n",
+                (unsigned long long)root_e[0], (unsigned long long)root_e[1],
+                (unsigned long long)root_e[2], (unsigned long long)root_e[3],
+                (unsigned long long)root_e[4], (unsigned long long)root_e[5],
+                (unsigned long long)root_e[6], (unsigned long long)root_e[7]);
+
+  /* 3-level interpretation: root = PDPE table. */
+  e3 = root_e[idx3];
+  if (e3 & PAI_GPU_VALID) {
+    if (kernel_copyout(dmap_base + (intptr_t)((e3 & PAI_GPU_WALK_ADDR_MASK) +
+                                             idx2 * 8),
+                       &e2, 8) == 0) {
+      PAI_LOG_INFO_(PAI_SUB_GPU,
+                    "gvm probe (3-level): va=0x%llx pde=0x%llx (%s)\n",
+                    (unsigned long long)va, (unsigned long long)e2,
+                    (e2 & PAI_GPU_VALID) ? "valid" : "INVALID");
+      return PAI_OK;
+    }
+  }
+
+  /* 4-level interpretation: root = pml4 table. */
+  e4 = root_e[idx4];
   if (!(e4 & PAI_GPU_VALID)) {
-    PAI_LOG_INFO_(PAI_SUB_GPU, "gvm probe: pml4e invalid (0x%llx)\n",
+    PAI_LOG_INFO_(PAI_SUB_GPU, "gvm probe (4-level): pml4e invalid (0x%llx)\n",
                   (unsigned long long)e4);
     return PAI_ERR_CAPABILITY;
   }
-
   if (kernel_copyout(dmap_base + (intptr_t)((e4 & PAI_GPU_WALK_ADDR_MASK) +
                                            idx3 * 8),
                      &e3, 8) != 0) {
-    PAI_LOG_INFO_(PAI_SUB_GPU, "gvm probe: pdpe read failed\n");
     return PAI_ERR_CAPABILITY;
   }
   if (!(e3 & PAI_GPU_VALID)) {
-    PAI_LOG_INFO_(PAI_SUB_GPU, "gvm probe: pdpe invalid (0x%llx)\n",
+    PAI_LOG_INFO_(PAI_SUB_GPU, "gvm probe (4-level): pdpe invalid (0x%llx)\n",
                   (unsigned long long)e3);
     return PAI_ERR_CAPABILITY;
   }
-
   if (kernel_copyout(dmap_base + (intptr_t)((e3 & PAI_GPU_WALK_ADDR_MASK) +
                                            idx2 * 8),
                      &e2, 8) != 0) {
-    PAI_LOG_INFO_(PAI_SUB_GPU, "gvm probe: pde read failed\n");
     return PAI_ERR_CAPABILITY;
   }
-
   PAI_LOG_INFO_(PAI_SUB_GPU,
-                "gvm probe: pml4=0x%llx va=0x%llx pde=0x%llx (%s)\n",
+                "gvm probe (4-level): pml4=0x%llx va=0x%llx pde=0x%llx "
+                "(%s)\n",
                 (unsigned long long)pml4_phys, (unsigned long long)va,
                 (unsigned long long)e2,
                 (e2 & PAI_GPU_VALID) ? "valid" : "INVALID");
