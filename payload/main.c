@@ -884,6 +884,56 @@ m0_exp_memset_pattern_in_buf(m0_ctx_t *ctx, const char *name) {
   return 0;
 }
 
+/* E15-E19: instruction bisection — each kernel adds one instruction
+ * family to a minimal program; the first that stops executing on the
+ * PS5 pinpoints the toxic instruction. Check = wave ran to completion
+ * (label fired), except E19 which must also write the constant. */
+static int
+m0_exp_bisect(m0_ctx_t *ctx, const char *name, uint32_t off,
+              uint32_t words, int check_store) {
+  uint32_t stream[M0_PM4_CAP];
+  uint32_t stream_len;
+  uint32_t ud[4];
+  uint32_t *dst32 = (uint32_t *)ctx->dst.cpu_addr;
+
+  memcpy(ctx->code.cpu_addr, &pai_bisect_code[off],
+         words * sizeof(uint32_t));
+  if (pai_gpu_device_backend(ctx->gpu) == PAI_GPU_BACKEND_HOST_REF) {
+    pai_gpu_host_register_shader(ctx->gpu, ctx->code.gpu_addr,
+                                 check_store ? pai_host_kernel_bisect_store
+                                             : pai_host_kernel_store64_x4,
+                                 NULL);
+  }
+  ud[0] = 0;
+  ud[1] = 0;
+  ud[2] = (uint32_t)(ctx->dst.gpu_addr & 0xFFFFFFFFu);
+  ud[3] = (uint32_t)(ctx->dst.gpu_addr >> 32);
+  m0_build_dispatch_stream(ctx, stream, M0_PM4_CAP, PAI_STORE_CONST64_RSRC2,
+                           PAI_STORE_CONST64_THREADS_X, 1, ud, 4, &stream_len);
+  m0_run_gpu(ctx, stream, stream_len, dst32, 64, 0x00, name);
+
+  if (check_store) {
+    int ok = 1;
+    for (uint32_t i = 0; i < PAI_STORE_CONST64_THREADS_X * 4; i++) {
+      if (dst32[i] != PAI_BISECT_STORE_VALUE) {
+        ok = 0;
+        break;
+      }
+    }
+    m0_exp_report(name, ok);
+    if (!ok) {
+      PAI_LOG_ERROR_(PAI_SUB_GPU,
+                     "[M0-%s] dst[0..7] = %08x %08x %08x %08x "
+                     "%08x %08x %08x %08x\n",
+                     name, dst32[0], dst32[1], dst32[2], dst32[3], dst32[4],
+                     dst32[5], dst32[6], dst32[7]);
+    }
+  }
+  /* For E15-E18 the report is implicit: m0_run_gpu already logged
+   * whether the wave completed (label fired) or hung. */
+  return 0;
+}
+
 static int
 m0_stage_e(m0_ctx_t *ctx) {
   pai_gpu_device_t *gpu = ctx->gpu;
@@ -899,21 +949,27 @@ m0_stage_e(m0_ctx_t *ctx) {
   if (!host) {
     pai_gpu_reset(gpu);
   }
-  m0_exp_store64_variant(ctx, "E12", pai_store64_x2_code,
-                         PAI_STORE64_X2_CODE_WORDS, PAI_STORE64_X2_VALUE, 128,
-                         pai_host_kernel_store64_x2);
+  m0_exp_bisect(ctx, "E15", PAI_BISECT_BARE_OFF, PAI_BISECT_BARE_WORDS, 0);
 
   if (!host) {
     pai_gpu_reset(gpu);
   }
-  m0_exp_store64_variant(ctx, "E13", pai_store64_x4_code,
-                         PAI_STORE64_X4_CODE_WORDS, PAI_STORE64_X4_VALUE, 256,
-                         pai_host_kernel_store64_x4);
+  m0_exp_bisect(ctx, "E16", PAI_BISECT_LSHL_OFF, PAI_BISECT_LSHL_WORDS, 0);
 
   if (!host) {
     pai_gpu_reset(gpu);
   }
-  m0_exp_memset_pattern_in_buf(ctx, "E14");
+  m0_exp_bisect(ctx, "E17", PAI_BISECT_ADDCO_OFF, PAI_BISECT_ADDCO_WORDS, 0);
+
+  if (!host) {
+    pai_gpu_reset(gpu);
+  }
+  m0_exp_bisect(ctx, "E18", PAI_BISECT_ADDCI_OFF, PAI_BISECT_ADDCI_WORDS, 0);
+
+  if (!host) {
+    pai_gpu_reset(gpu);
+  }
+  m0_exp_bisect(ctx, "E19", PAI_BISECT_STORE_OFF, PAI_BISECT_STORE_WORDS, 1);
 
   if (!host) {
     pai_gpu_reset(gpu);

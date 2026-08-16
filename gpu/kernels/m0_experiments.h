@@ -40,6 +40,19 @@
 #define PAI_STORE64_X4_CODE_WORDS 16u
 #define PAI_STORE64_X4_VALUE 0xF00DFEEDu
 
+/* Instruction bisection (E15-E19): word ranges in gfx1013/pai_bisect.inc. */
+#define PAI_BISECT_BARE_OFF 0u
+#define PAI_BISECT_BARE_WORDS 2u
+#define PAI_BISECT_LSHL_OFF 2u
+#define PAI_BISECT_LSHL_WORDS 3u
+#define PAI_BISECT_ADDCO_OFF 5u
+#define PAI_BISECT_ADDCO_WORDS 5u
+#define PAI_BISECT_ADDCI_OFF 10u
+#define PAI_BISECT_ADDCI_WORDS 7u
+#define PAI_BISECT_STORE_OFF 17u
+#define PAI_BISECT_STORE_WORDS 14u
+#define PAI_BISECT_STORE_VALUE 0xDEADBEEFu
+
 /* loadstore: 4 user SGPRs (A, C). */
 #define PAI_LOADSTORE_RSRC2 0x00000008u
 #define PAI_LOADSTORE_CODE_WORDS 20u
@@ -60,5 +73,6 @@ extern const uint32_t pai_store_const64_code[PAI_STORE_CONST64_CODE_WORDS];
 extern const uint32_t pai_store64_x2_code[PAI_STORE64_X2_CODE_WORDS];
 extern const uint32_t pai_store64_x4_code[PAI_STORE64_X4_CODE_WORDS];
 extern const uint32_t pai_loadstore_code[PAI_LOADSTORE_CODE_WORDS];
+extern const uint32_t pai_bisect_code[];
 
 #endif /* PAI_GPU_M0_EXPERIMENT_KERNELS_H */
