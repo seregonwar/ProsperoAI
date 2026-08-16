@@ -48,7 +48,7 @@ Out of scope for Phase 1 (later phases):
   elementwise fusion;
 - the Prospero Protocol / gateway / desktop pipeline (they exist, but
   Phase 1 does not depend on them);
-- the MUBUF/flat/float/LDS GPU unlocks (tracked, not required — see §11).
+- the MUBUF/flat/LDS GPU unlocks (tracked, not required - see §11).
 
 ---
 
