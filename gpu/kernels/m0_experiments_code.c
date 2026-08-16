@@ -118,6 +118,9 @@ const uint32_t pai_dsstaged1_code[PAI_G27_CODE_WORDS] = {
 const uint32_t pai_fbatch2_code[] = {
 #include "gfx1013/pai_fbatch2.inc"
 };
+const uint32_t pai_fbatch3_code[] = {
+#include "gfx1013/pai_fbatch3.inc"
+};
 
 const uint32_t pai_hbatch_code[] = {
 #include "gfx1013/pai_hbatch.inc"

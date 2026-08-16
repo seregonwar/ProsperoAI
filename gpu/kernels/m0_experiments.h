@@ -241,6 +241,12 @@
 #define PAI_G30_OFF 27u
 #define PAI_G30_WORDS 13u
 #define PAI_G2X_K 0.5f
+
+/* G31/G32: float add operand probes (pai_fbatch3.inc). */
+#define PAI_G31_OFF 0u
+#define PAI_G31_WORDS 14u
+#define PAI_G32_OFF 14u
+#define PAI_G32_WORDS 16u
 #define PAI_G25_VALUE 0xDEAD0001u
 #define PAI_G19_VALUE 0xA5A5A5A5u
 #define PAI_G16_VALUE 0x12345678u
@@ -342,6 +348,7 @@ extern const uint32_t pai_lds_lanes_code[PAI_LDS_LANES_CODE_WORDS];
 extern const uint32_t pai_dsstaged_code[PAI_G26_CODE_WORDS];
 extern const uint32_t pai_dsstaged1_code[PAI_G27_CODE_WORDS];
 extern const uint32_t pai_fbatch2_code[];
+extern const uint32_t pai_fbatch3_code[];
 extern const uint32_t pai_hbatch_code[];
 extern const uint32_t pai_hbatch2_code[];
 extern const uint32_t pai_hbatch3_code[PAI_H10_CODE_WORDS];
