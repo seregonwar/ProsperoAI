@@ -99,6 +99,18 @@ pai_status_t pai_host_kernel_g8(void *ctx, const uint32_t user_data[16],
 pai_status_t pai_host_kernel_saxpy(void *ctx, const uint32_t user_data[16],
                                    uint32_t threads_x, uint32_t group_x);
 
+/* M1B serial uint32 dot: pack header N, then AB pairs; C[0] = sum A[i]*B[i]. */
+pai_status_t pai_host_kernel_dot_serial_u32(void *ctx,
+                                            const uint32_t user_data[16],
+                                            uint32_t threads_x,
+                                            uint32_t group_x);
+
+/* M1D serial-per-row GEMV: W header + row-major W, x at header ptr, y[g]. */
+pai_status_t pai_host_kernel_gemv_serial_u32(void *ctx,
+                                             const uint32_t user_data[16],
+                                             uint32_t threads_x,
+                                             uint32_t group_x);
+
 /* h1: copy a[i] -> c[4i..4i+3]. */
 pai_status_t pai_host_kernel_h1(void *ctx, const uint32_t user_data[16],
                                 uint32_t threads_x, uint32_t group_x);

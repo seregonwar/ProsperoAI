@@ -45,6 +45,44 @@
 #define PAI_REG_COMPUTE_PGM_RSRC3      0x0228
 #define PAI_REG_COMPUTE_USER_DATA_0    0x0240
 
+/*
+ * COMPUTE_PGM_RSRC2 field layout (gfx10 / PS5 Gen5).
+ *
+ * Bit positions and masks rewritten in C from Kyty's MIT-licensed
+ * Pm4.h (Copyright (c) 2021 Ivan Chikhradze). LDS_SIZE is in 512-byte
+ * granules: lds_bytes = LDS_SIZE * 512. AMD ISA: bit 6 is TRAP_PRESENT
+ * (Kyty's listing skips it; historical PAI G25 0x4C set that bit and
+ * left LDS_SIZE=0).
+ */
+#define PAI_COMPUTE_PGM_RSRC2_SCRATCH_EN_SHIFT     0
+#define PAI_COMPUTE_PGM_RSRC2_SCRATCH_EN_MASK      0x1u
+#define PAI_COMPUTE_PGM_RSRC2_USER_SGPR_SHIFT      1
+#define PAI_COMPUTE_PGM_RSRC2_USER_SGPR_MASK       0x1Fu
+#define PAI_COMPUTE_PGM_RSRC2_TRAP_PRESENT_SHIFT   6
+#define PAI_COMPUTE_PGM_RSRC2_TRAP_PRESENT_MASK    0x1u
+#define PAI_COMPUTE_PGM_RSRC2_TGID_X_EN_SHIFT      7
+#define PAI_COMPUTE_PGM_RSRC2_TGID_X_EN_MASK       0x1u
+#define PAI_COMPUTE_PGM_RSRC2_TGID_Y_EN_SHIFT      8
+#define PAI_COMPUTE_PGM_RSRC2_TGID_Y_EN_MASK       0x1u
+#define PAI_COMPUTE_PGM_RSRC2_TGID_Z_EN_SHIFT      9
+#define PAI_COMPUTE_PGM_RSRC2_TGID_Z_EN_MASK       0x1u
+#define PAI_COMPUTE_PGM_RSRC2_TG_SIZE_EN_SHIFT     10
+#define PAI_COMPUTE_PGM_RSRC2_TG_SIZE_EN_MASK      0x1u
+#define PAI_COMPUTE_PGM_RSRC2_TIDIG_COMP_CNT_SHIFT 11
+#define PAI_COMPUTE_PGM_RSRC2_TIDIG_COMP_CNT_MASK  0x3u
+#define PAI_COMPUTE_PGM_RSRC2_LDS_SIZE_SHIFT       15
+#define PAI_COMPUTE_PGM_RSRC2_LDS_SIZE_MASK        0x1FFu
+#define PAI_COMPUTE_PGM_RSRC2_LDS_GRANULE_BYTES    512u
+
+#define PAI_RSRC2_USER_SGPR(n)                                                     \
+  ((((uint32_t)(n)) & PAI_COMPUTE_PGM_RSRC2_USER_SGPR_MASK)                        \
+   << PAI_COMPUTE_PGM_RSRC2_USER_SGPR_SHIFT)
+#define PAI_RSRC2_TGID_X_EN                                                        \
+  (PAI_COMPUTE_PGM_RSRC2_TGID_X_EN_MASK << PAI_COMPUTE_PGM_RSRC2_TGID_X_EN_SHIFT)
+#define PAI_RSRC2_LDS_GRANULES(n)                                                  \
+  ((((uint32_t)(n)) & PAI_COMPUTE_PGM_RSRC2_LDS_SIZE_MASK)                         \
+   << PAI_COMPUTE_PGM_RSRC2_LDS_SIZE_SHIFT)
+
 /* Default dispatch initiator (OpenAGC: (mod & 0xA038) | 0x41). */
 #define PAI_PM4_DISPATCH_INITIATOR     0x41u
 

@@ -235,6 +235,59 @@ m0_run_gpu(m0_ctx_t *ctx, uint32_t *stream, uint32_t stream_len,
   return -1;
 }
 
+/* Submit the already-built dispatch and wait for the EOP label.
+ * Does not memset/clflush garlic data buffers — caller must have
+ * flushed inputs once and (if validating) cleared the watch region. */
+static int
+m0_timed_eop(m0_ctx_t *ctx, uint32_t *stream, uint32_t stream_len,
+             uint64_t *out_ns) {
+  pai_pm4_builder_t pb;
+  pai_status_t st;
+  uint64_t t0, t1;
+
+  *(volatile uint32_t *)ctx->label.cpu_addr = 0;
+  ctx->label_value++;
+
+  pb.buf = stream;
+  pb.cap = M0_PM4_CAP;
+  pb.len = stream_len;
+  if (!pai_pm4_release_mem_eop_fence(&pb, ctx->label.gpu_addr,
+                                     ctx->label_value) ||
+      !pai_pm4_nop(&pb, 2)) {
+    return -1;
+  }
+
+  t0 = pai_clock_ns();
+  st = ctx->acb_mode ? pai_gpu_submit_acb(ctx->gpu, stream, pb.len)
+                     : pai_gpu_submit_q(ctx->gpu, stream, pb.len, 3);
+  if (st != PAI_OK) {
+    return -1;
+  }
+  st = pai_gpu_wait_label(ctx->gpu, ctx->label.gpu_addr, ctx->label_value,
+                          ctx->timeout_ns ? ctx->timeout_ns : M0_TIMEOUT_NS);
+  t1 = pai_clock_ns();
+  if (st != PAI_OK) {
+    return -1;
+  }
+  *out_ns = t1 - t0;
+  return 0;
+}
+
+static void
+m0_clflush_range(void *p, uint32_t bytes) {
+#if defined(PAI_PS5)
+  uintptr_t wstart = (uintptr_t)p & ~(uintptr_t)63u;
+  uintptr_t wend = (uintptr_t)p + bytes;
+  while (wstart < wend) {
+    __asm__ volatile("clflush (%0)" : : "r"(wstart) : "memory");
+    wstart += 64u;
+  }
+#else
+  (void)p;
+  (void)bytes;
+#endif
+}
+
 /* Stage A — raw IT_DMA_DATA copy through /dev/gc. */
 
 static int
@@ -1240,6 +1293,416 @@ m0_saxpy_run_n(m0_ctx_t *ctx, uint32_t *stream, uint32_t *ud, uint32_t n) {
   return ok;
 }
 
+/* M1B: serial uint32 dot correctness primitive. One group, one thread,
+ * SGPR loop. N from packed header. Result in C[0], uint32 wrap. */
+static int
+m0_dot_serial_run_n(m0_ctx_t *ctx, uint32_t *stream, uint32_t *ud,
+                    uint32_t n) {
+  uint32_t *pack;
+  uint32_t *c1d;
+  uint32_t stream_len = 0;
+  uint32_t iter;
+  uint32_t niter = 1u;
+  uint32_t want_iters;
+  uint32_t want = 0;
+  uint64_t pack_bytes = 8u + (uint64_t)n * 8u;
+  uint64_t t0, t1, first_ns = 0;
+  int ok = 1;
+  int host = pai_gpu_device_backend(ctx->gpu) == PAI_GPU_BACKEND_HOST_REF;
+
+  if (n == 0 || pack_bytes > M0_DMA_BYTES) {
+    PAI_LOG_ERROR_(PAI_SUB_GPU, "[M0-M1B] N=%u SKIP: bad size (%llu)\n", n,
+                   (unsigned long long)pack_bytes);
+    return 0;
+  }
+
+  pack = (uint32_t *)ctx->a.cpu_addr;
+  c1d = (uint32_t *)ctx->c.cpu_addr;
+  pack[0] = n;
+  pack[1] = 0;
+  want = 0;
+  for (uint32_t i = 0; i < n; i++) {
+    uint32_t a = 1u + i;
+    uint32_t b = 2u + i;
+    pack[2u + 2u * i] = a;
+    pack[3u + 2u * i] = b;
+    want += a * b;
+  }
+  pai_gpu_buffer_flush(ctx->gpu, &ctx->a);
+
+  if (n <= 256u) {
+    want_iters = PAI_DOT_SERIAL_U32_ITERS;
+  } else if (n <= 4096u) {
+    want_iters = 10u;
+  } else {
+    want_iters = 1u;
+  }
+  ctx->timeout_ns = (n >= 4096u) ? UINT64_C(15000000000) : 0;
+
+  ud[0] = 0;
+  ud[1] = 0;
+  ud[2] = (uint32_t)(ctx->a.gpu_addr & 0xFFFFFFFFu);
+  ud[3] = (uint32_t)(ctx->a.gpu_addr >> 32);
+  ud[4] = (uint32_t)(ctx->c.gpu_addr & 0xFFFFFFFFu);
+  ud[5] = (uint32_t)(ctx->c.gpu_addr >> 32);
+  m0_build_dispatch_stream(ctx, stream, M0_PM4_CAP, PAI_DOT_SERIAL_U32_RSRC2,
+                           PAI_DOT_SERIAL_U32_THREADS, 1, ud, 6, &stream_len);
+
+  for (iter = 0; iter < niter && ok; iter++) {
+    ctx->quiet_phases = (iter > 0);
+    t0 = pai_clock_ns();
+    if (m0_run_gpu(ctx, stream, stream_len, c1d, 16, 0xCC, "M1B") != 0) {
+      PAI_LOG_ERROR_(PAI_SUB_GPU,
+                     "[M0-M1B] N=%u iter %u no execution c[0]=%08x\n", n,
+                     iter, c1d[0]);
+      ok = 0;
+      break;
+    }
+    t1 = pai_clock_ns();
+    if (iter == 0) {
+      first_ns = t1 - t0;
+      PAI_LOG_INFO_(PAI_SUB_GPU,
+                    "[M0-M1B] N=%u iter 0 c[0]=%08x want=%08x (%llu us)\n",
+                    n, c1d[0], want, (unsigned long long)(first_ns / 1000u));
+    }
+    if (c1d[0] != want) {
+      PAI_LOG_ERROR_(PAI_SUB_GPU,
+                     "[M0-M1B] N=%u c[0]=%08x want %08x\n", n, c1d[0], want);
+      ok = 0;
+      break;
+    }
+    if (ok && iter == 0) {
+      niter = want_iters;
+      PAI_LOG_INFO_(PAI_SUB_GPU,
+                    "[M0-M1B] N=%u first PASS, repeating %u times "
+                    "(no reset)\n",
+                    n, niter);
+    }
+  }
+  ctx->quiet_phases = 0;
+  ctx->timeout_ns = 0;
+  PAI_LOG_INFO_(PAI_SUB_GPU,
+                "[M0-M1B] N=%u %s iters=%u/%u first=%llu us "
+                "groups=1 threads=1 integer wrap\n",
+                n, ok ? "PASS" : "FAIL", iter, niter,
+                (unsigned long long)(first_ns / 1000u));
+  (void)host;
+  return ok;
+}
+
+/* M1D: serial-per-row uint32 GEMV. groups_x=M, one thread/group.
+ * W row-major after a 4-dword header that holds K and the x pointer. */
+static int
+m0_gemv_serial_check(const uint32_t *y, uint32_t m, uint32_t kdim) {
+  for (uint32_t g = 0; g < m; g++) {
+    uint32_t want = 0;
+    for (uint32_t kk = 0; kk < kdim; kk++) {
+      want += (1u + g + kk) * (1u + kk);
+    }
+    if (y[g] != want) {
+      PAI_LOG_ERROR_(PAI_SUB_GPU,
+                     "[M0-M1D] M=%u K=%u y[%u]=%08x want %08x\n", m, kdim, g,
+                     y[g], want);
+      return 0;
+    }
+  }
+  return 1;
+}
+
+static int
+m0_gemv_serial_run(m0_ctx_t *ctx, uint32_t *stream, uint32_t *ud, uint32_t m,
+                   uint32_t kdim) {
+  pai_gpu_buffer_t wb;
+  pai_gpu_buffer_t *w_buf;
+  uint32_t *w;
+  uint32_t *x;
+  uint32_t *y;
+  uint32_t stream_len = 0;
+  uint32_t iter;
+  uint32_t niter = 1u;
+  uint32_t want_iters;
+  uint64_t w_bytes =
+      (uint64_t)PAI_GEMV_SERIAL_U32_HDR_DWORDS * 4u + (uint64_t)m * kdim * 4u;
+  uint64_t x_bytes = (uint64_t)kdim * 4u;
+  uint64_t y_bytes = (uint64_t)m * 4u;
+  uint64_t t0, t1, first_ns = 0;
+  uint64_t mk = (uint64_t)m * kdim;
+  int extra = 0;
+  int ok = 1;
+  int host = pai_gpu_device_backend(ctx->gpu) == PAI_GPU_BACKEND_HOST_REF;
+
+  memset(&wb, 0, sizeof(wb));
+
+  if (m == 0 || kdim == 0 || x_bytes > M0_DMA_BYTES || y_bytes > M0_DMA_BYTES) {
+    PAI_LOG_ERROR_(PAI_SUB_GPU,
+                   "[M0-M1D] M=%u K=%u SKIP: bad size\n", m, kdim);
+    return 0;
+  }
+
+  if (w_bytes <= M0_DMA_BYTES) {
+    w_buf = &ctx->a;
+  } else {
+    extra = 1;
+    if (pai_gpu_buffer_alloc(ctx->gpu, &wb, w_bytes,
+                             PAI_GPU_BUF_CPU_VISIBLE | PAI_GPU_BUF_GARLIC) !=
+        PAI_OK) {
+      PAI_LOG_ERROR_(PAI_SUB_GPU,
+                     "[M0-M1D] M=%u K=%u SKIP: W alloc failed (%llu)\n", m,
+                     kdim, (unsigned long long)w_bytes);
+      return 0;
+    }
+    w_buf = &wb;
+  }
+
+  w = (uint32_t *)w_buf->cpu_addr;
+  x = (uint32_t *)ctx->b.cpu_addr;
+  y = (uint32_t *)ctx->c.cpu_addr;
+
+  w[0] = kdim;
+  w[1] = 0;
+  w[2] = (uint32_t)(ctx->b.gpu_addr & 0xFFFFFFFFu);
+  w[3] = (uint32_t)(ctx->b.gpu_addr >> 32);
+  for (uint32_t kk = 0; kk < kdim; kk++) {
+    x[kk] = 1u + kk;
+  }
+  for (uint32_t g = 0; g < m; g++) {
+    uint32_t *row = w + PAI_GEMV_SERIAL_U32_HDR_DWORDS + g * kdim;
+    for (uint32_t kk = 0; kk < kdim; kk++) {
+      row[kk] = 1u + g + kk;
+    }
+  }
+  pai_gpu_buffer_flush(ctx->gpu, w_buf);
+  pai_gpu_buffer_flush(ctx->gpu, &ctx->b);
+
+  if (mk <= 64u) {
+    want_iters = PAI_GEMV_SERIAL_U32_ITERS;
+  } else if (mk <= 8192u) {
+    want_iters = 10u;
+  } else {
+    want_iters = 1u;
+  }
+  ctx->timeout_ns = (mk >= 4096u) ? UINT64_C(15000000000) : 0;
+
+  ud[0] = 0;
+  ud[1] = 0;
+  ud[2] = (uint32_t)(w_buf->gpu_addr & 0xFFFFFFFFu);
+  ud[3] = (uint32_t)(w_buf->gpu_addr >> 32);
+  ud[4] = (uint32_t)(ctx->c.gpu_addr & 0xFFFFFFFFu);
+  ud[5] = (uint32_t)(ctx->c.gpu_addr >> 32);
+  m0_build_dispatch_stream(ctx, stream, M0_PM4_CAP, PAI_GEMV_SERIAL_U32_RSRC2,
+                           PAI_GEMV_SERIAL_U32_THREADS, m, ud, 6, &stream_len);
+
+  for (iter = 0; iter < niter && ok; iter++) {
+    ctx->quiet_phases = (iter > 0);
+    t0 = pai_clock_ns();
+    if (m0_run_gpu(ctx, stream, stream_len, y, (uint32_t)y_bytes, 0xCC,
+                   "M1D") != 0) {
+      PAI_LOG_ERROR_(PAI_SUB_GPU,
+                     "[M0-M1D] M=%u K=%u iter %u no execution y[0]=%08x\n",
+                     m, kdim, iter, y[0]);
+      ok = 0;
+      break;
+    }
+    t1 = pai_clock_ns();
+    if (iter == 0) {
+      first_ns = t1 - t0;
+      PAI_LOG_INFO_(PAI_SUB_GPU,
+                    "[M0-M1D] M=%u K=%u iter 0 y[0..3]=%08x %08x %08x %08x "
+                    "(%llu us)\n",
+                    m, kdim, y[0], y[1 < m ? 1 : 0], y[2 < m ? 2 : 0],
+                    y[3 < m ? 3 : 0],
+                    (unsigned long long)(first_ns / 1000u));
+    }
+    if (!m0_gemv_serial_check(y, m, kdim)) {
+      ok = 0;
+      break;
+    }
+    if (ok && iter == 0) {
+      niter = want_iters;
+      PAI_LOG_INFO_(PAI_SUB_GPU,
+                    "[M0-M1D] M=%u K=%u first PASS, repeating %u times "
+                    "(no reset)\n",
+                    m, kdim, niter);
+    }
+  }
+  ctx->quiet_phases = 0;
+  ctx->timeout_ns = 0;
+  PAI_LOG_INFO_(PAI_SUB_GPU,
+                "[M0-M1D] M=%u K=%u %s iters=%u/%u first=%llu us "
+                "groups=%u threads=1 integer wrap\n",
+                m, kdim, ok ? "PASS" : "FAIL", iter, niter,
+                (unsigned long long)(first_ns / 1000u), m);
+  if (extra) {
+    pai_gpu_buffer_free(ctx->gpu, &wb);
+  }
+  (void)host;
+  return ok;
+}
+
+/* Submit→EOP timing for serial GEMV. Warmup uses the full harness once
+ * (VALIDATED). Timed samples skip garlic clflush of W/x and only wait
+ * on the EOP label. A mismatch discards the size (no bandwidth number). */
+static int
+m0_gemv_serial_bench(m0_ctx_t *ctx, uint32_t *stream, uint32_t *ud, uint32_t m,
+                     uint32_t kdim, uint64_t overhead_ns,
+                     uint64_t *out_mean_ns) {
+  pai_gpu_buffer_t wb;
+  pai_gpu_buffer_t *w_buf;
+  uint32_t *w;
+  uint32_t *x;
+  uint32_t *y;
+  uint32_t stream_len = 0;
+  uint32_t ntimed;
+  uint32_t i;
+  uint64_t w_bytes =
+      (uint64_t)PAI_GEMV_SERIAL_U32_HDR_DWORDS * 4u + (uint64_t)m * kdim * 4u;
+  uint64_t x_bytes = (uint64_t)kdim * 4u;
+  uint64_t y_bytes = (uint64_t)m * 4u;
+  uint64_t mk = (uint64_t)m * kdim;
+  uint64_t bytes = mk * 4u + x_bytes + y_bytes;
+  uint64_t flop = 2u * mk;
+  uint64_t warmup_ns = 0, sum_ns = 0, min_ns = UINT64_MAX, tns = 0;
+  uint64_t t0, t1;
+  int extra = 0;
+  int ok = 1;
+
+  if (out_mean_ns) {
+    *out_mean_ns = 0;
+  }
+
+  memset(&wb, 0, sizeof(wb));
+
+  if (m == 0 || kdim == 0 || x_bytes > M0_DMA_BYTES || y_bytes > M0_DMA_BYTES) {
+    PAI_LOG_ERROR_(PAI_SUB_GPU, "[M0-M1D] bench M=%u K=%u SKIP: bad size\n",
+                   m, kdim);
+    return 0;
+  }
+  if (w_bytes <= M0_DMA_BYTES) {
+    w_buf = &ctx->a;
+  } else {
+    extra = 1;
+    if (pai_gpu_buffer_alloc(ctx->gpu, &wb, w_bytes,
+                             PAI_GPU_BUF_CPU_VISIBLE | PAI_GPU_BUF_GARLIC) !=
+        PAI_OK) {
+      PAI_LOG_ERROR_(PAI_SUB_GPU,
+                     "[M0-M1D] bench M=%u K=%u SKIP: W alloc (%llu)\n", m,
+                     kdim, (unsigned long long)w_bytes);
+      return 0;
+    }
+    w_buf = &wb;
+  }
+
+  w = (uint32_t *)w_buf->cpu_addr;
+  x = (uint32_t *)ctx->b.cpu_addr;
+  y = (uint32_t *)ctx->c.cpu_addr;
+  w[0] = kdim;
+  w[1] = 0;
+  w[2] = (uint32_t)(ctx->b.gpu_addr & 0xFFFFFFFFu);
+  w[3] = (uint32_t)(ctx->b.gpu_addr >> 32);
+  for (uint32_t kk = 0; kk < kdim; kk++) {
+    x[kk] = 1u + kk;
+  }
+  for (uint32_t g = 0; g < m; g++) {
+    uint32_t *row = w + PAI_GEMV_SERIAL_U32_HDR_DWORDS + g * kdim;
+    for (uint32_t kk = 0; kk < kdim; kk++) {
+      row[kk] = 1u + g + kk;
+    }
+  }
+  pai_gpu_buffer_flush(ctx->gpu, w_buf);
+  pai_gpu_buffer_flush(ctx->gpu, &ctx->b);
+
+  if (mk <= 64u) {
+    ntimed = 40u;
+  } else if (mk <= 262144u) {
+    ntimed = 20u;
+  } else {
+    ntimed = 10u;
+  }
+  ctx->timeout_ns = (kdim >= 1024u) ? UINT64_C(15000000000) : 0;
+
+  ud[0] = 0;
+  ud[1] = 0;
+  ud[2] = (uint32_t)(w_buf->gpu_addr & 0xFFFFFFFFu);
+  ud[3] = (uint32_t)(w_buf->gpu_addr >> 32);
+  ud[4] = (uint32_t)(ctx->c.gpu_addr & 0xFFFFFFFFu);
+  ud[5] = (uint32_t)(ctx->c.gpu_addr >> 32);
+  m0_build_dispatch_stream(ctx, stream, M0_PM4_CAP, PAI_GEMV_SERIAL_U32_RSRC2,
+                           PAI_GEMV_SERIAL_U32_THREADS, m, ud, 6, &stream_len);
+
+  t0 = pai_clock_ns();
+  if (m0_run_gpu(ctx, stream, stream_len, y, (uint32_t)y_bytes, 0xCC,
+                 "M1D") != 0 ||
+      !m0_gemv_serial_check(y, m, kdim)) {
+    PAI_LOG_ERROR_(PAI_SUB_GPU,
+                   "[M0-M1D] bench M=%u K=%u warmup FAIL y[0]=%08x\n", m,
+                   kdim, y[0]);
+    ok = 0;
+    goto out;
+  }
+  t1 = pai_clock_ns();
+  warmup_ns = t1 - t0;
+  ctx->quiet_phases = 1;
+
+  for (i = 0; i < ntimed && ok; i++) {
+    memset(y, 0xCC, (size_t)y_bytes);
+    m0_clflush_range(y, (uint32_t)y_bytes);
+    if (m0_timed_eop(ctx, stream, stream_len, &tns) != 0) {
+      PAI_LOG_ERROR_(PAI_SUB_GPU,
+                     "[M0-M1D] bench M=%u K=%u timed eop FAIL iter %u\n", m,
+                     kdim, i);
+      ok = 0;
+      break;
+    }
+    if (!m0_gemv_serial_check(y, m, kdim)) {
+      ok = 0;
+      break;
+    }
+    sum_ns += tns;
+    if (tns < min_ns) {
+      min_ns = tns;
+    }
+  }
+  ctx->quiet_phases = 0;
+  ctx->timeout_ns = 0;
+
+  if (ok && i > 0) {
+    uint64_t mean_ns = sum_ns / i;
+    uint64_t delta_ns = (mean_ns > overhead_ns) ? (mean_ns - overhead_ns) : 0;
+    uint64_t mbps = mean_ns ? (bytes * 1000ull) / mean_ns : 0;
+    uint64_t mbps_adj = delta_ns ? (bytes * 1000ull) / delta_ns : 0;
+    uint64_t mflops = mean_ns ? (flop * 1000ull) / mean_ns : 0;
+    uint64_t mflops_adj = delta_ns ? (flop * 1000ull) / delta_ns : 0;
+    PAI_LOG_INFO_(PAI_SUB_GPU,
+                  "[M0-M1D] bench M=%u K=%u VALIDATED n=%u warmup_us=%llu "
+                  "mean_ns=%llu min_ns=%llu bytes=%llu flop=%llu "
+                  "MBps=%llu MBps_adj=%llu mflops=%llu mflops_adj=%llu "
+                  "overhead_us=%llu\n",
+                  m, kdim, i,
+                  (unsigned long long)(warmup_ns / 1000u),
+                  (unsigned long long)mean_ns,
+                  (unsigned long long)min_ns,
+                  (unsigned long long)bytes, (unsigned long long)flop,
+                  (unsigned long long)mbps, (unsigned long long)mbps_adj,
+                  (unsigned long long)mflops, (unsigned long long)mflops_adj,
+                  (unsigned long long)(overhead_ns / 1000u));
+    if (out_mean_ns) {
+      *out_mean_ns = mean_ns;
+    }
+  } else {
+    PAI_LOG_ERROR_(PAI_SUB_GPU,
+                   "[M0-M1D] bench M=%u K=%u DISCARDED (not VALIDATED)\n", m,
+                   kdim);
+  }
+
+out:
+  ctx->quiet_phases = 0;
+  ctx->timeout_ns = 0;
+  if (extra) {
+    pai_gpu_buffer_free(ctx->gpu, &wb);
+  }
+  return ok;
+}
+
 /* E34-E37: the flat v0-broadcast model — loads and the real vecadd. */
 static int
 m0_exp_v0model(m0_ctx_t *ctx) {
@@ -2204,6 +2667,88 @@ m0_exp_v0model(m0_ctx_t *ctx) {
     m0_exp_report("S", all_ok);
   }
 
+  /* M1B: serial uint32 dot — correctness primitive, not a fast reduction. */
+  if (!host) {
+    pai_gpu_reset(gpu);
+  }
+  {
+    static const uint32_t ns[] = {1u, 8u, 256u, 4096u, 65536u};
+    int all_ok = 1;
+    memcpy(ctx->code.cpu_addr, pai_dot_serial_u32_code,
+           PAI_DOT_SERIAL_U32_CODE_WORDS * sizeof(uint32_t));
+    if (host) {
+      pai_gpu_host_register_shader(gpu, ctx->code.gpu_addr,
+                                   pai_host_kernel_dot_serial_u32, NULL);
+    }
+    for (uint32_t k = 0; k < sizeof(ns) / sizeof(ns[0]); k++) {
+      int nok = m0_dot_serial_run_n(ctx, stream, ud, ns[k]);
+      PAI_LOG_INFO_(PAI_SUB_GPU, "[M0-M1B] sweep N=%u VALIDATED %s\n", ns[k],
+                    nok ? "PASS" : "FAIL");
+      if (!nok) {
+        all_ok = 0;
+        PAI_LOG_ERROR_(PAI_SUB_GPU,
+                       "[M0-M1B] sweep stops at N=%u (next sizes skipped)\n",
+                       ns[k]);
+        break;
+      }
+    }
+    m0_exp_report("M1B", all_ok);
+  }
+
+  /* M1D: serial-per-row uint32 GEMV — correctness, not a fast GEMV. */
+  if (!host) {
+    pai_gpu_reset(gpu);
+  }
+  {
+    static const uint32_t ms[] = {8u, 8u, 256u, 64u, 256u, 256u};
+    static const uint32_t ks[] = {8u, 256u, 8u, 256u, 256u, 1024u};
+    int all_ok = 1;
+    memcpy(ctx->code.cpu_addr, pai_gemv_serial_u32_code,
+           PAI_GEMV_SERIAL_U32_CODE_WORDS * sizeof(uint32_t));
+    if (host) {
+      pai_gpu_host_register_shader(gpu, ctx->code.gpu_addr,
+                                   pai_host_kernel_gemv_serial_u32, NULL);
+    }
+    for (uint32_t t = 0; t < sizeof(ms) / sizeof(ms[0]); t++) {
+      int nok = m0_gemv_serial_run(ctx, stream, ud, ms[t], ks[t]);
+      PAI_LOG_INFO_(PAI_SUB_GPU,
+                    "[M0-M1D] sweep M=%u K=%u VALIDATED %s\n", ms[t], ks[t],
+                    nok ? "PASS" : "FAIL");
+      if (!nok) {
+        all_ok = 0;
+        PAI_LOG_ERROR_(PAI_SUB_GPU,
+                       "[M0-M1D] sweep stops at M=%u K=%u "
+                       "(next sizes skipped)\n",
+                       ms[t], ks[t]);
+        break;
+      }
+    }
+    m0_exp_report("M1D", all_ok);
+  }
+
+  /* M1D bandwidth: same kernel, submit→EOP, no W/x clflush in the timer. */
+  if (!host) {
+    static const uint32_t ms[] = {8u, 256u, 64u, 256u, 256u};
+    static const uint32_t ks[] = {8u, 1024u, 4096u, 4096u, 8192u};
+    uint64_t overhead_ns = 0;
+    memcpy(ctx->code.cpu_addr, pai_gemv_serial_u32_code,
+           PAI_GEMV_SERIAL_U32_CODE_WORDS * sizeof(uint32_t));
+    for (uint32_t t = 0; t < sizeof(ms) / sizeof(ms[0]); t++) {
+      uint64_t mean_ns = 0;
+      int bok = m0_gemv_serial_bench(ctx, stream, ud, ms[t], ks[t],
+                                     overhead_ns, &mean_ns);
+      if (t == 0 && bok) {
+        overhead_ns = mean_ns;
+      }
+      if (!bok) {
+        PAI_LOG_ERROR_(PAI_SUB_GPU,
+                       "[M0-M1D] bench stops at M=%u K=%u\n", ms[t],
+                       ks[t]);
+        break;
+      }
+    }
+  }
+
   /* G24: s_load_dwordx16 alone - the G23 hang bisection. */
   if (!host) {
     pai_gpu_reset(gpu);
@@ -2238,12 +2783,15 @@ m0_exp_v0model(m0_ctx_t *ctx) {
     }
   }
 
-  /* G25: minimal LDS roundtrip - are the ds ops themselves broken? */
+  /* G25: LDS roundtrip — OpenAGC gfx1013 min is 1 KiB (2 granules). */
   if (!host) {
     pai_gpu_reset(gpu);
   }
   {
+    static const uint32_t rsrc2s[] = {PAI_G25_RSRC2_1KB, PAI_G25_RSRC2_8KB};
+    static const char *const tags[] = {"1KiB", "8KiB"};
     uint32_t *c25 = (uint32_t *)ctx->c.cpu_addr;
+    int g25_ok = 0;
     memcpy(ctx->code.cpu_addr, pai_dsprobe_code,
            PAI_G25_CODE_WORDS * sizeof(uint32_t));
     if (host) {
@@ -2254,19 +2802,94 @@ m0_exp_v0model(m0_ctx_t *ctx) {
     ud[1] = 0;
     ud[2] = (uint32_t)(ctx->c.gpu_addr & 0xFFFFFFFFu);
     ud[3] = (uint32_t)(ctx->c.gpu_addr >> 32);
-    m0_build_dispatch_stream(ctx, stream, M0_PM4_CAP, PAI_G25_RSRC2,
-                             PAI_EXP_THREADS_X, 1, ud, 4, &stream_len);
-    m0_run_gpu(ctx, stream, stream_len, c25, 128, 0xCC, "G25");
-    PAI_LOG_INFO_(PAI_SUB_GPU,
-                  "[M0-G25] c[0..7] = %08x %08x %08x %08x %08x %08x "
-                  "%08x %08x\n",
-                  c25[0], c25[1], c25[2], c25[3], c25[4], c25[5], c25[6],
-                  c25[7]);
-    {
-      int ok = (c25[0] == PAI_G25_VALUE) && (c25[1] == PAI_G25_VALUE);
-      m0_exp_report("G25", ok);
+    for (uint32_t t = 0; t < 2u; t++) {
+      uint32_t rsrc2 = rsrc2s[t];
+      uint32_t granules =
+          (rsrc2 >> PAI_COMPUTE_PGM_RSRC2_LDS_SIZE_SHIFT) &
+          PAI_COMPUTE_PGM_RSRC2_LDS_SIZE_MASK;
+      uint32_t lds_bytes = granules * PAI_COMPUTE_PGM_RSRC2_LDS_GRANULE_BYTES;
+      int data_changed = 0;
+      int exec_ok;
+      PAI_LOG_INFO_(PAI_SUB_GPU,
+                    "[M0-G25] probe %s RSRC2=0x%08x m0=0 LDS_SIZE=%u "
+                    "(%u B) USER_SGPR=6 threads=1\n",
+                    tags[t], rsrc2, granules, lds_bytes);
+      m0_build_dispatch_stream(ctx, stream, M0_PM4_CAP, rsrc2,
+                               PAI_G25_THREADS, 1, ud, 4, &stream_len);
+      exec_ok = (m0_run_gpu(ctx, stream, stream_len, c25, 128, 0xCC,
+                            "G25") == 0);
+      PAI_LOG_INFO_(PAI_SUB_GPU,
+                    "[M0-G25] %s c[0..7] = %08x %08x %08x %08x %08x "
+                    "%08x %08x %08x\n",
+                    tags[t], c25[0], c25[1], c25[2], c25[3], c25[4], c25[5],
+                    c25[6], c25[7]);
+      for (uint32_t i = 0; i < 8u; i++) {
+        if (c25[i] != 0xCCCCCCCCu) {
+          data_changed = 1;
+        }
+      }
+      if (c25[0] == PAI_G25_VALUE) {
+        g25_ok = 1;
+        PAI_LOG_INFO_(PAI_SUB_GPU,
+                      "[M0-G25] %s sentinel PASS (m0=0 LDS=%u B)\n", tags[t],
+                      lds_bytes);
+        break;
+      }
+      PAI_LOG_INFO_(PAI_SUB_GPU,
+                    "[M0-G25] %s FAIL exec=%d data_changed=%d "
+                    "c[0]=%08x want=%08x\n",
+                    tags[t], exec_ok, data_changed, c25[0], PAI_G25_VALUE);
+    }
+    m0_exp_report("G25", g25_ok);
+
+    if (g25_ok) {
+      uint32_t *c8 = (uint32_t *)ctx->c.cpu_addr;
+      int lanes_ok = 1;
+      memcpy(ctx->code.cpu_addr, pai_lds_lanes_code,
+             PAI_LDS_LANES_CODE_WORDS * sizeof(uint32_t));
+      if (host) {
+        pai_gpu_host_register_shader(gpu, ctx->code.gpu_addr,
+                                     pai_host_kernel_g8, NULL);
+      }
+      ud[0] = 0;
+      ud[1] = 0;
+      ud[2] = (uint32_t)(ctx->c.gpu_addr & 0xFFFFFFFFu);
+      ud[3] = (uint32_t)(ctx->c.gpu_addr >> 32);
+      m0_build_dispatch_stream(ctx, stream, M0_PM4_CAP, PAI_LDS_LANES_RSRC2,
+                               PAI_LDS_LANES_THREADS, 1, ud, 4, &stream_len);
+      m0_run_gpu(ctx, stream, stream_len, c8, 128, 0xCC, "M1C");
+      PAI_LOG_INFO_(PAI_SUB_GPU,
+                    "[M0-M1C] c[0..7] = %08x %08x %08x %08x %08x %08x "
+                    "%08x %08x\n",
+                    c8[0], c8[1], c8[2], c8[3], c8[4], c8[5], c8[6], c8[7]);
+      for (uint32_t i = 0; i < PAI_LDS_LANES_THREADS; i++) {
+        if (c8[i] != (PAI_LDS_LANES_BASE + i)) {
+          lanes_ok = 0;
+          break;
+        }
+      }
+      m0_exp_report("M1C", lanes_ok);
+    } else {
+      /* Explicit gate: stop inventing RSRC2; unlock via AGC CS blob. */
+      PAI_LOG_INFO_(PAI_SUB_GPU,
+                    "[M0-M1C] BLOCKED: G25 LDS not VALIDATED "
+                    "(tried OpenAGC min 1 KiB RSRC2=0x1000C and 8 KiB). "
+                    "Next unlock = Shader CS AGC blob with real "
+                    "COMPUTE_PGM_RSRC2 LDS (SH offset 0x213); "
+                    "do not invent further RSRC2 values.\n");
     }
   }
+
+  /* PAI-M1 closeout on the serial G22 path (M1C deferred). */
+  PAI_LOG_INFO_(PAI_SUB_GPU,
+                "===== PAI-M1: CLOSED (serial G22 path) =====\n");
+  PAI_LOG_INFO_(PAI_SUB_GPU,
+                "[M1] M1A SAXPY int VALIDATED | M1B dot_serial VALIDATED | "
+                "M1C parallel reduction BLOCKED (LDS) | "
+                "M1D GEMV serial VALIDATED\n");
+  PAI_LOG_INFO_(PAI_SUB_GPU,
+                "[M1] open gate: AGC CS LDS blob @ COMPUTE_PGM_RSRC2 "
+                "(0x213); no further LDS RSRC2 hunt\n");
 
   /* G26: one x16 load + one ds write/read + G15 formula. */
   if (!host) {
@@ -3383,6 +4006,12 @@ main(void) {
   }
 
   m0_stage_e(&ctx);
+
+  /* stage_e includes known hang probes (G17 flat_load, etc.). Empirics:
+   * pai_gpu_reset recovers a wedged ring for the next experiment. */
+  if (pai_gpu_device_backend(ctx.gpu) != PAI_GPU_BACKEND_HOST_REF) {
+    pai_gpu_reset(ctx.gpu);
+  }
 
   if (m0_stage_b0(&ctx) != 0) {
     fail |= M0_STAGE_B_FAIL;

@@ -1700,6 +1700,40 @@ The recommended first internal milestone is therefore:
 
 Everything else in ProsperoAI ultimately depends on this layer.
 
+### Internal bring-up status (FW 9.40)
+
+**PAI-M0 — COMPLETE.** Physical PS5 validation covers GPU DMA, EOP fence,
+PM4 compute dispatch, scalar `s_load` reads, integer ALU, and
+`flat_store` writeback against a CPU reference (G15/G22 path).
+
+**PAI-M1 — CLOSED on the proven serial G22 path (without LDS).** This is
+the first family of tensor primitives on hardware, not yet the full
+Phase 1 tensor runtime (§40). Sub-gates:
+
+| Gate | Primitive | Status |
+|------|-----------|--------|
+| PAI-M1A | Integer SAXPY (`C[i]=a·A[i]+B[i]`) | VALIDATED (N up to 1M) |
+| PAI-M1B | Serial uint32 reduction (`dot_serial`) | VALIDATED (correctness, not throughput) |
+| PAI-M1C | Parallel reduction (LDS / wave share) | **BLOCKED** |
+| PAI-M1D | Serial-per-row uint32 GEMV | VALIDATED (up to 256×1024) |
+
+M1C unlock condition (do not invent further `COMPUTE_PGM_RSRC2`
+values): obtain a real Shader CS AGC blob that allocates LDS and dump
+`COMPUTE_PGM_RSRC2` at SH register offset `0x213`. OpenAGC documents
+gfx1013 LDS sizing rules but does not ship such a blob. G25 probes
+with OpenAGC-minimum 1 KiB (`RSRC2=0x1000C`) still return zero from
+LDS on 9.40.
+
+Open gates before Phase 1 / PAI-M2 work should prioritize:
+
+- MUBUF / flat vector loads (T# still unresolved; flat loads hang);
+- float ALU (per-thread `v_add_f32` with `dst != v0` returns 0);
+- LDS unlock via the AGC blob above;
+- wave-parallel dispatch beyond the serial `NUM_THREAD_X=1` group model.
+
+Measured serial GEMV submit→EOP bandwidth is apparent (~2–4 GB/s), not
+HBM peak; treat it as a harness timing signal only.
+
 ---
 
 ## 44. Project Definition

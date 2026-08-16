@@ -185,13 +185,42 @@
 #define PAI_SAXPY_ITERS PAI_ADD1D_ITERS
 #define PAI_SAXPY_A 3u
 
+/* M1B: serial uint32 dot (correctness primitive, not a fast reduction).
+ * One group, NUM_THREAD_X=1, SGPR loop of s_load + mul + add. */
+#define PAI_DOT_SERIAL_U32_RSRC2 PAI_ADD1D_RSRC2
+#define PAI_DOT_SERIAL_U32_CODE_WORDS 33u
+#define PAI_DOT_SERIAL_U32_THREADS 1u
+#define PAI_DOT_SERIAL_U32_ITERS 1000u
+
+/* M1D: serial-per-row uint32 GEMV (correctness, not a fast GEMV).
+ * groups_x=M, NUM_THREAD_X=1; each group is dot_serial over one row. */
+#define PAI_GEMV_SERIAL_U32_RSRC2 PAI_ADD1D_RSRC2
+#define PAI_GEMV_SERIAL_U32_CODE_WORDS 50u
+#define PAI_GEMV_SERIAL_U32_THREADS 1u
+#define PAI_GEMV_SERIAL_U32_ITERS 1000u
+#define PAI_GEMV_SERIAL_U32_HDR_DWORDS 4u
+
 /* G24: s_load_dwordx16 alone (G23 hang bisection, pai_smemload16.inc). */
 #define PAI_G24_RSRC2 0x0000000Cu
 #define PAI_G24_CODE_WORDS 16u
 
-/* G25: minimal LDS roundtrip probe (pai_dsprobe.inc). */
-#define PAI_G25_RSRC2 0x0000004Cu
-#define PAI_G25_CODE_WORDS 22u
+/* G25: minimal LDS roundtrip probe (pai_dsprobe.inc).
+ * Legacy 0x4C = USER_SGPR=6 | TRAP_PRESENT, LDS_SIZE=0.
+ * OpenAGC gfx1013: LDS allocated in 1 KiB blocks, field still in
+ * 512-byte granules → minimum legal LDS_SIZE is 2 (1 KiB). */
+#define PAI_G25_RSRC2_LEGACY 0x0000004Cu
+#define PAI_G25_RSRC2_512B 0x0000800Cu /* illegal odd granule on gfx1013 */
+#define PAI_G25_RSRC2_1KB 0x0001000Cu  /* LDS_SIZE=2 → 1024 B */
+#define PAI_G25_RSRC2_8KB 0x0008000Cu
+#define PAI_G25_RSRC2 PAI_G25_RSRC2_1KB
+#define PAI_G25_CODE_WORDS 21u
+#define PAI_G25_THREADS 1u
+
+/* M1C: per-lane LDS roundtrip, 8 threads, no barrier (pai_lds_lanes.inc). */
+#define PAI_LDS_LANES_RSRC2 PAI_G25_RSRC2_8KB
+#define PAI_LDS_LANES_CODE_WORDS 21u
+#define PAI_LDS_LANES_THREADS 8u
+#define PAI_LDS_LANES_BASE 0xA5000000u
 
 /* G26: one x16 load + one ds write/read + G15 formula (pai_dsstaged.inc).
  * RSRC2 = 6 user SGPRs (s0-s5) + the G25 LDS bit. */
@@ -295,8 +324,11 @@ extern const uint32_t pai_mubufload_g15_code[PAI_G21_CODE_WORDS];
 extern const uint32_t pai_smemload_g15_code[PAI_G22_CODE_WORDS];
 extern const uint32_t pai_smemvecadd_code[PAI_G23_CODE_WORDS];
 extern const uint32_t pai_saxpy_code[PAI_SAXPY_CODE_WORDS];
+extern const uint32_t pai_dot_serial_u32_code[PAI_DOT_SERIAL_U32_CODE_WORDS];
+extern const uint32_t pai_gemv_serial_u32_code[PAI_GEMV_SERIAL_U32_CODE_WORDS];
 extern const uint32_t pai_smemload16_code[PAI_G24_CODE_WORDS];
 extern const uint32_t pai_dsprobe_code[PAI_G25_CODE_WORDS];
+extern const uint32_t pai_lds_lanes_code[PAI_LDS_LANES_CODE_WORDS];
 extern const uint32_t pai_dsstaged_code[PAI_G26_CODE_WORDS];
 extern const uint32_t pai_dsstaged1_code[PAI_G27_CODE_WORDS];
 extern const uint32_t pai_hbatch_code[];

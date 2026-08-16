@@ -1,7 +1,7 @@
 # ProsperoAI
 
 [![Status: active development](https://img.shields.io/badge/Status-active%20development-f59e0b?style=flat-square)](#project-status)
-[![Milestone: PAI-M0 reached](https://img.shields.io/badge/Milestone-PAI--M0%20reached-16a34a?style=flat-square)](#project-status)
+[![Milestone: PAI-M0/M1](https://img.shields.io/badge/Milestone-PAI--M0%2FM1%20serial-16a34a?style=flat-square)](#project-status)
 [![Platforms: PS5 / Host](https://img.shields.io/badge/Platforms-PS5%20%2F%20Host-2f6feb?style=flat-square)](#platform-support)
 [![Firmware: 9.40 validated](https://img.shields.io/badge/Firmware-9.40%20validated-0ea5e9?style=flat-square)](#ps5-live-validation)
 
@@ -228,13 +228,15 @@ lives in the whitepaper (§24/§25).
 
 ## Project Status
 
-**Milestone PAI-M0 reached on physical PS5 hardware (FW 9.40).** The
-bring-up pipeline — bootstrap, jailbreak, GPU DMA, EOP fence, PM4
-submission, compute dispatch, readback, and CPU-reference validation —
-executes end-to-end.
+**Milestones PAI-M0 and PAI-M1 (serial path) reached on physical PS5
+hardware (FW 9.40).** Bring-up covers DMA, EOP fence, PM4 compute,
+scalar `s_load`, integer SAXPY, serial reduction, and serial-per-row
+GEMV — all CPU-reference-checked on the G22 path. Parallel reduction
+(M1C / LDS) remains blocked pending a real AGC CS LDS blob
+(`COMPUTE_PGM_RSRC2` @ SH `0x213`); see `notes/re/940-gpu-empirics.md`.
 
-Phase 1 (first generated token through the full runtime on hardware) builds
-on the M0 rules; the host reference path already runs end-to-end model
+Whitepaper Phase 1 (full tensor runtime) and Phase 2 (first token) still
+lie ahead. The host reference path already runs end-to-end model
 generation (`test_model`, `pai serve`).
 
 ## Responsible Use

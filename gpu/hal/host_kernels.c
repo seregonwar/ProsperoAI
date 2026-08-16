@@ -323,6 +323,49 @@ pai_host_kernel_saxpy(void *ctx, const uint32_t user_data[16],
   return PAI_OK;
 }
 
+/* M1B serial uint32 dot matching dot_serial_u32.s (uint32 wrap). */
+pai_status_t
+pai_host_kernel_dot_serial_u32(void *ctx, const uint32_t user_data[16],
+                               uint32_t threads_x, uint32_t group_x) {
+  uint32_t *pack = (uint32_t *)(uintptr_t)pai_ud64(user_data, 2);
+  uint32_t *c = (uint32_t *)(uintptr_t)pai_ud64(user_data, 4);
+  uint32_t n = pack[0];
+  uint32_t sum = 0;
+
+  (void)ctx;
+  (void)threads_x;
+  (void)group_x;
+
+  for (uint32_t i = 0; i < n; i++) {
+    sum += pack[2u + 2u * i] * pack[3u + 2u * i];
+  }
+  c[0] = sum;
+  return PAI_OK;
+}
+
+/* M1D serial-per-row GEMV matching gemv_serial_u32.s (uint32 wrap). */
+pai_status_t
+pai_host_kernel_gemv_serial_u32(void *ctx, const uint32_t user_data[16],
+                                uint32_t threads_x, uint32_t group_x) {
+  uint32_t *w = (uint32_t *)(uintptr_t)pai_ud64(user_data, 2);
+  uint32_t *y = (uint32_t *)(uintptr_t)pai_ud64(user_data, 4);
+  uint32_t kdim = w[0];
+  uint32_t *x = (uint32_t *)(uintptr_t)pai_ud64(w, 2);
+
+  (void)ctx;
+  (void)threads_x;
+
+  for (uint32_t g = 0; g < group_x; g++) {
+    uint32_t acc = 0;
+    const uint32_t *row = w + 4u + g * kdim;
+    for (uint32_t k = 0; k < kdim; k++) {
+      acc += row[k] * x[k];
+    }
+    y[g] = acc;
+  }
+  return PAI_OK;
+}
+
 pai_status_t
 pai_host_kernel_loadstore(void *ctx, const uint32_t user_data[16],
                           uint32_t threads_x, uint32_t group_x) {

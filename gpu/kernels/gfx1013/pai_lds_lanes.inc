@@ -1,5 +1,5 @@
-/* Generated from dsprobe.s by llvm-mc (gfx1013). Do not edit. */
-    0xBEFC0380u, 0x7E020280u, 0x7E0402FFu, 0xDEAD0001u,
+/* Generated from lds_lanes.s by llvm-mc (gfx1013). Do not edit. */
+    0xBEFC0380u, 0x34020082u, 0x380400FFu, 0xA5000000u,
     0xD8340000u, 0x00000201u, 0xBF8CC07Fu, 0xD8D80000u,
     0x06000001u, 0xBF8CC07Fu, 0x7E040202u, 0x7E060203u,
     0x340A0082u, 0xD70F6A02u, 0x00020B02u, 0xD5286A03u,

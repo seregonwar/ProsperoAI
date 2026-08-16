@@ -161,12 +161,11 @@ spoofer). Next: runtime gvmspace discovery (scan kernel data for an
 entry CONTAINING the live acqrb/dmem VAs) and the PTE fix, or the
 DingDong submission path on the created queue.
 
-## MILESTONE STATUS
+## MILESTONE STATUS (2026-08-16)
 
-- **PAI-M0 GPU compute: FULLY VERIFIED (G15)** on FW 9.40:
-  `c[i] = k + 4*i + 3` (lanes 0-7), k supplied via user data (s4),
-  per-thread, CPU-reference-checked. Runtime-parameterized arithmetic
-  executes deterministically through the whole pipeline.
+- **PAI-M0 GPU compute: COMPLETE** on FW 9.40 (G15/G22 path).
+  Runtime-parameterized integer arithmetic, scalar `s_load`, and
+  `flat_store` writeback are CPU-reference-checked.
 - Final store semantics (empirical, reproduced across G7-G15):
   - `flat_store_dword` data = (last instruction's SGPR-sourced value k)
     + (vaddr offset, tid*4) + 3. With an instruction-written literal in
@@ -174,12 +173,22 @@ DingDong submission path on the created queue.
   - `flat_store_dwordx4` = v0 broadcast x4 (E30/E32/G9).
   - Only lanes 0-7 of a 32-thread wave write (exec-mask quirk).
   - vaddr must be v[2:3]; v[4:5] hangs.
-- Float adds (v_add_f32) return 0 with dst != v0; integer ALU
-  (lshl/add_co) is per-thread correct. SGPR reads work in VOP3
+- Float adds (`v_add_f32`) return 0 with `dst != v0`; integer ALU
+  (`lshl`/`add_co`) is per-thread correct. SGPR reads work in VOP3
   (E45/G15); s0-s1 are hardware-zeroed.
-- Remaining for full vecadd/LLM: flat loads (hang — MUBUF T# next),
-  lane 8+ exec quirk, float-ALU workaround (use integer ops or the
-  dst-v0 broadcast for uniforms).
+- **PAI-M1 (serial G22 tensor primitives): CLOSED without LDS**
+  - M1A integer SAXPY: VALIDATED (N=8..1M, stable multi-iter)
+  - M1B `dot_serial_u32`: VALIDATED (correctness reduction; not fast)
+  - M1C parallel reduction: **BLOCKED** on LDS (see below)
+  - M1D serial-per-row GEMV: VALIDATED through 256×1024; submit→EOP
+    apparent bandwidth ~2–4 GB/s (not HBM)
+- **LDS / M1C (STOP hunting RSRC2):** G25 FAIL even with OpenAGC
+  gfx1013 minimum 1 KiB (`RSRC2=0x1000C`, `LDS_SIZE=2`), `m0=0`, and
+  store of LDS result via v0. Next unlock = real Shader CS AGC blob
+  that uses LDS; dump `COMPUTE_PGM_RSRC2` at SH offset `0x213`. Do not
+  invent further LDS_SIZE values. OpenAGC (`_vendor/OpenAGC`,
+  Apache-2.0) is useful for register/layout rules, not for an LDS
+  RSRC2 dump.
 
 ## Toolchain
 
@@ -190,6 +199,7 @@ DingDong submission path on the created queue.
   conservative, the silicon is fuller RDNA2.
 - llvm-objdump 14/18 cannot decode the OpenAGC kernel bytes (they use
   encodings outside LLVM's tables).
+- Deploy loop: `toolchain/deploy-test.ps1` (PS5 console online).
 
 ## Kernel RE of kernel_940.elf
 
@@ -202,6 +212,7 @@ DingDong submission path on the created queue.
 ## Status
 
 - Working: bootstrap, jailbreak, /data logging, lifecycle listener,
-  notify, DMA, fence, dispatch, stores, per-thread addressing.
-- Blocked: arithmetic value path (see above) and loads.
-- PAI-M0 milestone (GPU compute verified vs CPU) is one bisect away.
+  notify, DMA, fence, dispatch, SMEM loads, integer ALU, stores,
+  add1d / SAXPY / serial dot / serial GEMV on the G22 path.
+- Open (do not block M1 closeout): MUBUF T# / flat loads, float ALU
+  quirk, lane 8+ exec mask, LDS (M1C) pending AGC CS blob @ 0x213.

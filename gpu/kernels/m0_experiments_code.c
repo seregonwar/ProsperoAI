@@ -94,11 +94,20 @@ const uint32_t pai_smemvecadd_code[PAI_G23_CODE_WORDS] = {
 const uint32_t pai_saxpy_code[PAI_SAXPY_CODE_WORDS] = {
 #include "gfx1013/pai_saxpy.inc"
 };
+const uint32_t pai_dot_serial_u32_code[PAI_DOT_SERIAL_U32_CODE_WORDS] = {
+#include "gfx1013/pai_dot_serial_u32.inc"
+};
+const uint32_t pai_gemv_serial_u32_code[PAI_GEMV_SERIAL_U32_CODE_WORDS] = {
+#include "gfx1013/pai_gemv_serial_u32.inc"
+};
 const uint32_t pai_smemload16_code[PAI_G24_CODE_WORDS] = {
 #include "gfx1013/pai_smemload16.inc"
 };
 const uint32_t pai_dsprobe_code[PAI_G25_CODE_WORDS] = {
 #include "gfx1013/pai_dsprobe.inc"
+};
+const uint32_t pai_lds_lanes_code[PAI_LDS_LANES_CODE_WORDS] = {
+#include "gfx1013/pai_lds_lanes.inc"
 };
 const uint32_t pai_dsstaged_code[PAI_G26_CODE_WORDS] = {
 #include "gfx1013/pai_dsstaged.inc"

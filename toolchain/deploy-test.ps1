@@ -72,6 +72,6 @@ if (-not $found) {
 }
 
 Write-Output "== summary ($((Get-Item $localLog).Length) bytes) =="
-Get-Content $localLog | Where-Object { $_ -match "M0-|PAI-M0:|ERROR|WARN" } |
-  Select-Object -Last 50
+Get-Content $localLog | Where-Object { $_ -match "M0-|PAI-M0:|PAI-M1:|\[M1\]|ERROR|WARN" } |
+  Select-Object -Last 60
 Write-Output "== full log: $localLog =="
