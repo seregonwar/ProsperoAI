@@ -79,7 +79,7 @@
 #define PAI_MUBUFLOAD_CODE_WORDS 14u
 
 /* E39: arithmetic milestone kernel — c[i] = (float)i + k (s4). */
-#define PAI_ARITH_RSRC2 0x0000000Au
+#define PAI_ARITH_RSRC2 0x0000000Cu
 #define PAI_ARITH_CODE_WORDS 13u
 
 /* E31: loadstore with vaddr pairs 1 (v[2:3]) only. */

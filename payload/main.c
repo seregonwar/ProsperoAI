@@ -1203,7 +1203,7 @@ m0_exp_loads_arith(m0_ctx_t *ctx) {
     }
   }
 
-  /* E41: THE MILESTONE — c[4i..4i+3] = (float)i + k (stride 16). */
+  /* E42: THE MILESTONE — c[i] = (float)i + k (stride 4, 6 SGPRs). */
   if (!host) {
     pai_gpu_reset(gpu);
   }
@@ -1220,27 +1220,23 @@ m0_exp_loads_arith(m0_ctx_t *ctx) {
     ud[2] = (uint32_t)(ctx->c.gpu_addr & 0xFFFFFFFFu);
     ud[3] = (uint32_t)(ctx->c.gpu_addr >> 32);
     memcpy(&ud[4], &k, sizeof(k));
+    ud[5] = 0;
     m0_build_dispatch_stream(ctx, stream, M0_PM4_CAP, PAI_ARITH_RSRC2,
-                             PAI_EXP_THREADS_X, 1, ud, 5, &stream_len);
-    m0_run_gpu(ctx, stream, stream_len, c32, 128 * 4, 0xCC, "E41");
+                             PAI_EXP_THREADS_X, 1, ud, 6, &stream_len);
+    m0_run_gpu(ctx, stream, stream_len, c32, 128, 0xCC, "E42");
     {
       float *cf = (float *)ctx->c.cpu_addr;
       int ok = 1;
       for (uint32_t i = 0; i < PAI_EXP_THREADS_X; i++) {
         float want = (float)i + k;
-        for (uint32_t j = 0; j < 4; j++) {
-          if (cf[i * 4 + j] != want) {
-            ok = 0;
-            PAI_LOG_ERROR_(PAI_SUB_GPU, "[M0-E41] c[%u] = %f want %f\n",
-                           i * 4 + j, (double)cf[i * 4 + j], (double)want);
-            break;
-          }
-        }
-        if (!ok) {
+        if (cf[i] != want) {
+          ok = 0;
+          PAI_LOG_ERROR_(PAI_SUB_GPU, "[M0-E42] c[%u] = %f want %f\n", i,
+                         (double)cf[i], (double)want);
           break;
         }
       }
-      m0_exp_report("E41", ok);
+      m0_exp_report("E42", ok);
     }
   }
 
