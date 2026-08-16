@@ -1684,6 +1684,38 @@ m0_exp_v0model(m0_ctx_t *ctx) {
     }
   }
 
+  /* G18: G16 WITHOUT the s_waitcnt - is the waitcnt the hang point? */
+  if (!host) {
+    pai_gpu_reset(gpu);
+  }
+  {
+    uint32_t *c18 = (uint32_t *)ctx->c.cpu_addr;
+    memset(c18, 0xCC, 128 * sizeof(uint32_t));
+    memcpy(ctx->code.cpu_addr, pai_selfref_nowait_code,
+           PAI_G18_CODE_WORDS * sizeof(uint32_t));
+    if (host) {
+      pai_gpu_host_register_shader(gpu, ctx->code.gpu_addr,
+                                   pai_host_kernel_g8, NULL);
+    }
+    ud[0] = 0;
+    ud[1] = 0;
+    ud[2] = (uint32_t)(ctx->c.gpu_addr & 0xFFFFFFFFu);
+    ud[3] = (uint32_t)(ctx->c.gpu_addr >> 32);
+    m0_build_dispatch_stream(ctx, stream, M0_PM4_CAP, PAI_G18_RSRC2,
+                             PAI_EXP_THREADS_X, 1, ud, 4, &stream_len);
+    m0_run_gpu(ctx, stream, stream_len, c18, 128, 0xCC, "G18");
+    PAI_LOG_INFO_(PAI_SUB_GPU,
+                  "[M0-G18] c[0..3] = %08x %08x %08x %08x  "
+                  "c[32..35] = %08x %08x %08x %08x\n",
+                  c18[0], c18[1], c18[2], c18[3], c18[32], c18[33], c18[34],
+                  c18[35]);
+    {
+      int ok = (c18[32] == PAI_G16_VALUE) && (c18[33] == PAI_G16_VALUE) &&
+               (c18[34] == PAI_G16_VALUE) && (c18[35] == PAI_G16_VALUE);
+      m0_exp_report("G18", ok);
+    }
+  }
+
   /* G17: load from the kernel's own acqrb VA - does ANY load complete,
    * or only our dmem pages hang? */
   if (!host) {

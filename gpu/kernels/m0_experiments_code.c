@@ -73,6 +73,9 @@ const uint32_t pai_selfref_code[PAI_G16_CODE_WORDS] = {
 const uint32_t pai_acqload_code[PAI_G17_CODE_WORDS] = {
 #include "gfx1013/pai_acqload.inc"
 };
+const uint32_t pai_selfref_nowait_code[PAI_G18_CODE_WORDS] = {
+#include "gfx1013/pai_selfref_nowait.inc"
+};
 
 const uint32_t pai_hbatch_code[] = {
 #include "gfx1013/pai_hbatch.inc"
