@@ -116,7 +116,7 @@ pai_gc_now_ns(void) {
 
 static pai_status_t
 pai_gc_alloc_dmem(pai_gpu_buffer_t *buffer, uint64_t size, const char *name,
-                  uint64_t *out_phys) {
+                  uint64_t *out_phys, int mem_type) {
   off_t phys = 0;
   void *va = NULL;
   int r;
@@ -126,7 +126,10 @@ pai_gc_alloc_dmem(pai_gpu_buffer_t *buffer, uint64_t size, const char *name,
   }
   size = (size + PAI_GPU_ALLOC_ALIGN - 1) & ~(uint64_t)(PAI_GPU_ALLOC_ALIGN - 1);
 
-  r = sceKernelAllocateMainDirectMemory((size_t)size, (size_t)size, 1, &phys);
+  /* mem_type: 1 = WB_ONION (CPU-coherent, CP-readable), 3 = WC_GARLIC
+   * (GPU-direct, shader-readable). OpenAGC-verified constants. */
+  r = sceKernelAllocateMainDirectMemory((size_t)size, (size_t)size, mem_type,
+                                        &phys);
   if (r != 0) {
     PAI_LOG_ERROR_(PAI_SUB_GPU,
                    "sceKernelAllocateMainDirectMemory(%s) failed: 0x%08x\n",
@@ -167,7 +170,8 @@ pai_gc_buffer_alloc(pai_gpu_device_t *device, pai_gpu_buffer_t *buffer,
 
   /* Direct memory gives us the physical address, which the GPU
    * page-table repair needs. */
-  st = pai_gc_alloc_dmem(buffer, size, "pai-gpu", &phys);
+  st = pai_gc_alloc_dmem(buffer, size, "pai-gpu", &phys,
+                         (flags & PAI_GPU_BUF_GARLIC) ? 3 : 1);
   if (st != PAI_OK) {
     return st;
   }
@@ -397,14 +401,16 @@ pai_gc_init(pai_gpu_device_t *device) {
 
   st->cb_buf = (pai_gpu_buffer_t *)calloc(1, sizeof(*st->cb_buf));
   if (!st->cb_buf ||
-      pai_gc_alloc_dmem(st->cb_buf, PAI_GC_CB_BUF_SIZE, "pai-cb", NULL) != PAI_OK) {
+      pai_gc_alloc_dmem(st->cb_buf, PAI_GC_CB_BUF_SIZE, "pai-cb", NULL,
+                        1) != PAI_OK) {
     return PAI_ERR_NOMEM;
   }
 
   /* 16-dword NOP trailer: forces the ring to run the final descriptor. */
   trailer = (pai_gpu_buffer_t *)calloc(1, sizeof(*trailer));
   if (!trailer ||
-      pai_gc_alloc_dmem(trailer, PAI_GPU_ALLOC_ALIGN, "pai-trailer", NULL) !=
+      pai_gc_alloc_dmem(trailer, PAI_GPU_ALLOC_ALIGN, "pai-trailer", NULL,
+                        1) !=
           PAI_OK) {
     return PAI_ERR_NOMEM;
   }
@@ -443,6 +449,23 @@ pai_gc_shutdown(pai_gpu_device_t *device) {
     device->state = NULL;
   }
   return PAI_OK;
+}
+
+static void
+pai_gc_buffer_flush(pai_gpu_device_t *device, pai_gpu_buffer_t *buffer) {
+  uintptr_t start;
+  uintptr_t end;
+  (void)device;
+  if (!buffer || !buffer->cpu_addr || buffer->size == 0) {
+    return;
+  }
+  start = (uintptr_t)buffer->cpu_addr & ~(uintptr_t)63u;
+  end = (uintptr_t)buffer->cpu_addr + buffer->size;
+  while (start < end) {
+    __asm__ volatile("clflush (%0)" : : "r"(start) : "memory");
+    start += 64u;
+  }
+  __asm__ volatile("mfence" : : : "memory");
 }
 
 static uint64_t
@@ -502,6 +525,7 @@ const pai_gpu_backend_ops_t pai_gpu_ops_ps5_gc = {
     .wait_label = pai_gc_wait_label,
     .reset = pai_gc_reset,
     .aux_va = pai_gc_aux_va,
+    .buffer_flush = pai_gc_buffer_flush,
 };
 
 #endif /* PAI_PS5 */

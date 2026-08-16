@@ -24,6 +24,7 @@ typedef struct pai_gpu_device pai_gpu_device_t;
 /* Buffer flags. */
 #define PAI_GPU_BUF_CPU_VISIBLE   (1u << 0)
 #define PAI_GPU_BUF_CPU_COHERENT  (1u << 1)
+#define PAI_GPU_BUF_GARLIC      (1u << 2) /* WC_GARLIC dmem type 3 */
 
 typedef struct pai_gpu_buffer {
   uint64_t size;       /* logical size requested        */
@@ -56,6 +57,7 @@ typedef struct pai_gpu_backend_ops {
   pai_status_t (*reset)(pai_gpu_device_t *device);
   /* Auxiliary GPU VA owned by the backend (acqrb etc.), or 0. */
   uint64_t (*aux_va)(pai_gpu_device_t *device);
+  void (*buffer_flush)(pai_gpu_device_t *device, pai_gpu_buffer_t *buffer);
 } pai_gpu_backend_ops_t;
 
 struct pai_gpu_device {
@@ -73,6 +75,10 @@ pai_status_t pai_gpu_device_create(pai_gpu_backend_t backend,
 void pai_gpu_device_destroy(pai_gpu_device_t *device);
 const char *pai_gpu_device_name(const pai_gpu_device_t *device);
 pai_gpu_backend_t pai_gpu_device_backend(const pai_gpu_device_t *device);
+
+/* Flush the CPU cache lines covering a buffer (WC_GARLIC data needs it
+ * before the GPU reads CPU-written content). No-op on the host. */
+void pai_gpu_buffer_flush(pai_gpu_device_t *device, pai_gpu_buffer_t *buffer);
 
 /* Backend-owned auxiliary GPU VA (acqrb etc.), or 0 when unavailable. */
 uint64_t pai_gpu_aux_va(pai_gpu_device_t *device);

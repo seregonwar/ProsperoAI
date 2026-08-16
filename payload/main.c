@@ -93,11 +93,14 @@ m0_ctx_alloc_buffers(m0_ctx_t *ctx) {
           PAI_OK ||
       pai_gpu_buffer_alloc(g, &ctx->dst, sz, PAI_GPU_BUF_CPU_VISIBLE) !=
           PAI_OK ||
-      pai_gpu_buffer_alloc(g, &ctx->a, sz, PAI_GPU_BUF_CPU_VISIBLE) !=
+      pai_gpu_buffer_alloc(g, &ctx->a, sz,
+                           PAI_GPU_BUF_CPU_VISIBLE | PAI_GPU_BUF_GARLIC) !=
           PAI_OK ||
-      pai_gpu_buffer_alloc(g, &ctx->b, sz, PAI_GPU_BUF_CPU_VISIBLE) !=
+      pai_gpu_buffer_alloc(g, &ctx->b, sz,
+                           PAI_GPU_BUF_CPU_VISIBLE | PAI_GPU_BUF_GARLIC) !=
           PAI_OK ||
-      pai_gpu_buffer_alloc(g, &ctx->c, sz, PAI_GPU_BUF_CPU_VISIBLE) !=
+      pai_gpu_buffer_alloc(g, &ctx->c, sz,
+                           PAI_GPU_BUF_CPU_VISIBLE | PAI_GPU_BUF_GARLIC) !=
           PAI_OK ||
       pai_gpu_buffer_alloc(g, &ctx->code, sz, PAI_GPU_BUF_CPU_VISIBLE) !=
           PAI_OK ||
@@ -131,6 +134,12 @@ m0_run_gpu(m0_ctx_t *ctx, uint32_t *stream, uint32_t stream_len,
     pb.buf = stream;
     pb.cap = M0_PM4_CAP;
     pb.len = stream_len;
+
+    /* The a/b/c data buffers are WC_GARLIC: flush CPU writes before
+     * the GPU reads them. Cheap (2 MB clflush ~1 ms). */
+    pai_gpu_buffer_flush(ctx->gpu, &ctx->a);
+    pai_gpu_buffer_flush(ctx->gpu, &ctx->b);
+    pai_gpu_buffer_flush(ctx->gpu, &ctx->c);
 
     switch (fence) {
     case 0:
@@ -2570,6 +2579,11 @@ m0_stage_b(m0_ctx_t *ctx) {
     a[i] = (float)i * 0.5f + 1.0f;
     b[i] = (float)(i % 5) * 0.25f - 0.5f;
   }
+
+  /* WC_GARLIC is not CPU-cache-coherent: flush the CPU writes before
+   * the GPU reads them. */
+  pai_gpu_buffer_flush(ctx->gpu, &ctx->a);
+  pai_gpu_buffer_flush(ctx->gpu, &ctx->b);
 
   memcpy(ctx->code.cpu_addr, pai_vecadd_code,
          PAI_VECADD_CODE_WORDS * sizeof(uint32_t));

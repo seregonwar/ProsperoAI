@@ -53,6 +53,14 @@ pai_gpu_device_create(pai_gpu_backend_t backend, pai_gpu_device_t **out_device) 
   return PAI_OK;
 }
 
+void
+pai_gpu_buffer_flush(pai_gpu_device_t *device, pai_gpu_buffer_t *buffer) {
+  if (!device || !device->ops || !device->ops->buffer_flush) {
+    return;
+  }
+  device->ops->buffer_flush(device, buffer);
+}
+
 uint64_t
 pai_gpu_aux_va(pai_gpu_device_t *device) {
   if (!device || !device->ops || !device->ops->aux_va) {
