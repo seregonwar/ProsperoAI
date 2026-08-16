@@ -37,6 +37,21 @@ static int g_pai_test_failures;
     }                                                                        \
   } while (0)
 
+#define CHECK_EQ_FLOAT(a, b)                                                 \
+  do {                                                                       \
+    double va_ = (double)(a);                                                \
+    double vb_ = (double)(b);                                                \
+    double da_ = va_ - vb_;                                                  \
+    if (da_ < 0) {                                                           \
+      da_ = -da_;                                                            \
+    }                                                                        \
+    if (da_ > 1e-6) {                                                        \
+      printf("  FAIL %s:%d: %s == %s (%f != %f)\n", __FILE__, __LINE__,      \
+             #a, #b, va_, vb_);                                              \
+      g_pai_test_failures++;                                                 \
+    }                                                                        \
+  } while (0)
+
 #define TEST_MAIN_BEGIN()                                                    \
   int main(void) {                                                           \
     g_pai_test_failures = 0;

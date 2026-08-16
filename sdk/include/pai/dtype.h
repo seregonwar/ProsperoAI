@@ -31,4 +31,9 @@ uint32_t pai_dtype_bits(pai_dtype_t dtype);
 /* Stable name for diagnostics (e.g. "f32"). */
 const char *pai_dtype_name(pai_dtype_t dtype);
 
+/* Recommended accumulator dtype for reductions over `dtype`:
+ * integer sub-32-bit dtypes accumulate in i32, f16/bf16 in f32,
+ * f32/i32/u32 in themselves. Invalid dtypes return PAI_DTYPE_COUNT. */
+pai_dtype_t pai_dtype_accumulator(pai_dtype_t dtype);
+
 #endif /* PAI_DTYPE_H */
