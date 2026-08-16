@@ -292,12 +292,20 @@ pai_cpu_phys_of_va(uint64_t va, uint64_t *out_phys) {
     return -1;
   }
 
-  if (kernel_copyout(g_diag_dmap + (intptr_t)(cr3 +
-                                               ((va >> 39) & 0x1FF) * 8),
-                     &e4, 8) != 0 ||
-      !(e4 & 1)) {
-    PAI_LOG_INFO_(PAI_SUB_GPU, "cpu phys: pml4e stage failed\n");
-    return -1;
+  {
+    int r = kernel_copyout(g_diag_dmap + (intptr_t)(cr3 +
+                                                     ((va >> 39) & 0x1FF) *
+                                                         8),
+                           &e4, 8);
+    if (r != 0 || !(e4 & 1)) {
+      uint64_t raw = kernel_getlong(g_diag_dmap + (intptr_t)cr3);
+      PAI_LOG_INFO_(PAI_SUB_GPU,
+                    "cpu phys: pml4e stage failed (r=%d e4=0x%llx raw=0x%llx "
+                    "at 0x%llx)\n",
+                    r, (unsigned long long)e4, (unsigned long long)raw,
+                    (unsigned long long)(g_diag_dmap + (intptr_t)cr3));
+      return -1;
+    }
   }
   if (kernel_copyout(g_diag_dmap + (intptr_t)((e4 & 0x000FFFFFFFFFF000ULL) +
                                                ((va >> 30) & 0x1FF) * 8),
