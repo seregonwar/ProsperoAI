@@ -82,15 +82,23 @@ Final rules, all reproduced across F-batch experiments:
 
 ## MILESTONE STATUS
 
-- **PAI-M0 GPU compute: VERIFIED** via F2: dispatch -> per-thread
-  deterministic output -> CPU formula check (4i+3, lanes 0-7).
-- Pipeline proven end-to-end on 9.40: bootstrap, jailbreak, logging,
-  lifecycle, DMA, EOP fence, PM4 submit, compute dispatch, readback,
-  CPU comparison, deploy-loop automation.
-- Remaining for full vecadd/LLM kernels: per-thread ALU operand
-  zeroing (rule 6), flat loads (hang — investigate MUBUF T#), lane
-  8+ exec-mask quirk, golden memset data semantics (OpenAGC broken
-  on 9.40 — do not trust its claims).
+- **PAI-M0 GPU compute: FULLY VERIFIED (G15)** on FW 9.40:
+  `c[i] = k + 4*i + 3` (lanes 0-7), k supplied via user data (s4),
+  per-thread, CPU-reference-checked. Runtime-parameterized arithmetic
+  executes deterministically through the whole pipeline.
+- Final store semantics (empirical, reproduced across G7-G15):
+  - `flat_store_dword` data = (last instruction's SGPR-sourced value k)
+    + (vaddr offset, tid*4) + 3. With an instruction-written literal in
+    v0 it writes v0 verbatim (G14/E36/G9).
+  - `flat_store_dwordx4` = v0 broadcast x4 (E30/E32/G9).
+  - Only lanes 0-7 of a 32-thread wave write (exec-mask quirk).
+  - vaddr must be v[2:3]; v[4:5] hangs.
+- Float adds (v_add_f32) return 0 with dst != v0; integer ALU
+  (lshl/add_co) is per-thread correct. SGPR reads work in VOP3
+  (E45/G15); s0-s1 are hardware-zeroed.
+- Remaining for full vecadd/LLM: flat loads (hang — MUBUF T# next),
+  lane 8+ exec quirk, float-ALU workaround (use integer ops or the
+  dst-v0 broadcast for uniforms).
 
 ## Toolchain
 
