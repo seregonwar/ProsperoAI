@@ -604,6 +604,27 @@ pai_host_kernel_int_clip(void *ctx, const uint32_t user_data[16],
  * b_lo, b_hi], C at ud 4-5; one group per cell, groups = rows*N:
  * c[g] = sum_k a[i*K+k] * b[k*N+j] (u32 wrap), i = g/N, j = g%N. */
 pai_status_t
+pai_host_kernel_ramp(void *ctx, const uint32_t user_data[16],
+                      uint32_t threads_x, uint32_t group_x) {
+  float *c = (float *)(uintptr_t)pai_ud64(user_data, 2);
+  float k, base;
+  memcpy(&k, &user_data[4], sizeof(k));
+  memcpy(&base, &user_data[5], sizeof(base));
+
+  (void)ctx;
+  (void)threads_x;
+  (void)group_x;
+
+  /* Silicon: only lanes 0-7 of the 32-thread wave store, and the
+   * value path bakes in the G15 store formula (tid*4+3), so lane i
+   * stores base + k*(4i+3) - same convention as G35's check. */
+  for (uint32_t i = 0; i < 8; i++) {
+    c[i] = base + k * (float)(4 * i + 3);
+  }
+  return PAI_OK;
+}
+
+pai_status_t
 pai_host_kernel_int_matmul(void *ctx, const uint32_t user_data[16],
                            uint32_t threads_x, uint32_t group_x) {
   const uint32_t *h = (const uint32_t *)(uintptr_t)pai_ud64(user_data, 2);

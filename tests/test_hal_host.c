@@ -352,6 +352,22 @@ TEST_MAIN_BEGIN()
                                &mismatch);
       CHECK(st == PAI_OK);
     }
+
+    /* G55 wave-parallel float ramp: c[i] = base + k*i, lanes 0-7. */
+    {
+      float k55 = 0.5f, base55 = 1.0f;
+      float *c55 = (float *)cbuf;
+      ud[2] = (uint32_t)(uintptr_t)cbuf;
+      ud[3] = (uint32_t)((uintptr_t)cbuf >> 32);
+      memcpy(&ud[4], &k55, sizeof(k55));
+      memcpy(&ud[5], &base55, sizeof(base55));
+      CHECK(pai_host_kernel_ramp(NULL, ud, 32, 1) == PAI_OK);
+      for (uint32_t i = 0; i < 8; i++) {
+        /* G15 value-path formula: lane i stores base + k*(4i+3). */
+        float want = base55 + k55 * (float)(4 * i + 3);
+        CHECK(c55[i] == want);
+      }
+    }
   }
 
   pai_gpu_buffer_free(dev, &label);

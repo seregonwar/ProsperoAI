@@ -3804,6 +3804,57 @@ h48[0] = kk;
     m0_exp_report("G54", ok);
   }
 
+  /* G55: wave-parallel float linear ramp - c[i] = base + k*i with
+   * NUM_THREAD_X=32 (1 group); each lane derives its value from tid +
+   * uniform scalars (the only reads that work on 9.40). Lanes 0-7 of
+   * the wave store. First kernel past the serial NUM_THREAD_X=1
+   * model; the ramp is the RoPE position-table primitive (Phase 2). */
+  if (!host) {
+    pai_gpu_reset(gpu);
+  }
+  {
+    uint32_t *c55 = (uint32_t *)ctx->c.cpu_addr;
+    float k55 = 0.5f;
+    float base55 = 1.0f;
+    uint32_t stream_len = 0;
+    int ok = 1;
+
+    memset(c55, 0xCC, 64 * sizeof(uint32_t));
+    memcpy(ctx->code.cpu_addr, pai_ramp_code,
+           PAI_RAMP_CODE_WORDS * sizeof(uint32_t));
+    if (host) {
+      pai_gpu_host_register_shader(gpu, ctx->code.gpu_addr,
+                                   pai_host_kernel_ramp, NULL);
+    }
+    ud[0] = 0;
+    ud[1] = 0;
+    ud[2] = (uint32_t)(ctx->c.gpu_addr & 0xFFFFFFFFu);
+    ud[3] = (uint32_t)(ctx->c.gpu_addr >> 32);
+    memcpy(&ud[4], &k55, sizeof(k55));
+    memcpy(&ud[5], &base55, sizeof(base55));
+    m0_build_dispatch_stream(ctx, stream, M0_PM4_CAP, PAI_RAMP_RSRC2,
+                             PAI_EXP_THREADS_X, 1, ud, 6, &stream_len);
+    m0_run_gpu(ctx, stream, stream_len, c55, 64, 0xCC, "G55");
+    PAI_LOG_INFO_(PAI_SUB_GPU,
+                  "[M0-G55] c[0..7] = %.2f %.2f %.2f %.2f %.2f %.2f %.2f "
+                  "%.2f\n",
+                  (double)((float *)c55)[0], (double)((float *)c55)[1],
+                  (double)((float *)c55)[2], (double)((float *)c55)[3],
+                  (double)((float *)c55)[4], (double)((float *)c55)[5],
+                  (double)((float *)c55)[6], (double)((float *)c55)[7]);
+    /* The value path bakes in the G15 store formula (tid*4+3), the
+     * same convention G35's check uses: want = base + k*(4i+3). */
+    for (uint32_t i = 0; i < 8 && ok; i++) {
+      float gg;
+      float want = base55 + k55 * (float)(4 * i + 3);
+      memcpy(&gg, &c55[i], 4);
+      if (gg != want) {
+        ok = 0;
+      }
+    }
+    m0_exp_report("G55", ok);
+  }
+
   /* G17: load from the kernel's own acqrb VA - does ANY load complete,
    * or only our dmem pages hang? */
   if (!host) {

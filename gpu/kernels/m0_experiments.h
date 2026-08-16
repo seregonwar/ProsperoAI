@@ -332,6 +332,13 @@
 #define PAI_INT_MATMUL_OFF 116u
 #define PAI_INT_MATMUL_WORDS 62u
 #define PAI_INT_CODE_WORDS 178u
+
+/* G55: wave-parallel float linear ramp (ramp.s) - c[i] = base + k*i,
+ * NUM_THREAD_X=32, 1 group, lanes 0-7 store. RSRC2 0x0C (G33/G35
+ * ABI): s2:s3 = C, s4 = k, s5 = base. First kernel past the serial
+ * NUM_THREAD_X=1 model; base for RoPE position tables (Phase 2). */
+#define PAI_RAMP_RSRC2 0x0000000Cu
+#define PAI_RAMP_CODE_WORDS 17u
 #define PAI_G35_WORDS 15u
 #define PAI_G32_WORDS 16u
 #define PAI_G25_VALUE 0xDEAD0001u
@@ -445,6 +452,7 @@ extern const uint32_t pai_fgemv_serial_code[PAI_FGEMV_CODE_WORDS];
 extern const uint32_t pai_fsaxpy_code[PAI_FSAXPY_CODE_WORDS];
 extern const uint32_t pai_t4_ops_code[PAI_T4_CODE_WORDS];
 extern const uint32_t pai_int_ops_code[PAI_INT_CODE_WORDS];
+extern const uint32_t pai_ramp_code[PAI_RAMP_CODE_WORDS];
 extern const uint32_t pai_hbatch_code[];
 extern const uint32_t pai_hbatch2_code[];
 extern const uint32_t pai_hbatch3_code[PAI_H10_CODE_WORDS];

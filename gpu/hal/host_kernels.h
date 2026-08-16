@@ -164,4 +164,10 @@ pai_status_t pai_host_kernel_int_clip(void *ctx, const uint32_t user_data[16],
 pai_status_t pai_host_kernel_int_matmul(void *ctx, const uint32_t user_data[16],
                                         uint32_t threads_x, uint32_t group_x);
 
+/* G55 wave-parallel float ramp: C at ud[2:3], k = float(ud[4]),
+ * base = float(ud[5]); lane i stores base + k*(4i+3) for the 8
+ * storing lanes (G15 value-path formula, like G35's check). */
+pai_status_t pai_host_kernel_ramp(void *ctx, const uint32_t user_data[16],
+                                  uint32_t threads_x, uint32_t group_x);
+
 #endif /* PAI_GPU_HOST_KERNELS_H */

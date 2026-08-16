@@ -151,6 +151,10 @@ const uint32_t pai_int_ops_code[PAI_INT_CODE_WORDS] = {
 #include "gfx1013/pai_int_ops.inc"
 };
 
+const uint32_t pai_ramp_code[PAI_RAMP_CODE_WORDS] = {
+#include "gfx1013/pai_ramp.inc"
+};
+
 const uint32_t pai_hbatch_code[] = {
 #include "gfx1013/pai_hbatch.inc"
 };
