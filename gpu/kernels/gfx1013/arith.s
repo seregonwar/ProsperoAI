@@ -11,7 +11,7 @@
 .text
 .globl arith_v0
 arith_v0:
-    v_mov_b32 v1, v0
+    v_mov_b32 v1, v9
     v_mov_b32 v2, s2
     v_mov_b32 v3, s3
     v_add_f32 v0, v1, s4
