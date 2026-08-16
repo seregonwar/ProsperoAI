@@ -16,6 +16,34 @@
 #include <stdlib.h>
 #include <string.h>
 
+/* Host stubs for the PS5-only gvmspace diagnostics referenced by the
+ * payload harness. No page tables exist on the host. */
+void
+pai_gvmspace_set_mode(int mode) {
+  (void)mode;
+}
+
+int
+pai_gvmspace_dump_pde_page(uint64_t va, uint32_t words[4]) {
+  (void)va;
+  (void)words;
+  return 0;
+}
+
+int
+pai_cpu_phys_of_va(uint64_t va, uint64_t *phys) {
+  (void)va;
+  *phys = 0;
+  return 0;
+}
+
+int
+pai_gvmspace_dump_phys(uint64_t phys, uint32_t words[4]) {
+  (void)phys;
+  (void)words;
+  return 0;
+}
+
 #define PAI_HOST_REG_SH_BASE 0x0200
 #define PAI_HOST_REG_SH_COUNT 0x0100
 
