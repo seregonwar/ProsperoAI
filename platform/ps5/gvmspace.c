@@ -285,8 +285,11 @@ pai_cpu_phys_of_va(uint64_t va, uint64_t *out_phys) {
     }
   }
   if (!cr3) {
+    PAI_LOG_INFO_(PAI_SUB_GPU, "cpu phys: no CR3 candidate in vmspace\n");
     return -1;
   }
+  PAI_LOG_INFO_(PAI_SUB_GPU, "cpu phys: cr3=0x%llx for va=0x%llx\n",
+                (unsigned long long)cr3, (unsigned long long)va);
 
   if (!g_diag_have_layout) {
     return -1;
@@ -296,18 +299,23 @@ pai_cpu_phys_of_va(uint64_t va, uint64_t *out_phys) {
                                                ((va >> 39) & 0x1FF) * 8),
                      &e4, 8) != 0 ||
       !(e4 & 1)) {
+    PAI_LOG_INFO_(PAI_SUB_GPU, "cpu phys: pml4e stage failed\n");
     return -1;
   }
   if (kernel_copyout(g_diag_dmap + (intptr_t)((e4 & 0x000FFFFFFFFFF000ULL) +
                                                ((va >> 30) & 0x1FF) * 8),
                      &e3, 8) != 0 ||
       !(e3 & 1)) {
+    PAI_LOG_INFO_(PAI_SUB_GPU, "cpu phys: pdpe stage failed (e4=0x%llx)\n",
+                  (unsigned long long)e4);
     return -1;
   }
   if (kernel_copyout(g_diag_dmap + (intptr_t)((e3 & 0x000FFFFFFFFFF000ULL) +
                                                ((va >> 21) & 0x1FF) * 8),
                      &e2, 8) != 0 ||
       !(e2 & 1)) {
+    PAI_LOG_INFO_(PAI_SUB_GPU, "cpu phys: pde stage failed (e3=0x%llx)\n",
+                  (unsigned long long)e3);
     return -1;
   }
 
@@ -320,6 +328,8 @@ pai_cpu_phys_of_va(uint64_t va, uint64_t *out_phys) {
                                       ((va >> 12) & 0x1FF) * 8),
                        &e1, 8) != 0 ||
         !(e1 & 1)) {
+      PAI_LOG_INFO_(PAI_SUB_GPU, "cpu phys: pte stage failed (e2=0x%llx)\n",
+                    (unsigned long long)e2);
       return -1;
     }
     *out_phys = (e1 & 0x000FFFFFFFFFF000ULL) | (va & 0xFFFULL);
