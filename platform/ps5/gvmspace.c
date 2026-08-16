@@ -402,6 +402,24 @@ pai_gvmspace_probe(uint64_t pml4_phys, uint64_t va, intptr_t dmap_base) {
  * kernel-mapped VA) and our physical frame. Verifies the write.
  */
 /*
+ * Read-only: dump the first 4 words of a raw CPU physical address
+ * through the direct map.
+ */
+int
+pai_gvmspace_dump_phys(uint64_t cpu_phys, uint32_t words[4]) {
+  if (!g_diag_have_layout || cpu_phys >= 0x400000000ULL) {
+    return -1;
+  }
+  for (int i = 0; i < 4; i++) {
+    if (kernel_copyout(g_diag_dmap + (intptr_t)(cpu_phys + i * 4),
+                       &words[i], 4) != 0) {
+      return -1;
+    }
+  }
+  return 0;
+}
+
+/*
  * Read-only: dump the physical page the GPU PDE for `va` points at.
  */
 int

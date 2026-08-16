@@ -28,6 +28,7 @@ typedef struct pai_gpu_device pai_gpu_device_t;
 typedef struct pai_gpu_buffer {
   uint64_t size;       /* logical size requested        */
   uint64_t gpu_addr;   /* GPU virtual address           */
+  uint64_t phys;       /* physical (GPU-BUS) address    */
   void    *cpu_addr;   /* CPU mapping, or NULL          */
   uint32_t flags;
   void    *backend;    /* opaque backend state          */

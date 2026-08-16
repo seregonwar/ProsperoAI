@@ -147,6 +147,7 @@ pai_gc_alloc_dmem(pai_gpu_buffer_t *buffer, uint64_t size, const char *name,
 
   buffer->size = size;
   buffer->gpu_addr = (uint64_t)(uintptr_t)va;
+  buffer->phys = (uint64_t)phys;
   buffer->cpu_addr = va;
   buffer->flags = PAI_GPU_BUF_CPU_VISIBLE | PAI_GPU_BUF_CPU_COHERENT;
   if (out_phys) {

@@ -35,6 +35,13 @@ pai_status_t pai_gvmspace_probe(uint64_t pml4_phys, uint64_t va,
                                 intptr_t dmap_base);
 
 /*
+ * Read-only: dump the first 4 words of a raw CPU physical address
+ * through the direct map. Used to locate where GPU writes actually
+ * land (compare with the syscall phys values).
+ */
+int pai_gvmspace_dump_phys(uint64_t cpu_phys, uint32_t words[4]);
+
+/*
  * Read-only: dump the first 4 words of the physical page the GPU PDE
  * for a points at. Used to detect kernel-side staging (the VA maps
  * to a separate physical page that the kernel copies lazily). No
