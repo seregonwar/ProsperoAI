@@ -333,6 +333,11 @@ gw_conn_thread(void *p) {
   pai_status_t st;
   int parsed = 0;
 
+  /* Idle guard: a silent client is disconnected after the timeout. */
+  if (server->idle_timeout_ms != 0) {
+    (void)pai_gw_sock_set_recv_timeout(c->sock, server->idle_timeout_ms);
+  }
+
   /* Read until the request parses (or fails hard). */
   while (!parsed) {
     uint8_t tmp[4096];
@@ -418,6 +423,7 @@ pai_http_server_init(pai_http_server_t *server, const char *host,
   server->user = user;
   server->handler = handler;
   server->listener = PAI_GW_SOCK_INVALID;
+  server->idle_timeout_ms = 15000;
 
   st = pai_gw_sys_init();
   if (st != PAI_OK) {

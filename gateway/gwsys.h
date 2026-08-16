@@ -1,15 +1,10 @@
 /*
  * ProsperoAI — gateway system layer (whitepaper §25/§26)
  *
- * Minimal portability wrapper over the host OS primitives the gateway
- * HTTP server needs: TCP sockets, threads (thread-per-connection) and
- * mutexes (per-model serialization of generation). Two backends:
- *
- *   - Windows: winsock2 + _beginthreadex + CRITICAL_SECTION;
- *   - POSIX:   BSD sockets + pthread.
- *
- * The gateway is a host-side component (Desktop toolchain / local AI
- * endpoint) and is not compiled into PS5 payload builds.
+ * Minimal portability wrapper: TCP sockets, detached threads
+ * (thread-per-connection) and mutexes (per-model serialization).
+ * Windows: winsock2 + _beginthreadex + CRITICAL_SECTION; POSIX: BSD
+ * sockets + pthread. Host-side only (not in PS5 payload builds).
  */
 
 #ifndef PAI_GATEWAY_GWSYS_H
@@ -42,6 +37,10 @@ pai_status_t pai_gw_sock_listen(pai_gw_sock_t *out, const char *host,
 /* Accept one connection (blocking). */
 pai_status_t pai_gw_sock_accept(pai_gw_sock_t listener, pai_gw_sock_t *out);
 
+/* Dial host:port (blocking connect). */
+pai_status_t pai_gw_sock_connect(pai_gw_sock_t *out, const char *host,
+                                 uint16_t port);
+
 /* Send all nbytes; PAI_ERR_IO on failure/closed. */
 pai_status_t pai_gw_sock_send_all(pai_gw_sock_t s, const void *data,
                                   uint32_t nbytes);
@@ -49,6 +48,13 @@ pai_status_t pai_gw_sock_send_all(pai_gw_sock_t s, const void *data,
 /* Receive up to cap bytes; *out_read == 0 signals EOF. */
 pai_status_t pai_gw_sock_recv(pai_gw_sock_t s, void *data, uint32_t cap,
                               uint32_t *out_read);
+
+/*
+ * Bound a blocking recv() with SO_RCVTIMEO (`ms`). After the timeout
+ * fires without data, pai_gw_sock_recv returns PAI_ERR_IO — callers
+ * treat that as "idle, close". 0 clears the timeout (infinite).
+ */
+pai_status_t pai_gw_sock_set_recv_timeout(pai_gw_sock_t s, uint32_t ms);
 
 void pai_gw_sock_close(pai_gw_sock_t s);
 

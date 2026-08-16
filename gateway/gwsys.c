@@ -141,6 +141,58 @@ pai_gw_sock_accept(pai_gw_sock_t listener, pai_gw_sock_t *out) {
 }
 
 pai_status_t
+pai_gw_sock_connect(pai_gw_sock_t *out, const char *host, uint16_t port) {
+#ifdef _WIN32
+  SOCKET s;
+#else
+  int s;
+#endif
+  struct sockaddr_in addr;
+
+  if (out == NULL) {
+    return PAI_ERR_INVALID_ARG;
+  }
+  *out = PAI_GW_SOCK_INVALID;
+
+#ifdef _WIN32
+  s = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+  if (s == INVALID_SOCKET) {
+    return PAI_ERR_IO;
+  }
+#else
+  s = socket(AF_INET, SOCK_STREAM, 0);
+  if (s < 0) {
+    return PAI_ERR_IO;
+  }
+#endif
+
+  memset(&addr, 0, sizeof(addr));
+  addr.sin_family = AF_INET;
+  addr.sin_port = htons(port);
+  if (host != NULL && host[0] != '\0' && strcmp(host, "0.0.0.0") != 0) {
+    if (inet_pton(AF_INET, host, &addr.sin_addr) != 1) {
+      if (strcmp(host, "localhost") == 0) {
+        addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+      } else {
+        pai_gw_sock_close((pai_gw_sock_t)s);
+        return PAI_ERR_INVALID_ARG;
+      }
+    }
+  } else {
+    addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+  }
+
+  if (connect((pai_gw_sock_t)s, (const struct sockaddr *)&addr,
+              (int)sizeof(addr)) != 0) {
+    pai_gw_sock_close((pai_gw_sock_t)s);
+    return PAI_ERR_IO;
+  }
+
+  *out = (pai_gw_sock_t)s;
+  return PAI_OK;
+}
+
+pai_status_t
 pai_gw_sock_send_all(pai_gw_sock_t s, const void *data, uint32_t nbytes) {
   const char *p = (const char *)data;
   uint32_t sent = 0;
@@ -191,6 +243,32 @@ pai_gw_sock_recv(pai_gw_sock_t s, void *data, uint32_t cap,
   }
 #endif
   *out_read = (uint32_t)n; /* 0 = EOF */
+  return PAI_OK;
+}
+
+pai_status_t
+pai_gw_sock_set_recv_timeout(pai_gw_sock_t s, uint32_t ms) {
+  if (s == PAI_GW_SOCK_INVALID) {
+    return PAI_ERR_INVALID_ARG;
+  }
+#ifdef _WIN32
+  {
+    DWORD tv = ms;
+    if (setsockopt((SOCKET)s, SOL_SOCKET, SO_RCVTIMEO, (const char *)&tv,
+                   sizeof(tv)) != 0) {
+      return PAI_ERR_IO;
+    }
+  }
+#else
+  {
+    struct timeval tv;
+    tv.tv_sec = ms / 1000;
+    tv.tv_usec = (ms % 1000) * 1000;
+    if (setsockopt((int)s, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv)) != 0) {
+      return PAI_ERR_IO;
+    }
+  }
+#endif
   return PAI_OK;
 }
 

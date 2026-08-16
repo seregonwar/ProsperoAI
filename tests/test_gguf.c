@@ -615,6 +615,26 @@ test_reader_errors(void) {
     pai_gguf_close(&ff);
     free_gguf(file);
   }
+
+  /* A tensor dim beyond PAI_GGUF_MAX_DIM is rejected at open (would
+   * wrap the numel/size math used by dequant and the importer). */
+  {
+    uint8_t *file = NULL;
+    size_t n = 0;
+    ggt_t t;
+    pai_gguf_t ff;
+
+    memset(&t, 0, sizeof(t));
+    t.name = "t";
+    t.n_dims = 1;
+    t.dims[0] = (uint64_t)PAI_GGUF_MAX_DIM + 1;
+    t.type = PAI_GGUF_F32;
+    t.data = (const uint8_t *)raw;
+    t.nbytes = sizeof(raw);
+    build_gguf(NULL, 0, 0, &t, 1, &file, &n);
+    CHECK_EQ_INT((int)pai_gguf_open(file, n, &ff), PAI_ERR_PROTOCOL);
+    free_gguf(file);
+  }
 }
 
 /* ------------------------------------------------------------------ */

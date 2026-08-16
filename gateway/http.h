@@ -1,19 +1,14 @@
 /*
  * ProsperoAI — minimal HTTP/1.1 (gateway §26)
  *
- * A small, dependency-free HTTP/1.1 server for the OpenAI-compatible
- * gateway: request parsing (method/target/headers/Content-Length body),
- * a streaming response path (Transfer-Encoding: chunked for SSE) and a
- * thread-per-connection TCP listener over the gwsys portability layer.
+ * Request parsing (method/target/headers/Content-Length body) plus a
+ * streaming response path (Transfer-Encoding: chunked, for SSE) over a
+ * thread-per-connection TCP listener. Connection: close only (v0);
+ * chunked request encoding is rejected (501); headers and bodies are
+ * capped to bound memory.
  *
- * Connection: close only (v0): every response closes the connection.
- * Request bodies are Content-Length only; chunked request encoding is
- * rejected (501). Headers are capped (PAI_HTTP_MAX_HEADER_BYTES) and
- * bodies at PAI_HTTP_MAX_BODY to bound memory.
- *
- * The response object is also usable in-process (unit tests): the
- * `send` callback can capture wire bytes into a buffer instead of a
- * socket, which lets the OpenAI layer be tested without networking.
+ * The response object also works in-process (unit tests): the `send`
+ * callback can capture wire bytes instead of touching a socket.
  */
 
 #ifndef PAI_GATEWAY_HTTP_H
@@ -48,12 +43,9 @@ typedef struct pai_http_req {
   uint32_t body_len;
 } pai_http_req_t;
 
-/*
- * Parse a complete HTTP/1.1 request from `data` (which must stay alive
- * while the request is used). Returns PAI_ERR_MISMATCH when more bytes
- * are needed (incomplete), PAI_ERR_PROTOCOL on malformed input and
- * PAI_ERR_NOMEM when a size cap is exceeded.
- */
+/* Parse a complete HTTP/1.1 request from `data` (which must stay alive
+ * while the request is used): PAI_ERR_MISMATCH = incomplete,
+ * PAI_ERR_PROTOCOL = malformed, PAI_ERR_NOMEM = size cap exceeded. */
 pai_status_t pai_http_parse_request(const uint8_t *data, uint32_t len,
                                     pai_http_req_t *out);
 
@@ -76,12 +68,9 @@ typedef struct pai_http_resp {
 void pai_http_resp_init(pai_http_resp_t *resp, void *ctx,
                         int (*send)(void *, const void *, uint32_t));
 
-/*
- * Begin the response: writes the status line + headers. When
- * `streaming` is set the body uses chunked transfer encoding and each
- * pai_http_resp_write call becomes one chunk (SSE events flush
- * naturally). content_type may be NULL (defaults to text/plain).
- */
+/* Begin the response (status line + headers). `streaming` switches the
+ * body to chunked transfer encoding (each write = one chunk, so SSE
+ * events flush naturally); content_type may be NULL (text/plain). */
 pai_status_t pai_http_resp_begin(pai_http_resp_t *resp, int status,
                                  const char *content_type, int streaming);
 
@@ -104,13 +93,18 @@ typedef struct pai_http_server {
   void *user;
   pai_status_t (*handler)(void *user, const pai_http_req_t *req,
                           pai_http_resp_t *resp);
+  /*
+   * Idle recv timeout in ms applied to every accepted connection
+   * (slowloris guard): a client that sends nothing for this long is
+   * disconnected. Set by pai_http_server_init (15000); tests may
+   * override after init. 0 = infinite.
+   */
+  uint32_t idle_timeout_ms;
 } pai_http_server_t;
 
-/*
- * Bind and listen on host:port. The handler receives every request and
- * writes a response through the resp object; a non-OK return from the
- * handler produces a 500. Returns PAI_ERR_IO when the port is busy.
- */
+/* Bind and listen on host:port. The handler writes its response
+ * through `resp`; a non-OK return produces a 500. PAI_ERR_IO when the
+ * port is busy. */
 pai_status_t pai_http_server_init(pai_http_server_t *server,
                                   const char *host, uint16_t port,
                                   pai_status_t (*handler)(

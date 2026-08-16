@@ -9,11 +9,16 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 #ifdef _WIN32
 #include <direct.h>
+#include <windows.h>
+#define TEST_SLEEP_MS(ms) Sleep(ms)
 #else
 #include <sys/stat.h>
+#include <unistd.h>
+#define TEST_SLEEP_MS(ms) usleep((ms) * 1000)
 #endif
 
 static void
@@ -235,6 +240,22 @@ parse_resp_json(const cap_t *cap, pai_json_doc_t *doc) {
     return -1;
   }
   return pai_json_parse(doc, body, blen) == PAI_OK ? 0 : -1;
+}
+
+/* ---- HTTP idle-timeout helpers (slowloris guard) ---- */
+
+static pai_status_t
+idle_handler(void *user, const pai_http_req_t *req, pai_http_resp_t *resp) {
+  /* Never reached: the client sends nothing and is disconnected first. */
+  (void)user;
+  (void)req;
+  return pai_http_resp_begin(resp, 200, "text/plain", 0);
+}
+
+static void
+server_run_thread(void *p) {
+  /* Returns when the listener is closed from another thread. */
+  (void)pai_http_server_run((pai_http_server_t *)p);
 }
 
 TEST_MAIN_BEGIN()
@@ -595,6 +616,39 @@ CHECK(build_fixture());
   CHECK_EQ_INT(resp_status(&cap), 200);
   CHECK(count_substr(&cap, "\"id\":\"cmpl-00000001\"") == 1);
   pai_gw_destroy(&gw);
+}
+
+/* ---- HTTP idle timeout (slowloris guard) over a real socket ---- */
+{
+  pai_http_server_t srv;
+  pai_gw_sock_t cli = PAI_GW_SOCK_INVALID;
+  uint8_t tmp[16];
+  uint32_t got = 0;
+  pai_status_t st;
+  time_t t0, dt;
+
+  CHECK(pai_http_server_init(&srv, "127.0.0.1", 18397, idle_handler,
+                             NULL) == PAI_OK);
+  srv.idle_timeout_ms = 300;
+  CHECK(pai_gw_thread_create(server_run_thread, &srv) == PAI_OK);
+  TEST_SLEEP_MS(150); /* let the accept loop start */
+
+  /* Connect, then send nothing: the server must disconnect us. */
+  CHECK(pai_gw_sock_connect(&cli, "127.0.0.1", 18397) == PAI_OK);
+  CHECK(pai_gw_sock_set_recv_timeout(cli, 4000) == PAI_OK);
+  TEST_SLEEP_MS(900); /* well past the 300 ms idle timeout */
+
+  t0 = time(NULL);
+  st = pai_gw_sock_recv(cli, tmp, sizeof(tmp), &got);
+  dt = time(NULL) - t0;
+  /* Closed by the server: EOF or error, and promptly (never our own
+   * 4 s recv timeout — that would mean the idle guard did not fire). */
+  CHECK(st != PAI_OK || got == 0);
+  CHECK(dt <= 1);
+
+  pai_gw_sock_close(cli);
+  pai_http_server_close(&srv); /* aborts the accept loop */
+  TEST_SLEEP_MS(100);
 }
 
 TEST_MAIN_END()

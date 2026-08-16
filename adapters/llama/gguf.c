@@ -1,10 +1,6 @@
-/*
- * ProsperoAI — GGUF reader (see gguf.h)
- *
- * Dequantization formulas for Q4_0..Q6_K are ported verbatim from
- * llama.cpp ggml-quants.c (scalar reference dequantizers); block
- * layouts match ggml-common.h.
- */
+/* ProsperoAI — GGUF reader (see gguf.h). Dequantization formulas for
+ * Q4_0..Q6_K are ported verbatim from llama.cpp ggml-quants.c (scalar
+ * reference dequantizers); block layouts match ggml-common.h. */
 
 #include "gguf.h"
 
@@ -206,6 +202,9 @@ pai_gguf_open(const uint8_t *data, uint64_t size, pai_gguf_t *out) {
         goto proto;
       }
       t->dims[d] = cur_u64(&c);
+      if (t->dims[d] > PAI_GGUF_MAX_DIM) {
+        goto proto; /* hostile extent: would wrap numel/size math */
+      }
     }
     if (!cur_ok(&c, 4)) {
       goto proto;
@@ -597,9 +596,7 @@ pai_gguf_type_bytes(uint32_t type, uint64_t numel) {
   }
 }
 
-/* ------------------------------------------------------------------ */
-/* Dequantization                                                      */
-/* ------------------------------------------------------------------ */
+/* Dequantization */
 
 static float
 f16_to_f32(uint16_t h) {

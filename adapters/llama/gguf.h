@@ -1,16 +1,10 @@
 /*
- * ProsperoAI — GGUF reader (whitepaper §9.3, first compatibility target)
- *
- * A minimal, bounds-checked reader for the llama.cpp GGUF model format
- * (versions 1-3): header, metadata KV section, tensor infos and
- * quantized tensor data. Dequantization to f32 covers the types real
- * LLaMA-family models ship with (F32/F16/BF16, Q4_0..Q8_1, Q2_K..Q8_K);
- * the K-quant formulas are ported verbatim from llama.cpp's
- * ggml-quants.c (reference scalar dequantizers).
- *
- * Everything here is host-side tooling: the adapter reads a GGUF file,
- * rebuilds the model as a `.pai` container, and the reader can be
- * dropped once the desktop toolchain matures.
+ * ProsperoAI — GGUF reader (whitepaper §9.3).
+ * Minimal, bounds-checked reader for the llama.cpp GGUF format
+ * (versions 1-3): header, metadata KV, tensor infos and quantized
+ * data. Dequantization covers the types real LLaMA models ship with
+ * (F32/F16/BF16, Q4_0..Q8_1, Q2_K..Q8_K); the K-quant formulas are
+ * ported verbatim from llama.cpp's ggml-quants.c. Host-side tooling.
  */
 
 #ifndef PAI_ADAPTERS_LLAMA_GGUF_H
@@ -28,6 +22,14 @@ extern "C" {
 #define PAI_GGUF_MAX_VERSION 3u
 #define PAI_GGUF_ALIGN_DEFAULT 32u
 #define PAI_GGUF_MAX_TENSORS 1024u
+
+/*
+ * Maximum per-dimension extent accepted from a tensor-info record.
+ * Real GGUF models stay far below this (LLaMA vocab ~320k, hidden
+ * ~64k); the cap keeps dims * numel products from wrapping u64 and
+ * bounds downstream allocation math against hostile files.
+ */
+#define PAI_GGUF_MAX_DIM (1u << 26)
 
 /* ggml_type values used by GGUF (stable across versions). */
 typedef enum pai_gguf_type {
