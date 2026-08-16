@@ -10,3 +10,5 @@ pai_define_library(pai_protocol
   connection.c
   transport_pipe.c
 )
+
+target_include_directories(pai_protocol PUBLIC ${PROJECT_SOURCE_DIR})
