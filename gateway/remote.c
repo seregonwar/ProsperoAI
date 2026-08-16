@@ -1,11 +1,12 @@
 /*
  * ProsperoAI — gateway remote bridge (whitepaper §24/§26) — impl
  *
- * Client side of the §24 exchange over the TCP transport (§25):
+ * Client side of the §24 exchanges over the TCP transport (§25):
  *   GENERATE #r -> ACCEPTED #r -> TOKEN #r* -> COMPLETE #r
+ *   EMBED #r -> EMBEDDING #r (or ERROR #r)
  * Each gateway request opens its own connection (the gateway already
- * serializes generation per model entry, so a per-request connection
- * is the simplest correct v0 lifecycle).
+ * serializes work per model entry, so a per-request connection is the
+ * simplest correct v0 lifecycle).
  */
 
 #include "remote.h"
@@ -16,12 +17,82 @@
 #define REMOTE_DEFAULT_TIMEOUT_MS 30000ull
 #define REMOTE_TOKEN_BUF 2048u
 
+/* ------------------------------------------------------------------ */
+/* shared connect + negotiate                                          */
+/* ------------------------------------------------------------------ */
+
+/*
+ * Connect to host:port and negotiate HELLO -> HELLO_ACK. On success
+ * the connection is OPEN and *deadline is set; on failure both the
+ * connection and the transport are torn down here and the mapped
+ * status is returned (the caller must not touch them again):
+ *   PAI_ERR_IO           connect failure or peer vanished
+ *   PAI_ERR_CAPABILITY   the server refused negotiation (HELLO_NACK)
+ *   PAI_ERR_TIMEOUT      negotiation exceeded timeout_ms
+ *   PAI_ERR_UNSUPPORTED  negotiated caps lack `needed_cap`
+ */
+static pai_status_t
+remote_connect_and_negotiate(const char *host, uint16_t port,
+                             uint32_t needed_cap, uint64_t timeout_ms,
+                             const pai_proto_callbacks_t *callbacks,
+                             void *user, pai_proto_transport_t *transport,
+                             pai_proto_conn_t *conn, uint64_t *deadline) {
+  pai_status_t st;
+  uint32_t frames = 0;
+
+  memset(transport, 0, sizeof(*transport));
+  memset(conn, 0, sizeof(*conn));
+
+  st = pai_proto_tcp_connect(host, port, transport);
+  if (st != PAI_OK) {
+    return st;
+  }
+  st = pai_proto_conn_init(conn, PAI_PROTO_ROLE_CLIENT, PAI_PROTO_CAP_KNOWN,
+                           transport, callbacks, user);
+  if (st != PAI_OK) {
+    pai_proto_tcp_transport_destroy(transport);
+    return st;
+  }
+
+  *deadline = pai_proto_now_ns() + timeout_ms * 1000000ull;
+
+  st = pai_proto_conn_start(conn);
+  while (st == PAI_OK &&
+         pai_proto_conn_state(conn) == PAI_PROTO_STATE_NEGOTIATING) {
+    if (pai_proto_now_ns() >= *deadline) {
+      st = PAI_ERR_TIMEOUT;
+      break;
+    }
+    st = pai_proto_conn_poll(conn, &frames);
+  }
+  if (st == PAI_OK && pai_proto_conn_state(conn) != PAI_PROTO_STATE_OPEN) {
+    /* Refused (HELLO_NACK) or peer vanished mid-negotiation. */
+    st = conn->nack_reason != 0 ? PAI_ERR_CAPABILITY : PAI_ERR_IO;
+  }
+  if (st != PAI_OK) {
+    pai_proto_conn_destroy(conn);
+    pai_proto_tcp_transport_destroy(transport);
+    return st;
+  }
+  if (!(pai_proto_conn_negotiated_caps(conn) & needed_cap)) {
+    pai_proto_conn_destroy(conn);
+    pai_proto_tcp_transport_destroy(transport);
+    return PAI_ERR_UNSUPPORTED;
+  }
+  return PAI_OK;
+}
+
+/* ------------------------------------------------------------------ */
+/* Generation                                                          */
+/* ------------------------------------------------------------------ */
+
 typedef struct remote_ctx {
   void (*on_token)(const char *token, void *user);
   void *user;
-  uint32_t tokens;   /* relayed token count                            */
-  int complete;      /* COMPLETE seen                                  */
-  int error;         /* ERROR frame seen (aborts the stream)           */
+  uint64_t request_id; /* expected reply correlation                   */
+  uint32_t tokens;     /* relayed token count                           */
+  int complete;        /* COMPLETE seen                                 */
+  int error;           /* ERROR frame seen (aborts the stream)          */
   pai_status_t error_status;
 } remote_ctx_t;
 
@@ -60,6 +131,9 @@ static pai_status_t
 remote_on_message(void *user, const pai_proto_frame_t *frame) {
   remote_ctx_t *c = (remote_ctx_t *)user;
 
+  if (frame->request_id != c->request_id) {
+    return PAI_OK; /* unrelated pipelined reply */
+  }
   switch (frame->msg_type) {
   case PAI_PROTO_MSG_ACCEPTED:
     break; /* the GENERATE stream may begin directly; no gate needed */
@@ -95,6 +169,8 @@ pai_gw_remote_generate(const char *host, uint16_t port, const char *prompt,
   uint64_t req;
   uint32_t frames = 0;
   uint32_t plen = 0;
+  /* ~64 KB stack (u16 prompt + sampler trailer); the HTTP server runs
+   * this on threads with a 1 MB default stack, so this is safe. */
   uint8_t pay[65535 + 2 + 4 + (uint32_t)sizeof(pai_proto_sampler_t)];
 
   if (host == NULL || port == 0 || prompt == NULL) {
@@ -107,51 +183,18 @@ pai_gw_remote_generate(const char *host, uint16_t port, const char *prompt,
     return PAI_ERR_INVALID_ARG; /* v0 GENERATE prompt length is u16 */
   }
 
-  memset(&transport, 0, sizeof(transport));
-  memset(&conn, 0, sizeof(conn));
   memset(&ctx, 0, sizeof(ctx));
   ctx.on_token = on_token;
   ctx.user = user;
 
-  st = pai_proto_tcp_connect(host, port, &transport);
-  if (st != PAI_OK) {
-    return st;
-  }
-
   memset(&cb, 0, sizeof(cb));
   cb.on_message = remote_on_message;
   cb.on_stream_data = remote_on_stream_data;
-  st = pai_proto_conn_init(&conn, PAI_PROTO_ROLE_CLIENT, PAI_PROTO_CAP_KNOWN,
-                           &transport, &cb, &ctx);
+  st = remote_connect_and_negotiate(host, port, PAI_PROTO_CAP_GENERATE,
+                                    timeout_ms, &cb, &ctx, &transport, &conn,
+                                    &deadline);
   if (st != PAI_OK) {
-    pai_proto_tcp_transport_destroy(&transport);
     return st;
-  }
-
-  deadline = pai_proto_now_ns() + timeout_ms * 1000000ull;
-
-  /* Negotiate (HELLO -> HELLO_ACK). */
-  st = pai_proto_conn_start(&conn);
-  while (st == PAI_OK &&
-         pai_proto_conn_state(&conn) == PAI_PROTO_STATE_NEGOTIATING) {
-    if (pai_proto_now_ns() >= deadline) {
-      st = PAI_ERR_TIMEOUT;
-      break;
-    }
-    st = pai_proto_conn_poll(&conn, &frames);
-  }
-  if (st == PAI_OK &&
-      pai_proto_conn_state(&conn) != PAI_PROTO_STATE_OPEN) {
-    /* Refused (HELLO_NACK) or peer vanished mid-negotiation. */
-    st = conn.nack_reason != 0 ? PAI_ERR_CAPABILITY : PAI_ERR_IO;
-  }
-  if (st != PAI_OK) {
-    goto out;
-  }
-
-  if (!(pai_proto_conn_negotiated_caps(&conn) & PAI_PROTO_CAP_GENERATE)) {
-    st = PAI_ERR_UNSUPPORTED;
-    goto out;
   }
 
   /* GENERATE(prompt[, sampler]). */
@@ -161,6 +204,7 @@ pai_gw_remote_generate(const char *host, uint16_t port, const char *prompt,
     goto out;
   }
   req = pai_proto_conn_new_request_id(&conn);
+  ctx.request_id = req;
   st = pai_proto_conn_send_raw(&conn, PAI_PROTO_MSG_GENERATE, 0, req, 0, pay,
                                plen);
   if (st != PAI_OK) {
@@ -270,6 +314,7 @@ pai_gw_remote_embed(const char *host, uint16_t port, const char *text,
   uint64_t req;
   uint32_t frames = 0;
   uint32_t plen = 0;
+  /* ~64 KB stack (u16 text); the HTTP server thread stack is 1 MB. */
   uint8_t pay[65535u + 2u];
 
   if (host == NULL || port == 0 || text == NULL || text_len == 0 ||
@@ -283,48 +328,15 @@ pai_gw_remote_embed(const char *host, uint16_t port, const char *text,
     timeout_ms = REMOTE_DEFAULT_TIMEOUT_MS;
   }
 
-  memset(&transport, 0, sizeof(transport));
-  memset(&conn, 0, sizeof(conn));
   memset(&ctx, 0, sizeof(ctx));
-
-  st = pai_proto_tcp_connect(host, port, &transport);
-  if (st != PAI_OK) {
-    return st;
-  }
 
   memset(&cb, 0, sizeof(cb));
   cb.on_message = embed_on_message;
-  st = pai_proto_conn_init(&conn, PAI_PROTO_ROLE_CLIENT, PAI_PROTO_CAP_KNOWN,
-                           &transport, &cb, &ctx);
+  st = remote_connect_and_negotiate(host, port, PAI_PROTO_CAP_EMBED,
+                                    timeout_ms, &cb, &ctx, &transport, &conn,
+                                    &deadline);
   if (st != PAI_OK) {
-    pai_proto_tcp_transport_destroy(&transport);
     return st;
-  }
-
-  deadline = pai_proto_now_ns() + timeout_ms * 1000000ull;
-
-  /* Negotiate (HELLO -> HELLO_ACK). */
-  st = pai_proto_conn_start(&conn);
-  while (st == PAI_OK &&
-         pai_proto_conn_state(&conn) == PAI_PROTO_STATE_NEGOTIATING) {
-    if (pai_proto_now_ns() >= deadline) {
-      st = PAI_ERR_TIMEOUT;
-      break;
-    }
-    st = pai_proto_conn_poll(&conn, &frames);
-  }
-  if (st == PAI_OK &&
-      pai_proto_conn_state(&conn) != PAI_PROTO_STATE_OPEN) {
-    /* Refused (HELLO_NACK) or peer vanished mid-negotiation. */
-    st = conn.nack_reason != 0 ? PAI_ERR_CAPABILITY : PAI_ERR_IO;
-  }
-  if (st != PAI_OK) {
-    goto out;
-  }
-
-  if (!(pai_proto_conn_negotiated_caps(&conn) & PAI_PROTO_CAP_EMBED)) {
-    st = PAI_ERR_UNSUPPORTED;
-    goto out;
   }
 
   /* EMBED(text). */

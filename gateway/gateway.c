@@ -610,6 +610,18 @@ handle_completions(pai_gw_t *gw, const uint8_t *body, uint32_t body_len,
         st = pai_session_generate(entry->session, prompt, gen_on_token, &ctx);
         ctx.generated = (uint32_t)entry->session->generated_tokens;
       }
+      if (st != PAI_OK || ctx.failed) {
+        /* The 200 status is already on the wire, so a mid-stream
+         * failure is surfaced as a final SSE error event (§26). */
+        static const char hdr[] = "data: {\"error\":{\"message\":\"";
+        static const char tail[] =
+            "\",\"type\":\"server_error\",\"param\":null,\"code\":null}}\n\n";
+        const char *msg =
+            entry->remote ? "remote payload error" : "generation failed";
+        pai_http_resp_write(resp, hdr, sizeof(hdr) - 1);
+        pai_http_resp_write(resp, msg, (uint32_t)strlen(msg));
+        pai_http_resp_write(resp, tail, sizeof(tail) - 1);
+      }
       pai_http_resp_write(resp, "data: [DONE]\n\n", 15);
       pai_http_resp_end(resp);
     } else {
@@ -797,6 +809,16 @@ handle_embeddings(pai_gw_t *gw, const uint8_t *body, uint32_t body_len,
       } else {
         text = pai_json_str(&doc, input_node);
       }
+      /* Empty input text is rejected for both local and remote
+       * (the local path's mean-pool over zero tokens would fail). */
+      if (text[0] == '\0') {
+        pai_gw_mutex_unlock(entry->lock);
+        pai_json_wb_destroy(&wb);
+        pai_json_destroy(&doc);
+        send_error(resp, 400, "invalid_request_error",
+                   "input must not be empty");
+        return PAI_OK;
+      }
       if (entry->remote) {
         /* Bridge the request to the payload (one connection per
          * input, mirroring the per-request generation bridge). */
@@ -813,7 +835,7 @@ handle_embeddings(pai_gw_t *gw, const uint8_t *body, uint32_t body_len,
                      st == PAI_ERR_UNSUPPORTED
                          ? "remote payload does not expose embeddings"
                          : (st == PAI_ERR_INVALID_ARG
-                                ? "input too long"
+                                ? "invalid input"
                                 : "remote payload error"));
           return PAI_OK;
         }

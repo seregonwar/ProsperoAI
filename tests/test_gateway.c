@@ -268,8 +268,10 @@ typedef struct remote_probe {
   volatile int finished;
   volatile int refuse;     /* 1 = HELLO_NACK on negotiation            */
   volatile int no_answer;  /* 1 = accept GENERATE but never reply       */
+  volatile int reply_error; /* 1 = answer GENERATE with an ERROR frame  */
   volatile int no_embed;   /* 1 = advertise caps without CAP_EMBED      */
   volatile int hostile_embed; /* 1 = reply EMBEDDING with a bogus dim   */
+  volatile int stray_reply; /* 1 = send an unrelated EMBEDDING first    */
   volatile int n_served;
   /* Sampler overrides from the last GENERATE (written by the probe
    * thread; the network round trip orders the main thread's read). */
@@ -322,6 +324,18 @@ probe_on_message(void *user, const pai_proto_frame_t *frame) {
                                    : (uint32_t)sizeof(g->probe->last_embed);
     memcpy(g->probe->last_embed, text, g->probe->last_embed_len);
     g->probe->last_embed[g->probe->last_embed_len] = '\0';
+    if (g->probe->stray_reply) {
+      /* An unrelated reply (different request id) must be ignored. */
+      uint8_t spay[64];
+      uint32_t splen = 0;
+      static const float junk[1] = {99.0f};
+      CHECK(pai_proto_msg_encode_embedding(spay, sizeof(spay), junk, 1,
+                                           &splen) == PAI_OK);
+      CHECK(pai_proto_conn_send_raw(g->conn, PAI_PROTO_MSG_EMBEDDING,
+                                    PAI_PROTO_FLAG_REPLY,
+                                    frame->request_id + 1, 0, spay,
+                                    splen) == PAI_OK);
+    }
     if (g->probe->hostile_embed) {
       /* Claim an absurd dim with a tiny payload: the client codec
        * must reject it (bounded by PAI_PROTO_MAX_EMBED_DIM). */
@@ -354,6 +368,16 @@ probe_on_message(void *user, const pai_proto_frame_t *frame) {
                                          &g->probe->last_sampler, &has) ==
           PAI_OK);
     g->probe->got_sampler = has;
+  }
+  if (g->probe->reply_error) {
+    uint8_t epay[64];
+    uint32_t elen = 0;
+    CHECK(pai_proto_msg_encode_error(epay, sizeof(epay), PAI_ERR_INTERNAL,
+                                     "boom", &elen) == PAI_OK);
+    CHECK(pai_proto_conn_send_raw(g->conn, PAI_PROTO_MSG_ERROR,
+                                  PAI_PROTO_FLAG_REPLY, frame->request_id, 0,
+                                  epay, elen) == PAI_OK);
+    return PAI_OK;
   }
   if (g->probe->no_answer) {
     return PAI_OK; /* negotiates, then goes silent */
@@ -990,6 +1014,13 @@ CHECK(build_fixture());
   }
   pai_json_destroy(&doc);
 
+  /* Empty input text is rejected like the local path (400). */
+  CHECK(gw_call(&gw, "POST", "/v1/embeddings",
+                "{\"model\":\"remote-lm\",\"input\":\"\"}", &cap) ==
+        PAI_OK);
+  CHECK_EQ_INT(resp_status(&cap), 400);
+  CHECK(count_substr(&cap, "input must not be empty") == 1);
+
   probe_stop(&probe, lst);
   CHECK_EQ_UINT(probe.finished, 1);
   /* Three generation requests + three embedding requests: the accept
@@ -1050,6 +1081,19 @@ CHECK(build_fixture());
   CHECK(vec[0] == 1.0f);
   CHECK(vec[2] == 3.0f);
   free(vec);
+
+  /* Unrelated replies are filtered by request id: the stray junk
+   * vector is ignored and the real reply still lands. */
+  vec = NULL;
+  dim = 0;
+  probe.stray_reply = 1;
+  CHECK(pai_gw_remote_embed("127.0.0.1", port, "x", 1, &vec, &dim, 300) ==
+        PAI_OK);
+  CHECK_EQ_UINT(dim, 3);
+  CHECK(vec[0] == 1.0f);
+  CHECK(vec[1] == 2.0f);
+  free(vec);
+  probe.stray_reply = 0;
 
   /* Text longer than the u16 wire length. */
   {
@@ -1136,6 +1180,41 @@ CHECK(build_fixture());
 
   probe_stop(&probe, lst);
   CHECK_EQ_UINT(probe.finished, 1);
+}
+
+/* ---- remote: mid-stream failures surface as an SSE error event ---- */
+{
+  pai_proto_tcp_listener_t *lst = NULL;
+  remote_probe_t probe;
+  pai_gw_t gw;
+  cap_t cap;
+  uint16_t port = 0;
+
+  CHECK(probe_start(&probe, &lst, &port) == 0);
+  probe.reply_error = 1;
+
+  CHECK(pai_gw_init(&gw) == PAI_OK);
+  CHECK(pai_gw_add_remote(&gw, "err-lm", "127.0.0.1", port) == PAI_OK);
+
+  /* The payload answers GENERATE with an ERROR frame: the stream must
+   * still terminate cleanly with a visible error event before [DONE] (§26). */
+  CHECK(gw_call(&gw, "POST", "/v1/completions",
+                "{\"model\":\"err-lm\",\"prompt\":\"x\",\"max_tokens\":4,"
+                "\"stream\":true}",
+                &cap) == PAI_OK);
+  CHECK_EQ_INT(resp_status(&cap), 200);
+  {
+    char sse[2048];
+    uint32_t sse_len = dechunk_body(&cap, sse, sizeof(sse));
+    CHECK(count_substr_in(sse, sse_len, "data: [DONE]") == 1);
+    CHECK(count_substr_in(sse, sse_len, "remote payload error") == 1);
+    /* No token chunks were relayed. */
+    CHECK(count_substr_in(sse, sse_len, "\"text\":\"") == 0);
+  }
+
+  probe_stop(&probe, lst);
+  CHECK_EQ_UINT(probe.finished, 1);
+  pai_gw_destroy(&gw);
 }
 
 TEST_MAIN_END()
