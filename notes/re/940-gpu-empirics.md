@@ -80,6 +80,25 @@ Final rules, all reproduced across F-batch experiments:
    The F2 formula check is the milestone evidence; the full
    c[i]=i+k kernel needs the per-thread ALU zeroing resolved.
 
+## Loads (OPEN — the next hard problem)
+
+All vector/scalar loads return 0 on 9.40 in our dispatch config:
+- flat_load_dword: HANGS (all variants: dst v0/v1/v6, pair 1, glc)
+- buffer_load_dword (MUBUF): executes but returns 0 — with T#
+  0x31014FAC (OpenAGC raw) and 0x20002000 the load FAULTS the wave;
+  with 0x00080688 and 0x97688 it returns 0 regardless of the vdata
+  register (v0/v1/v2) and glc.
+- s_load_dwordx4 (SMEM, the golden's path): returns 0 (H10).
+
+Stores land correctly (DMA + flat stores verified), so the write path
+is fine. Working hypothesis: the wave's GPU page tables (gvmspace) do
+not cover our dmem for the SHADER READ path (zero-fill on fault), or
+the read path requires the driver's internal-memory/queue setup
+(OpenAGC allocates ACQRB/EOP FIFO + QUEUE_CREATE with magic tokens
+before compute). Next steps: walk the process gvmspace (spoofer's
+GPU PTE walk) and verify/insert PTEs for our dmem; or replicate the
+OpenAGC internal-memory + queue-create sequence.
+
 ## MILESTONE STATUS
 
 - **PAI-M0 GPU compute: FULLY VERIFIED (G15)** on FW 9.40:
