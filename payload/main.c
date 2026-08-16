@@ -3855,6 +3855,60 @@ h48[0] = kk;
     m0_exp_report("G55", ok);
   }
 
+  /* G56: wave-parallel float ramp, s_load-fed - same kernel as G55
+   * but k/base are read from a GPU-mem header via s_load_dword inside
+   * the 32-thread wave. Proves the scalar-read path works
+   * wave-parallel (G55 had no s_load); this is the x-side of a
+   * wave-parallel GEMV (x[k] is uniform across rows). */
+  if (!host) {
+    pai_gpu_reset(gpu);
+  }
+  {
+    uint32_t *h56 = (uint32_t *)ctx->a.cpu_addr;
+    uint32_t *c56 = (uint32_t *)ctx->c.cpu_addr;
+    float k56 = 0.5f;
+    float base56 = 1.0f;
+    uint32_t stream_len = 0;
+    int ok = 1;
+
+    memset(c56, 0xCC, 64 * sizeof(uint32_t));
+    memcpy(&h56[0], &k56, sizeof(k56));
+    memcpy(&h56[1], &base56, sizeof(base56));
+    memcpy(ctx->code.cpu_addr, pai_ramp2_code,
+           PAI_RAMP2_CODE_WORDS * sizeof(uint32_t));
+    if (host) {
+      pai_gpu_host_register_shader(gpu, ctx->code.gpu_addr,
+                                   pai_host_kernel_ramp2, NULL);
+    }
+    pai_gpu_buffer_flush(ctx->gpu, &ctx->a);
+    pai_gpu_buffer_flush(ctx->gpu, &ctx->code);
+    ud[0] = 0;
+    ud[1] = 0;
+    ud[2] = (uint32_t)(ctx->a.gpu_addr & 0xFFFFFFFFu);
+    ud[3] = (uint32_t)(ctx->a.gpu_addr >> 32);
+    ud[4] = (uint32_t)(ctx->c.gpu_addr & 0xFFFFFFFFu);
+    ud[5] = (uint32_t)(ctx->c.gpu_addr >> 32);
+    m0_build_dispatch_stream(ctx, stream, M0_PM4_CAP, PAI_RAMP2_RSRC2,
+                             PAI_EXP_THREADS_X, 1, ud, 6, &stream_len);
+    m0_run_gpu(ctx, stream, stream_len, c56, 64, 0xCC, "G56");
+    PAI_LOG_INFO_(PAI_SUB_GPU,
+                  "[M0-G56] c[0..7] = %.2f %.2f %.2f %.2f %.2f %.2f %.2f "
+                  "%.2f\n",
+                  (double)((float *)c56)[0], (double)((float *)c56)[1],
+                  (double)((float *)c56)[2], (double)((float *)c56)[3],
+                  (double)((float *)c56)[4], (double)((float *)c56)[5],
+                  (double)((float *)c56)[6], (double)((float *)c56)[7]);
+    for (uint32_t i = 0; i < 8 && ok; i++) {
+      float gg;
+      float want = base56 + k56 * (float)(4 * i + 3);
+      memcpy(&gg, &c56[i], 4);
+      if (gg != want) {
+        ok = 0;
+      }
+    }
+    m0_exp_report("G56", ok);
+  }
+
   /* G17: load from the kernel's own acqrb VA - does ANY load complete,
    * or only our dmem pages hang? */
   if (!host) {

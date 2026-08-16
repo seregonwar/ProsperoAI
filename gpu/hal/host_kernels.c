@@ -625,6 +625,25 @@ pai_host_kernel_ramp(void *ctx, const uint32_t user_data[16],
 }
 
 pai_status_t
+pai_host_kernel_ramp2(void *ctx, const uint32_t user_data[16],
+                       uint32_t threads_x, uint32_t group_x) {
+  const uint32_t *h = (const uint32_t *)(uintptr_t)pai_ud64(user_data, 2);
+  float *c = (float *)(uintptr_t)pai_ud64(user_data, 4);
+  float k, base;
+  memcpy(&k, &h[0], sizeof(k));
+  memcpy(&base, &h[1], sizeof(base));
+
+  (void)ctx;
+  (void)threads_x;
+  (void)group_x;
+
+  for (uint32_t i = 0; i < 8; i++) {
+    c[i] = base + k * (float)(4 * i + 3);
+  }
+  return PAI_OK;
+}
+
+pai_status_t
 pai_host_kernel_int_matmul(void *ctx, const uint32_t user_data[16],
                            uint32_t threads_x, uint32_t group_x) {
   const uint32_t *h = (const uint32_t *)(uintptr_t)pai_ud64(user_data, 2);

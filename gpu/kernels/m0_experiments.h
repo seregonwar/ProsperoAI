@@ -339,6 +339,12 @@
  * NUM_THREAD_X=1 model; base for RoPE position tables (Phase 2). */
 #define PAI_RAMP_RSRC2 0x0000000Cu
 #define PAI_RAMP_CODE_WORDS 17u
+
+/* G56: wave-parallel float ramp, s_load-fed (ramp2.s) - k/base read
+ * from a GPU-mem header via s_load_dword inside the 32-thread wave;
+ * proves the scalar-read path works wave-parallel (x-side of GEMV). */
+#define PAI_RAMP2_RSRC2 PAI_RAMP_RSRC2
+#define PAI_RAMP2_CODE_WORDS 22u
 #define PAI_G35_WORDS 15u
 #define PAI_G32_WORDS 16u
 #define PAI_G25_VALUE 0xDEAD0001u
@@ -453,6 +459,7 @@ extern const uint32_t pai_fsaxpy_code[PAI_FSAXPY_CODE_WORDS];
 extern const uint32_t pai_t4_ops_code[PAI_T4_CODE_WORDS];
 extern const uint32_t pai_int_ops_code[PAI_INT_CODE_WORDS];
 extern const uint32_t pai_ramp_code[PAI_RAMP_CODE_WORDS];
+extern const uint32_t pai_ramp2_code[PAI_RAMP2_CODE_WORDS];
 extern const uint32_t pai_hbatch_code[];
 extern const uint32_t pai_hbatch2_code[];
 extern const uint32_t pai_hbatch3_code[PAI_H10_CODE_WORDS];

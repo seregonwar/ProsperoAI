@@ -170,4 +170,10 @@ pai_status_t pai_host_kernel_int_matmul(void *ctx, const uint32_t user_data[16],
 pai_status_t pai_host_kernel_ramp(void *ctx, const uint32_t user_data[16],
                                   uint32_t threads_x, uint32_t group_x);
 
+/* G56 wave-parallel float ramp, s_load-fed: header ptr at ud[2:3]
+ * (hdr[0]=k, hdr[1]=base as floats), C at ud[4:5]; lane i stores
+ * base + k*(4i+3) for the 8 storing lanes (G15 value-path formula). */
+pai_status_t pai_host_kernel_ramp2(void *ctx, const uint32_t user_data[16],
+                                   uint32_t threads_x, uint32_t group_x);
+
 #endif /* PAI_GPU_HOST_KERNELS_H */

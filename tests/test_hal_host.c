@@ -368,6 +368,24 @@ TEST_MAIN_BEGIN()
         CHECK(c55[i] == want);
       }
     }
+
+    /* G56: s_load-fed ramp - header [k, base] at hdr, C at cbuf. */
+    {
+      float k56 = 0.5f, base56 = 1.0f;
+      uint32_t hdr56[2];
+      float *c56 = (float *)cbuf;
+      memcpy(&hdr56[0], &k56, sizeof(k56));
+      memcpy(&hdr56[1], &base56, sizeof(base56));
+      ud[2] = (uint32_t)(uintptr_t)hdr56;
+      ud[3] = (uint32_t)((uintptr_t)hdr56 >> 32);
+      ud[4] = (uint32_t)(uintptr_t)cbuf;
+      ud[5] = (uint32_t)((uintptr_t)cbuf >> 32);
+      CHECK(pai_host_kernel_ramp2(NULL, ud, 32, 1) == PAI_OK);
+      for (uint32_t i = 0; i < 8; i++) {
+        float want = base56 + k56 * (float)(4 * i + 3);
+        CHECK(c56[i] == want);
+      }
+    }
   }
 
   pai_gpu_buffer_free(dev, &label);
