@@ -4,9 +4,13 @@
  * Client side of the §24 exchanges over the TCP transport (§25):
  *   GENERATE #r -> ACCEPTED #r -> TOKEN #r* -> COMPLETE #r
  *   EMBED #r -> EMBEDDING #r (or ERROR #r)
- * Each gateway request opens its own connection (the gateway already
- * serializes work per model entry, so a per-request connection is the
- * simplest correct v0 lifecycle).
+ *
+ * Connections are pooled per gateway entry (§24 advertises persistent
+ * connections): the first exchange establishes one connection +
+ * negotiated session which later exchanges reuse, with a transparent
+ * reconnect once when the peer has closed it (idle timeout, payload
+ * restart). The gateway serializes exchanges under the per-entry
+ * lock, so a pool never runs two exchanges concurrently.
  */
 
 #include "remote.h"
@@ -101,7 +105,9 @@ remote_on_stream_data(void *user, uint64_t request_id, uint64_t session_id,
                       uint8_t kind, uint32_t seq, const uint8_t *data,
                       uint32_t len) {
   remote_ctx_t *c = (remote_ctx_t *)user;
-  (void)request_id;
+  if (request_id != c->request_id || c->complete || c->error) {
+    return; /* unrelated stream, or already terminal */
+  }
   (void)session_id;
   (void)seq;
   if (kind != PAI_PROTO_STREAM_GENERATE || c->on_token == NULL ||
@@ -131,8 +137,8 @@ static pai_status_t
 remote_on_message(void *user, const pai_proto_frame_t *frame) {
   remote_ctx_t *c = (remote_ctx_t *)user;
 
-  if (frame->request_id != c->request_id) {
-    return PAI_OK; /* unrelated pipelined reply */
+  if (frame->request_id != c->request_id || c->complete || c->error) {
+    return PAI_OK; /* unrelated pipelined reply, or already terminal */
   }
   switch (frame->msg_type) {
   case PAI_PROTO_MSG_ACCEPTED:
@@ -155,92 +161,6 @@ remote_on_message(void *user, const pai_proto_frame_t *frame) {
   return PAI_OK;
 }
 
-pai_status_t
-pai_gw_remote_generate(const char *host, uint16_t port, const char *prompt,
-                       const pai_proto_sampler_t *sampler,
-                       void (*on_token)(const char *, void *), void *user,
-                       uint32_t *out_tokens, uint64_t timeout_ms) {
-  pai_proto_transport_t transport;
-  pai_proto_conn_t conn;
-  pai_proto_callbacks_t cb;
-  remote_ctx_t ctx;
-  pai_status_t st;
-  uint64_t deadline;
-  uint64_t req;
-  uint32_t frames = 0;
-  uint32_t plen = 0;
-  /* ~64 KB stack (u16 prompt + sampler trailer); the HTTP server runs
-   * this on threads with a 1 MB default stack, so this is safe. */
-  uint8_t pay[65535 + 2 + 4 + (uint32_t)sizeof(pai_proto_sampler_t)];
-
-  if (host == NULL || port == 0 || prompt == NULL) {
-    return PAI_ERR_INVALID_ARG;
-  }
-  if (timeout_ms == 0) {
-    timeout_ms = REMOTE_DEFAULT_TIMEOUT_MS;
-  }
-  if (strlen(prompt) > 65535) {
-    return PAI_ERR_INVALID_ARG; /* v0 GENERATE prompt length is u16 */
-  }
-
-  memset(&ctx, 0, sizeof(ctx));
-  ctx.on_token = on_token;
-  ctx.user = user;
-
-  memset(&cb, 0, sizeof(cb));
-  cb.on_message = remote_on_message;
-  cb.on_stream_data = remote_on_stream_data;
-  st = remote_connect_and_negotiate(host, port, PAI_PROTO_CAP_GENERATE,
-                                    timeout_ms, &cb, &ctx, &transport, &conn,
-                                    &deadline);
-  if (st != PAI_OK) {
-    return st;
-  }
-
-  /* GENERATE(prompt[, sampler]). */
-  st = pai_proto_msg_encode_generate2(pay, sizeof(pay), prompt, sampler,
-                                      &plen);
-  if (st != PAI_OK) {
-    goto out;
-  }
-  req = pai_proto_conn_new_request_id(&conn);
-  ctx.request_id = req;
-  st = pai_proto_conn_send_raw(&conn, PAI_PROTO_MSG_GENERATE, 0, req, 0, pay,
-                               plen);
-  if (st != PAI_OK) {
-    goto out;
-  }
-
-  /* Relay TOKEN* until COMPLETE / ERROR / deadline / disconnect. */
-  while (!ctx.complete && !ctx.error) {
-    if (pai_proto_now_ns() >= deadline) {
-      st = PAI_ERR_TIMEOUT;
-      break;
-    }
-    st = pai_proto_conn_poll(&conn, &frames);
-    if (st != PAI_OK) {
-      break;
-    }
-    if (pai_proto_conn_state(&conn) == PAI_PROTO_STATE_CLOSED) {
-      st = PAI_ERR_IO; /* peer closed before COMPLETE */
-      break;
-    }
-  }
-  if (ctx.error) {
-    st = ctx.error_status; /* ERROR frame overrides any clean poll */
-  } else if (!ctx.complete && st == PAI_OK) {
-    st = PAI_ERR_IO; /* loop exited without terminal frame */
-  }
-
-out:
-  if (out_tokens != NULL) {
-    *out_tokens = ctx.tokens;
-  }
-  pai_proto_conn_destroy(&conn);
-  pai_proto_tcp_transport_destroy(&transport);
-  return st;
-}
-
 /* ------------------------------------------------------------------ */
 /* Embeddings                                                          */
 /* ------------------------------------------------------------------ */
@@ -260,8 +180,8 @@ embed_on_message(void *user, const pai_proto_frame_t *frame) {
   const float *values;
   uint32_t dim;
 
-  if (frame->request_id != c->request_id) {
-    return PAI_OK; /* unrelated pipelined reply */
+  if (frame->request_id != c->request_id || c->got || c->error) {
+    return PAI_OK; /* unrelated pipelined reply, or already answered */
   }
   switch (frame->msg_type) {
   case PAI_PROTO_MSG_EMBEDDING:
@@ -301,14 +221,256 @@ embed_on_message(void *user, const pai_proto_frame_t *frame) {
   return PAI_OK;
 }
 
-pai_status_t
-pai_gw_remote_embed(const char *host, uint16_t port, const char *text,
-                    uint32_t text_len, float **out_vec, uint32_t *out_dim,
-                    uint64_t timeout_ms) {
+/* ------------------------------------------------------------------ */
+/* Connection pool                                                     */
+/* ------------------------------------------------------------------ */
+
+typedef enum pai_remote_kind {
+  PAI_REMOTE_KIND_GENERATE = 0,
+  PAI_REMOTE_KIND_EMBED = 1
+} pai_remote_kind_t;
+
+struct pai_remote_pool {
+  char host[256];
+  uint16_t port;
   pai_proto_transport_t transport;
   pai_proto_conn_t conn;
-  pai_proto_callbacks_t cb;
-  embed_ctx_t ctx;
+  int valid;            /* transport + conn initialized               */
+  int busy;             /* an exchange is in flight                   */
+  pai_remote_kind_t kind; /* kind of the in-flight exchange           */
+  remote_ctx_t gen;     /* state for the generate exchange            */
+  embed_ctx_t emb;      /* state for the embedding exchange           */
+};
+
+pai_remote_pool_t *
+pai_remote_pool_create(const char *host, uint16_t port) {
+  pai_remote_pool_t *pool;
+
+  if (host == NULL || host[0] == '\0' || port == 0) {
+    return NULL;
+  }
+  {
+    size_t n = strlen(host);
+    if (n >= sizeof(pool->host)) {
+      return NULL;
+    }
+    pool = (pai_remote_pool_t *)malloc(sizeof(*pool));
+    if (pool == NULL) {
+      return NULL;
+    }
+    memset(pool, 0, sizeof(*pool));
+    memcpy(pool->host, host, n);
+    pool->port = port;
+  }
+  return pool;
+}
+
+void
+pai_remote_pool_destroy(pai_remote_pool_t *pool) {
+  if (pool == NULL) {
+    return;
+  }
+  if (pool->valid) {
+    pai_proto_conn_destroy(&pool->conn);
+    pai_proto_tcp_transport_destroy(&pool->transport);
+    pool->valid = 0;
+  }
+  free(pool);
+}
+
+/* The pooled connection was initialized with these callbacks once;
+ * they route inbound frames to the exchange state of the current
+ * kind (exchanges are serialized, so at most one is live at a time). */
+static pai_status_t
+pool_on_message(void *user, const pai_proto_frame_t *frame) {
+  pai_remote_pool_t *pool = (pai_remote_pool_t *)user;
+  if (pool->kind == PAI_REMOTE_KIND_EMBED) {
+    return embed_on_message(&pool->emb, frame);
+  }
+  return remote_on_message(&pool->gen, frame);
+}
+
+static void
+pool_on_stream_data(void *user, uint64_t request_id, uint64_t session_id,
+                    uint8_t kind, uint32_t seq, const uint8_t *data,
+                    uint32_t len) {
+  pai_remote_pool_t *pool = (pai_remote_pool_t *)user;
+  if (pool->kind == PAI_REMOTE_KIND_GENERATE) {
+    remote_on_stream_data(&pool->gen, request_id, session_id, kind, seq,
+                          data, len);
+  }
+}
+
+/*
+ * Take the pooled connection for one exchange of `kind`. Reuses the
+ * OPEN connection when available; otherwise (first use, or the peer
+ * closed it between exchanges) reconnects and negotiates with the
+ * capability the exchange needs. *deadline bounds the whole acquire
+ * + exchange. The pool is marked busy on success.
+ */
+static pai_status_t
+pool_acquire(pai_remote_pool_t *pool, pai_remote_kind_t kind,
+             uint64_t timeout_ms, uint64_t *deadline) {
+  pai_status_t st;
+  uint32_t needed_cap = kind == PAI_REMOTE_KIND_GENERATE
+                            ? PAI_PROTO_CAP_GENERATE
+                            : PAI_PROTO_CAP_EMBED;
+
+  if (pool->valid &&
+      pai_proto_conn_state(&pool->conn) != PAI_PROTO_STATE_OPEN) {
+    /* Stale: the peer closed between exchanges. Reconnect below. */
+    pai_proto_conn_destroy(&pool->conn);
+    pai_proto_tcp_transport_destroy(&pool->transport);
+    pool->valid = 0;
+  }
+  if (!pool->valid) {
+    pai_proto_callbacks_t cb;
+    memset(&cb, 0, sizeof(cb));
+    cb.on_message = pool_on_message;
+    cb.on_stream_data = pool_on_stream_data;
+    st = remote_connect_and_negotiate(pool->host, pool->port, needed_cap,
+                                      timeout_ms, &cb, pool, &pool->transport,
+                                      &pool->conn, deadline);
+    if (st != PAI_OK) {
+      return st;
+    }
+    pool->valid = 1;
+  } else {
+    /* Reused connection: caps were checked at negotiate time, but the
+     * entry may now request a capability the peer never advertised. */
+    *deadline = pai_proto_now_ns() + timeout_ms * 1000000ull;
+    if (!(pai_proto_conn_negotiated_caps(&pool->conn) & needed_cap)) {
+      return PAI_ERR_UNSUPPORTED;
+    }
+  }
+  pool->kind = kind;
+  pool->busy = 1;
+  return PAI_OK;
+}
+
+static void
+pool_release(pai_remote_pool_t *pool) {
+  pool->busy = 0;
+}
+
+/*
+ * One pooled generation attempt. `attempt` bounds the transparent
+ * reconnect: a connection-level failure with nothing delivered (peer
+ * closed before answering, or the send hit a dead socket) tears the
+ * connection down and retries once on a fresh one. Deliveries that
+ * already reached the response (relayed tokens) never retry — that
+ * would duplicate output — and explicit ERROR frames and deadlines
+ * are respected.
+ */
+static pai_status_t
+pool_generate_attempt(pai_remote_pool_t *pool, const char *prompt,
+                      const pai_proto_sampler_t *sampler,
+                      void (*on_token)(const char *, void *), void *user,
+                      uint32_t *out_tokens, uint64_t timeout_ms,
+                      int attempt) {
+  pai_status_t st;
+  uint64_t deadline;
+  uint64_t req;
+  uint32_t frames = 0;
+  uint32_t plen = 0;
+  /* ~64 KB stack (u16 prompt + sampler trailer); the HTTP server runs
+   * this on threads with a 1 MB default stack, so this is safe. */
+  uint8_t pay[65535 + 2 + 4 + (uint32_t)sizeof(pai_proto_sampler_t)];
+
+  st = pool_acquire(pool, PAI_REMOTE_KIND_GENERATE, timeout_ms, &deadline);
+  if (st != PAI_OK) {
+    return st;
+  }
+  memset(&pool->gen, 0, sizeof(pool->gen));
+  pool->gen.on_token = on_token;
+  pool->gen.user = user;
+
+  st = pai_proto_msg_encode_generate2(pay, sizeof(pay), prompt, sampler,
+                                      &plen);
+  if (st != PAI_OK) {
+    goto fail;
+  }
+  req = pai_proto_conn_new_request_id(&pool->conn);
+  pool->gen.request_id = req;
+  st = pai_proto_conn_send_raw(&pool->conn, PAI_PROTO_MSG_GENERATE, 0, req,
+                               0, pay, plen);
+  if (st != PAI_OK) {
+    goto fail; /* dead socket (peer closed between exchanges) */
+  }
+
+  /* Relay TOKEN* until COMPLETE / ERROR / deadline / disconnect. The
+   * terminal-frame check runs before the closed-state check because a
+   * single poll can deliver COMPLETE and then consume the peer's EOF
+   * (a payload that closes right after answering). */
+  while (!pool->gen.complete && !pool->gen.error) {
+    if (pai_proto_now_ns() >= deadline) {
+      st = PAI_ERR_TIMEOUT;
+      goto fail;
+    }
+    st = pai_proto_conn_poll(&pool->conn, &frames);
+    if (st != PAI_OK) {
+      goto fail;
+    }
+    if (pool->gen.complete || pool->gen.error) {
+      break; /* terminal frame seen; the close is not a failure */
+    }
+    if (pai_proto_conn_state(&pool->conn) == PAI_PROTO_STATE_CLOSED) {
+      st = PAI_ERR_IO; /* peer closed before COMPLETE */
+      goto fail;
+    }
+  }
+  if (pool->gen.error) {
+    st = pool->gen.error_status; /* ERROR frame overrides any clean poll */
+  } else if (!pool->gen.complete && st == PAI_OK) {
+    st = PAI_ERR_IO; /* loop exited without terminal frame */
+  }
+
+fail:
+  if (out_tokens != NULL) {
+    *out_tokens = pool->gen.tokens;
+  }
+  pool_release(pool);
+
+  /* Transparent reconnect (bounded: one retry per call). Nothing was
+   * delivered, so the exchange is redone on a fresh connection. */
+  if (st == PAI_ERR_IO && attempt < 2 && !pool->gen.error &&
+      !pool->gen.complete && pool->gen.tokens == 0) {
+    pai_proto_conn_destroy(&pool->conn);
+    pai_proto_tcp_transport_destroy(&pool->transport);
+    pool->valid = 0;
+    return pool_generate_attempt(pool, prompt, sampler, on_token, user,
+                                 out_tokens, timeout_ms, attempt + 1);
+  }
+  return st;
+}
+
+pai_status_t
+pai_remote_pool_generate(pai_remote_pool_t *pool, const char *prompt,
+                         const pai_proto_sampler_t *sampler,
+                         void (*on_token)(const char *, void *), void *user,
+                         uint32_t *out_tokens, uint64_t timeout_ms) {
+  if (pool == NULL || prompt == NULL) {
+    return PAI_ERR_INVALID_ARG;
+  }
+  if (pool->busy) {
+    return PAI_ERR_INVALID_ARG; /* exchanges are serialized by the caller */
+  }
+  if (timeout_ms == 0) {
+    timeout_ms = REMOTE_DEFAULT_TIMEOUT_MS;
+  }
+  if (strlen(prompt) > 65535) {
+    return PAI_ERR_INVALID_ARG; /* v0 GENERATE prompt length is u16 */
+  }
+  return pool_generate_attempt(pool, prompt, sampler, on_token, user,
+                               out_tokens, timeout_ms, 1);
+}
+
+/* One pooled embedding attempt — see pool_generate_attempt for the
+ * retry contract (bounded, nothing-delivered only). */
+static pai_status_t
+pool_embed_attempt(pai_remote_pool_t *pool, const char *text,
+                   uint32_t text_len, float **out_vec, uint32_t *out_dim,
+                   uint64_t timeout_ms, int attempt) {
   pai_status_t st;
   uint64_t deadline;
   uint64_t req;
@@ -317,68 +479,57 @@ pai_gw_remote_embed(const char *host, uint16_t port, const char *text,
   /* ~64 KB stack (u16 text); the HTTP server thread stack is 1 MB. */
   uint8_t pay[65535u + 2u];
 
-  if (host == NULL || port == 0 || text == NULL || text_len == 0 ||
-      out_vec == NULL || out_dim == NULL) {
-    return PAI_ERR_INVALID_ARG;
-  }
-  if (text_len > 0xFFFFu) {
-    return PAI_ERR_INVALID_ARG; /* v0 EMBED text length is u16 */
-  }
-  if (timeout_ms == 0) {
-    timeout_ms = REMOTE_DEFAULT_TIMEOUT_MS;
-  }
-
-  memset(&ctx, 0, sizeof(ctx));
-
-  memset(&cb, 0, sizeof(cb));
-  cb.on_message = embed_on_message;
-  st = remote_connect_and_negotiate(host, port, PAI_PROTO_CAP_EMBED,
-                                    timeout_ms, &cb, &ctx, &transport, &conn,
-                                    &deadline);
+  st = pool_acquire(pool, PAI_REMOTE_KIND_EMBED, timeout_ms, &deadline);
   if (st != PAI_OK) {
     return st;
   }
+  memset(&pool->emb, 0, sizeof(pool->emb));
 
-  /* EMBED(text). */
   st = pai_proto_msg_encode_embed(pay, sizeof(pay), text, text_len, &plen);
   if (st != PAI_OK) {
-    goto out;
+    goto fail;
   }
-  req = pai_proto_conn_new_request_id(&conn);
-  ctx.request_id = req;
-  st = pai_proto_conn_send_raw(&conn, PAI_PROTO_MSG_EMBED, 0, req, 0, pay,
-                               plen);
+  req = pai_proto_conn_new_request_id(&pool->conn);
+  pool->emb.request_id = req;
+  st = pai_proto_conn_send_raw(&pool->conn, PAI_PROTO_MSG_EMBED, 0, req, 0,
+                               pay, plen);
   if (st != PAI_OK) {
-    goto out;
+    goto fail; /* dead socket (peer closed between exchanges) */
   }
 
-  /* Wait for EMBEDDING / ERROR / deadline / disconnect. */
-  while (!ctx.got && !ctx.error) {
+  /* Wait for EMBEDDING / ERROR / deadline / disconnect. As with
+   * generation, the reply can arrive in the same poll that consumes
+   * the peer's EOF (a payload that closes right after answering). */
+  while (!pool->emb.got && !pool->emb.error) {
     if (pai_proto_now_ns() >= deadline) {
       st = PAI_ERR_TIMEOUT;
-      break;
+      goto fail;
     }
-    st = pai_proto_conn_poll(&conn, &frames);
+    st = pai_proto_conn_poll(&pool->conn, &frames);
     if (st != PAI_OK) {
-      break;
+      goto fail;
     }
-    if (pai_proto_conn_state(&conn) == PAI_PROTO_STATE_CLOSED) {
+    if (pool->emb.got || pool->emb.error) {
+      break; /* reply seen; the close is not a failure */
+    }
+    if (pai_proto_conn_state(&pool->conn) == PAI_PROTO_STATE_CLOSED) {
       st = PAI_ERR_IO; /* peer closed before the reply */
-      break;
+      goto fail;
     }
   }
-  if (ctx.error) {
-    st = ctx.error_status;
-  } else if (!ctx.got && st == PAI_OK) {
+  if (pool->emb.error) {
+    st = pool->emb.error_status;
+  } else if (!pool->emb.got && st == PAI_OK) {
     st = PAI_ERR_IO; /* loop exited without a reply */
   }
 
-out:
+fail:
   if (st == PAI_OK) {
-    *out_vec = ctx.vec;
-    *out_dim = ctx.dim;
+    *out_vec = pool->emb.vec;
+    *out_dim = pool->emb.dim;
   } else {
-    free(ctx.vec);
+    free(pool->emb.vec);
+    pool->emb.vec = NULL;
     if (out_vec != NULL) {
       *out_vec = NULL;
     }
@@ -386,7 +537,83 @@ out:
       *out_dim = 0;
     }
   }
-  pai_proto_conn_destroy(&conn);
-  pai_proto_tcp_transport_destroy(&transport);
+  pool_release(pool);
+
+  /* Transparent reconnect (bounded: one retry per call). */
+  if (st == PAI_ERR_IO && attempt < 2 && !pool->emb.error &&
+      !pool->emb.got) {
+    pai_proto_conn_destroy(&pool->conn);
+    pai_proto_tcp_transport_destroy(&pool->transport);
+    pool->valid = 0;
+    return pool_embed_attempt(pool, text, text_len, out_vec, out_dim,
+                              timeout_ms, attempt + 1);
+  }
+  return st;
+}
+
+pai_status_t
+pai_remote_pool_embed(pai_remote_pool_t *pool, const char *text,
+                      uint32_t text_len, float **out_vec, uint32_t *out_dim,
+                      uint64_t timeout_ms) {
+  if (pool == NULL || text == NULL || text_len == 0 || out_vec == NULL ||
+      out_dim == NULL) {
+    return PAI_ERR_INVALID_ARG;
+  }
+  if (pool->busy) {
+    return PAI_ERR_INVALID_ARG; /* exchanges are serialized by the caller */
+  }
+  if (text_len > 0xFFFFu) {
+    return PAI_ERR_INVALID_ARG; /* v0 EMBED text length is u16 */
+  }
+  if (timeout_ms == 0) {
+    timeout_ms = REMOTE_DEFAULT_TIMEOUT_MS;
+  }
+  return pool_embed_attempt(pool, text, text_len, out_vec, out_dim,
+                            timeout_ms, 1);
+}
+
+/* ------------------------------------------------------------------ */
+/* One-shot bridges (thin wrappers over a transient pool)              */
+/* ------------------------------------------------------------------ */
+
+pai_status_t
+pai_gw_remote_generate(const char *host, uint16_t port, const char *prompt,
+                       const pai_proto_sampler_t *sampler,
+                       void (*on_token)(const char *, void *), void *user,
+                       uint32_t *out_tokens, uint64_t timeout_ms) {
+  pai_remote_pool_t *pool;
+  pai_status_t st;
+
+  if (host == NULL || port == 0 || prompt == NULL) {
+    return PAI_ERR_INVALID_ARG;
+  }
+  pool = pai_remote_pool_create(host, port);
+  if (pool == NULL) {
+    return PAI_ERR_NOMEM;
+  }
+  st = pai_remote_pool_generate(pool, prompt, sampler, on_token, user,
+                                out_tokens, timeout_ms);
+  pai_remote_pool_destroy(pool);
+  return st;
+}
+
+pai_status_t
+pai_gw_remote_embed(const char *host, uint16_t port, const char *text,
+                    uint32_t text_len, float **out_vec, uint32_t *out_dim,
+                    uint64_t timeout_ms) {
+  pai_remote_pool_t *pool;
+  pai_status_t st;
+
+  if (host == NULL || port == 0 || text == NULL || text_len == 0 ||
+      out_vec == NULL || out_dim == NULL) {
+    return PAI_ERR_INVALID_ARG;
+  }
+  pool = pai_remote_pool_create(host, port);
+  if (pool == NULL) {
+    return PAI_ERR_NOMEM;
+  }
+  st = pai_remote_pool_embed(pool, text, text_len, out_vec, out_dim,
+                             timeout_ms);
+  pai_remote_pool_destroy(pool);
   return st;
 }

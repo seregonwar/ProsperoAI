@@ -272,7 +272,14 @@ typedef struct remote_probe {
   volatile int no_embed;   /* 1 = advertise caps without CAP_EMBED      */
   volatile int hostile_embed; /* 1 = reply EMBEDDING with a bogus dim   */
   volatile int stray_reply; /* 1 = send an unrelated EMBEDDING first    */
-  volatile int n_served;
+  volatile int double_embed; /* 1 = send the EMBEDDING reply twice      */
+  volatile int stray_token; /* 1 = stream junk TOKENs for another req   */
+  volatile int close_next;  /* 1 = close the conn after the next answer  */
+  volatile int close_before_answer; /* 1 = close without answering once  */
+  volatile int n_accepts;   /* connections accepted by the listener      */
+  volatile int n_served;    /* connections closed by the probe           */
+  volatile int n_requests;  /* GENERATE + EMBED requests received        */
+  volatile int close_conn;  /* 1 = end the current conn after this poll  */
   /* Sampler overrides from the last GENERATE (written by the probe
    * thread; the network round trip orders the main thread's read). */
   pai_proto_sampler_t last_sampler;
@@ -318,6 +325,7 @@ probe_on_message(void *user, const pai_proto_frame_t *frame) {
     uint32_t plen2 = 0;
     CHECK(pai_proto_msg_decode_embed(frame->payload, frame->payload_len, &text,
                                      &tlen) == PAI_OK);
+    g->probe->n_requests++;
     g->probe->got_embed = 1;
     g->probe->last_embed_len = tlen < sizeof(g->probe->last_embed)
                                    ? tlen
@@ -355,9 +363,32 @@ probe_on_message(void *user, const pai_proto_frame_t *frame) {
                                     PAI_PROTO_FLAG_REPLY, frame->request_id,
                                     0, pay, plen2) == PAI_OK);
     }
+    if (g->probe->double_embed) {
+      /* A duplicated reply must be ignored (first terminal wins). */
+      static const float junk9[3] = {9.0f, 9.0f, 9.0f};
+      uint8_t dpay[64];
+      uint32_t dlen = 0;
+      CHECK(pai_proto_msg_encode_embedding(dpay, sizeof(dpay), junk9, 3,
+                                           &dlen) == PAI_OK);
+      CHECK(pai_proto_conn_send_raw(g->conn, PAI_PROTO_MSG_EMBEDDING,
+                                    PAI_PROTO_FLAG_REPLY, frame->request_id,
+                                    0, dpay, dlen) == PAI_OK);
+    }
+    if (g->probe->close_next) {
+      g->probe->close_next = 0;
+      g->probe->close_conn = 1;
+    }
     return PAI_OK;
   }
   if (frame->msg_type != PAI_PROTO_MSG_GENERATE) {
+    return PAI_OK;
+  }
+  g->probe->n_requests++;
+  if (g->probe->close_before_answer) {
+    /* Drop the connection without replying (once): the bridge must
+     * retry the exchange on a fresh connection. */
+    g->probe->close_before_answer = 0;
+    g->probe->close_conn = 1;
     return PAI_OK;
   }
   {
@@ -383,6 +414,20 @@ probe_on_message(void *user, const pai_proto_frame_t *frame) {
     return PAI_OK; /* negotiates, then goes silent */
   }
   CHECK(pai_proto_conn_session_open(g->conn, &sid) == PAI_OK);
+  if (g->probe->stray_token) {
+    /* Junk TOKEN stream for an unrelated request id: the bridge must
+     * not relay it into the HTTP response. */
+    uint8_t spay[64];
+    uint32_t slen = 0;
+    static const uint8_t junk[2] = {'J', 'J'};
+    CHECK(pai_proto_msg_encode_token(spay, sizeof(spay), junk, 2, &slen) ==
+          PAI_OK);
+    CHECK(pai_proto_conn_send_raw(g->conn, PAI_PROTO_MSG_TOKEN,
+                                  PAI_PROTO_FLAG_STREAM_START |
+                                      PAI_PROTO_FLAG_STREAM_END,
+                                  frame->request_id + 1, sid + 1, spay,
+                                  slen) == PAI_OK);
+  }
   CHECK(pai_proto_conn_send_raw(g->conn, PAI_PROTO_MSG_ACCEPTED,
                                 PAI_PROTO_FLAG_REPLY, frame->request_id, sid,
                                 NULL, 0) == PAI_OK);
@@ -410,6 +455,10 @@ probe_on_message(void *user, const pai_proto_frame_t *frame) {
   }
   CHECK(pai_proto_conn_send_raw(g->conn, PAI_PROTO_MSG_COMPLETE, 0,
                                 frame->request_id, sid, NULL, 0) == PAI_OK);
+  if (g->probe->close_next) {
+    g->probe->close_next = 0;
+    g->probe->close_conn = 1;
+  }
   return PAI_OK;
 }
 
@@ -428,6 +477,7 @@ remote_probe_thread(void *arg) {
     if (pai_proto_tcp_accept(p->lst, &t) != PAI_OK) {
       break; /* listener closed */
     }
+    p->n_accepts++;
     memset(&gen, 0, sizeof(gen));
     gen.conn = &conn;
     gen.probe = p;
@@ -439,10 +489,11 @@ remote_probe_thread(void *arg) {
       pai_proto_tcp_transport_destroy(&t);
       break;
     }
-    while (!p->stop &&
+    while (!p->stop && p->close_conn == 0 &&
            pai_proto_conn_state(&conn) != PAI_PROTO_STATE_CLOSED) {
       (void)pai_proto_conn_poll(&conn, &frames);
     }
+    p->close_conn = 0; /* per-connection flag; reset before next accept */
     if (p->stop) {
       pai_proto_conn_destroy(&conn);
       pai_proto_tcp_transport_destroy(&t);
@@ -577,6 +628,14 @@ CHECK(build_fixture());
     int32_t m0 = pai_json_array_at(&doc, data, 0);
     CHECK(strcmp(pai_json_str_member(&doc, m0, "id"), "gw_tiny") == 0);
     CHECK(strcmp(pai_json_str_member(&doc, m0, "object"), "model") == 0);
+    /* Real metadata: local kind, on-disk size > 0, not broken. */
+    CHECK(strcmp(pai_json_str_member(&doc, m0, "kind"), "local") == 0);
+    CHECK(pai_json_num(&doc, pai_json_member(&doc, m0, "size_bytes")) > 0);
+    CHECK(pai_json_type(&doc, pai_json_member(&doc, m0, "broken")) ==
+          PAI_JSON_BOOL);
+    CHECK(pai_json_bool(&doc, pai_json_member(&doc, m0, "broken")) == 0);
+    /* Remote-only field stays absent for local entries. */
+    CHECK(pai_json_member(&doc, m0, "endpoint") < 0);
   }
   pai_json_destroy(&doc);
 
@@ -903,10 +962,21 @@ CHECK(build_fixture());
   CHECK(pai_gw_add_remote(&gw, "x", NULL, port) == PAI_ERR_INVALID_ARG);
   CHECK(pai_gw_add_remote(&gw, "x", "127.0.0.1", 0) == PAI_ERR_INVALID_ARG);
 
-  /* The registry lists remote entries like any other model. */
+  /* The registry lists remote entries like any other model, with
+   * real metadata: remote kind, endpoint, zero size, not broken. */
   CHECK(gw_call(&gw, "GET", "/v1/models", NULL, &cap) == PAI_OK);
   CHECK_EQ_INT(resp_status(&cap), 200);
   CHECK(count_substr(&cap, "\"id\":\"remote-lm\"") == 1);
+  CHECK(count_substr(&cap, "\"kind\":\"remote\"") == 1);
+  CHECK(count_substr(&cap, "\"kind\":\"local\"") == 0);
+  CHECK(count_substr(&cap, "\"size_bytes\":0") == 1);
+  CHECK(count_substr(&cap, "\"broken\":false") == 1);
+  {
+    char needle[64];
+    snprintf(needle, sizeof(needle), "\"endpoint\":\"127.0.0.1:%u\"",
+             (unsigned)port);
+    CHECK(count_substr(&cap, needle) == 1);
+  }
 
   /* Non-stream completion: the probe echoes the prompt as 2-char
    * chunks, so the response text is the prompt itself. */
@@ -948,6 +1018,23 @@ CHECK(build_fixture());
     CHECK(count_substr_in(sse, sse_len, "\"text\":\"ab\"") > 0);
     CHECK(count_substr_in(sse, sse_len, "\"text\":\"ef\"") > 0);
   }
+
+  /* Tokens from an unrelated stream are not relayed (request-id
+   * correlation on the TOKEN path, like the message path). */
+  probe.stray_token = 1;
+  CHECK(gw_call(&gw, "POST", "/v1/completions",
+                "{\"model\":\"remote-lm\",\"prompt\":\"ok\","
+                "\"max_tokens\":8,\"stream\":true}",
+                &cap) == PAI_OK);
+  CHECK_EQ_INT(resp_status(&cap), 200);
+  {
+    char sse[4096];
+    uint32_t sse_len = dechunk_body(&cap, sse, sizeof(sse));
+    CHECK_EQ_INT(count_substr_in(sse, sse_len, "data: [DONE]"), 1);
+    CHECK(count_substr_in(sse, sse_len, "\"text\":\"ok\"") > 0);
+    CHECK(count_substr_in(sse, sse_len, "\"text\":\"JJ\"") == 0);
+  }
+  probe.stray_token = 0;
 
   /* Chat completions over remote. */
   CHECK(gw_call(&gw, "POST", "/v1/chat/completions",
@@ -1023,9 +1110,97 @@ CHECK(build_fixture());
 
   probe_stop(&probe, lst);
   CHECK_EQ_UINT(probe.finished, 1);
-  /* Three generation requests + three embedding requests: the accept
-   * loop must have been reused. */
-  CHECK(probe.n_served >= 6);
+  /* Five generations + three embeddings (array input bridges one
+   * EMBED per element) over a single pooled connection — the payload
+   * accepted exactly one conn and never saw it closed (n_served 0). */
+  CHECK_EQ_UINT(probe.n_accepts, 1);
+  CHECK_EQ_UINT(probe.n_requests, 8);
+  CHECK_EQ_UINT(probe.n_served, 0);
+  pai_gw_destroy(&gw);
+}
+
+/* ---- pooled connections: reuse across requests + transparent ---- */
+/* ---- reconnect when the payload closes the connection          ---- */
+{
+  pai_proto_tcp_listener_t *lst = NULL;
+  remote_probe_t probe;
+  pai_gw_t gw;
+  cap_t cap;
+  uint16_t port = 0;
+
+  CHECK(probe_start(&probe, &lst, &port) == 0);
+
+  CHECK(pai_gw_init(&gw) == PAI_OK);
+  CHECK(pai_gw_add_remote(&gw, "pool-lm", "127.0.0.1", port) == PAI_OK);
+
+  /* Two generations and one embedding reuse a single connection
+   * (GENERATE and EMBED share the pooled session). */
+  CHECK(gw_call(&gw, "POST", "/v1/completions",
+                "{\"model\":\"pool-lm\",\"prompt\":\"aa\","
+                "\"max_tokens\":4}",
+                &cap) == PAI_OK);
+  CHECK_EQ_INT(resp_status(&cap), 200);
+  CHECK(gw_call(&gw, "POST", "/v1/completions",
+                "{\"model\":\"pool-lm\",\"prompt\":\"bb\","
+                "\"max_tokens\":4}",
+                &cap) == PAI_OK);
+  CHECK_EQ_INT(resp_status(&cap), 200);
+  CHECK(gw_call(&gw, "POST", "/v1/embeddings",
+                "{\"model\":\"pool-lm\",\"input\":\"zz\"}", &cap) ==
+        PAI_OK);
+  CHECK_EQ_INT(resp_status(&cap), 200);
+  CHECK_EQ_UINT(probe.n_accepts, 1);
+  CHECK_EQ_UINT(probe.n_requests, 3);
+
+  /* The payload closes the connection right after its reply: the
+   * terminal COMPLETE still counts (seen before the EOF), so the
+   * request answers 200 — and the next request transparently
+   * reconnects at acquire time. */
+  probe.close_next = 1;
+  CHECK(gw_call(&gw, "POST", "/v1/completions",
+                "{\"model\":\"pool-lm\",\"prompt\":\"cc\","
+                "\"max_tokens\":4}",
+                &cap) == PAI_OK);
+  CHECK_EQ_INT(resp_status(&cap), 200);
+  CHECK_EQ_UINT(probe.n_requests, 4);
+  /* Wait for the probe to finish closing the old connection so the
+   * reconnect below is observable (new conn => n_accepts 2). */
+  {
+    int waited = 0;
+    while (probe.n_served < 1 && waited < 200) {
+      TEST_SLEEP_MS(10);
+      waited++;
+    }
+  }
+  CHECK_EQ_UINT(probe.n_served, 1);
+
+  /* The pooled conn is stale (the client observed the EOF): the next
+   * request drops it and reconnects without any failed exchange. */
+  CHECK(gw_call(&gw, "POST", "/v1/completions",
+                "{\"model\":\"pool-lm\",\"prompt\":\"dd\","
+                "\"max_tokens\":4}",
+                &cap) == PAI_OK);
+  CHECK_EQ_INT(resp_status(&cap), 200);
+  CHECK_EQ_UINT(probe.n_accepts, 2);
+  CHECK_EQ_UINT(probe.n_requests, 5);
+  CHECK_EQ_UINT(probe.n_served, 1);
+
+  /* The payload closes the connection BEFORE answering: the exchange
+   * fails with nothing delivered and is transparently retried once
+   * on a fresh connection. */
+  probe.close_before_answer = 1;
+  CHECK(gw_call(&gw, "POST", "/v1/completions",
+                "{\"model\":\"pool-lm\",\"prompt\":\"ee\","
+                "\"max_tokens\":4}",
+                &cap) == PAI_OK);
+  CHECK_EQ_INT(resp_status(&cap), 200);
+  CHECK_EQ_UINT(probe.n_accepts, 3);
+  CHECK_EQ_UINT(probe.n_served, 2);
+  /* The dropped request was counted, then the retried one answered. */
+  CHECK_EQ_UINT(probe.n_requests, 7);
+
+  probe_stop(&probe, lst);
+  CHECK_EQ_UINT(probe.finished, 1);
   pai_gw_destroy(&gw);
 }
 
@@ -1095,6 +1270,19 @@ CHECK(build_fixture());
   free(vec);
   probe.stray_reply = 0;
 
+  /* A duplicated reply is ignored: the first vector wins. */
+  vec = NULL;
+  dim = 0;
+  probe.double_embed = 1;
+  CHECK(pai_gw_remote_embed("127.0.0.1", port, "x", 1, &vec, &dim, 300) ==
+        PAI_OK);
+  CHECK_EQ_UINT(dim, 3);
+  CHECK(vec[0] == 1.0f);
+  CHECK(vec[1] == 2.0f);
+  CHECK(vec[2] == 3.0f);
+  free(vec);
+  probe.double_embed = 0;
+
   /* Text longer than the u16 wire length. */
   {
     char big[0x10000];
@@ -1113,10 +1301,11 @@ CHECK(build_fixture());
         PAI_ERR_INVALID_ARG);
 
   /* Hostile reply (absurd claimed dim) -> protocol rejection, and the
-   * failed call must not leak or return a bogus vector. */
+   * failed call must not leak or return a bogus vector. A generous
+   * timeout gives the probe's serial accept loop room to schedule. */
   vec = (float *)0x1;
   probe.hostile_embed = 1;
-  CHECK(pai_gw_remote_embed("127.0.0.1", port, "x", 1, &vec, &dim, 300) ==
+  CHECK(pai_gw_remote_embed("127.0.0.1", port, "x", 1, &vec, &dim, 2000) ==
         PAI_ERR_PROTOCOL);
   CHECK(vec == NULL);
   CHECK_EQ_UINT(dim, 0);

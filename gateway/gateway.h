@@ -30,6 +30,8 @@ extern "C" {
 
 #define PAI_GW_MAX_MODELS 16u
 
+struct pai_remote_pool; /* opaque persistent payload connection (remote.h) */
+
 typedef struct pai_gw_model_entry {
   char name[256];        /* registry id (basename minus .pai)          */
   char path[1024];       /* local .pai container path                  */
@@ -38,10 +40,14 @@ typedef struct pai_gw_model_entry {
   pai_gw_mutex_t *lock;  /* serializes generation on this model        */
   uint32_t broken;       /* set when open/session init failed          */
   /* Remote (Prospero Protocol) entries: model stays NULL and each
-   * generation is bridged to the payload endpoint over TCP (§24/§25). */
+   * generation is bridged to the payload endpoint over TCP (§24/§25).
+   * The persistent connection pool is created lazily on first use
+   * and reused across requests (reconnecting when the payload closes
+   * it); the entry lock serializes all exchanges through it. */
   int remote;
   char remote_host[256];
   uint16_t remote_port;
+  struct pai_remote_pool *remote_pool;
 } pai_gw_model_entry_t;
 
 typedef struct pai_gw {

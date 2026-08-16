@@ -12,8 +12,10 @@
 
 #ifdef _WIN32
 #include <windows.h>
+#include <sys/stat.h>
 #else
 #include <dirent.h>
+#include <sys/stat.h>
 #endif
 
 #define GW_PROMPT_MAX PAI_TOK_MAX_INPUT
@@ -109,6 +111,9 @@ pai_gw_destroy(pai_gw_t *gw) {
     return;
   }
   for (i = 0; i < PAI_GW_MAX_MODELS; i++) {
+    if (gw->models[i].remote_pool != NULL) {
+      pai_remote_pool_destroy(gw->models[i].remote_pool);
+    }
     if (gw->models[i].session != NULL) {
       pai_session_destroy(gw->models[i].session);
     }
@@ -285,8 +290,9 @@ bool_member(const pai_json_doc_t *doc, int32_t obj, const char *key,
 }
 
 /* Open the model + session behind an entry (under its lock). Remote
- * entries have nothing to open locally: generation is bridged over the
- * Prospero Protocol per request. */
+ * entries have nothing to open locally: their persistent connection
+ * pool is created lazily and exchanges are bridged over the Prospero
+ * Protocol (§24/§25). */
 static pai_status_t
 ensure_ready(pai_gw_model_entry_t *e) {
   pai_status_t st;
@@ -295,6 +301,14 @@ ensure_ready(pai_gw_model_entry_t *e) {
     return PAI_ERR_INVALID_ARG;
   }
   if (e->remote) {
+    if (e->remote_pool == NULL) {
+      e->remote_pool =
+          pai_remote_pool_create(e->remote_host, e->remote_port);
+      if (e->remote_pool == NULL) {
+        e->broken = 1;
+        return PAI_ERR_NOMEM;
+      }
+    }
     return PAI_OK;
   }
   if (e->model == NULL) {
@@ -602,9 +616,8 @@ handle_completions(pai_gw_t *gw, const uint8_t *body, uint32_t body_len,
         pai_json_wb_destroy(&wb);
       }
       if (entry->remote) {
-        st = pai_gw_remote_generate(entry->remote_host, entry->remote_port,
-                                    prompt, smp, gen_on_token, &ctx,
-                                    &ctx.generated, 0);
+        st = pai_remote_pool_generate(entry->remote_pool, prompt, smp,
+                                      gen_on_token, &ctx, &ctx.generated, 0);
         ctx.failed = ctx.failed || st != PAI_OK;
       } else {
         st = pai_session_generate(entry->session, prompt, gen_on_token, &ctx);
@@ -626,9 +639,8 @@ handle_completions(pai_gw_t *gw, const uint8_t *body, uint32_t body_len,
       pai_http_resp_end(resp);
     } else {
       if (entry->remote) {
-        st = pai_gw_remote_generate(entry->remote_host, entry->remote_port,
-                                    prompt, smp, gen_on_token, &ctx,
-                                    &ctx.generated, 0);
+        st = pai_remote_pool_generate(entry->remote_pool, prompt, smp,
+                                      gen_on_token, &ctx, &ctx.generated, 0);
         ctx.failed = ctx.failed || st != PAI_OK;
       } else {
         st = pai_session_generate(entry->session, prompt, gen_on_token, &ctx);
@@ -820,10 +832,10 @@ handle_embeddings(pai_gw_t *gw, const uint8_t *body, uint32_t body_len,
         return PAI_OK;
       }
       if (entry->remote) {
-        /* Bridge the request to the payload (one connection per
-         * input, mirroring the per-request generation bridge). */
-        st = pai_gw_remote_embed(entry->remote_host, entry->remote_port,
-                                 text, (uint32_t)strlen(text), &vec, &n, 0);
+        /* Bridge the request to the payload over the pooled
+         * connection (one EMBED exchange per input element). */
+        st = pai_remote_pool_embed(entry->remote_pool, text,
+                                   (uint32_t)strlen(text), &vec, &n, 0);
         if (st != PAI_OK) {
           pai_gw_mutex_unlock(entry->lock);
           pai_json_wb_destroy(&wb);
@@ -886,6 +898,19 @@ handle_embeddings(pai_gw_t *gw, const uint8_t *body, uint32_t body_len,
 /* Model listing                                                       */
 /* ------------------------------------------------------------------ */
 
+/* Real metadata for the model listing (§26): local entries report the
+ * on-disk .pai size, remote entries their Prospero Protocol endpoint;
+ * `broken` surfaces entries whose lazy open failed. All fields are
+ * derivable without touching the model itself (no forced load). */
+static int64_t
+file_size_bytes(const char *path) {
+  struct stat st;
+  if (path == NULL || stat(path, &st) != 0) {
+    return 0;
+  }
+  return (int64_t)st.st_size;
+}
+
 static void
 send_model_object(pai_json_wb_t *wb, const pai_gw_model_entry_t *e,
                   uint32_t *seq) {
@@ -894,7 +919,21 @@ send_model_object(pai_json_wb_t *wb, const pai_gw_model_entry_t *e,
   pai_json_wb_puts(wb, ",\"object\":\"model\",\"created\":0,\"owned_by\":");
   pai_json_quote(wb, "prosperoai", 10);
   pai_json_wb_puts(wb, ",\"index\":");
-  pai_json_wb_putf(wb, "%u}", *seq);
+  pai_json_wb_putf(wb, "%u", *seq);
+  if (e->remote) {
+    char endpoint[sizeof(e->remote_host) + 16];
+    pai_json_wb_puts(wb, ",\"kind\":\"remote\",\"endpoint\":");
+    snprintf(endpoint, sizeof(endpoint), "%s:%u", e->remote_host,
+             (unsigned)e->remote_port);
+    pai_json_quote(wb, endpoint, (uint32_t)strlen(endpoint));
+  } else {
+    pai_json_wb_puts(wb, ",\"kind\":\"local\"");
+  }
+  pai_json_wb_puts(wb, ",\"size_bytes\":");
+  pai_json_wb_putf(wb, "%lld",
+                   (long long)(e->remote ? 0 : file_size_bytes(e->path)));
+  pai_json_wb_puts(wb, ",\"broken\":");
+  pai_json_wb_puts(wb, e->broken ? "true}" : "false}");
   (*seq)++;
 }
 

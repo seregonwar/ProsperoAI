@@ -1,6 +1,11 @@
 # Build outputs
 /build/
 build/
+desktop/dist/
+desktop/node_modules/
+desktop/.deps/
+desktop/node_modules.locked/
+.desktop-runtime/
 *.o
 *.obj
 *.elf
@@ -31,3 +36,5 @@ __pycache__/
 /tiny-*.bin
 /tiny-*.wgt
 *.zip
+/.desktop-runtime
+/desktop/.deps

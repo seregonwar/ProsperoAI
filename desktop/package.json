@@ -1,0 +1,34 @@
+{
+  "name": "prosperoai-desktop",
+  "version": "0.1.0",
+  "private": true,
+  "description": "ProsperoAI Desktop — model preparation and PS5 runtime control center",
+  "main": "dist/main/index.js",
+  "author": "ProsperoAI",
+  "license": "UNLICENSED",
+  "scripts": {
+    "dev": "concurrently -k \"vite --config vite.config.ts\" \"tsc -p tsconfig.main.json --watch --pretty\" \"wait-on http://127.0.0.1:5173 dist/main/index.js && cross-env VITE_DEV_SERVER_URL=http://127.0.0.1:5173 electron .\"",
+    "build": "npm run build:renderer && npm run build:main",
+    "build:renderer": "vite build --config vite.config.ts",
+    "build:main": "tsc -p tsconfig.main.json",
+    "typecheck": "tsc -p tsconfig.renderer.json --noEmit && tsc -p tsconfig.main.json --noEmit",
+    "test:proto": "tsc -p tsconfig.main.json && node --test dist/main/proto/*.test.js",
+    "start": "electron ."
+  },
+  "dependencies": {
+    "@vitejs/plugin-react": "^4.3.4",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.2",
+    "@types/react": "^19.0.2",
+    "@types/react-dom": "^19.0.2",
+    "concurrently": "^9.1.2",
+    "cross-env": "^7.0.3",
+    "electron": "^36.3.1",
+    "typescript": "^5.7.2",
+    "vite": "^6.0.7",
+    "wait-on": "^8.0.3"
+  }
+}

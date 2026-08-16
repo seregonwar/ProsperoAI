@@ -4,14 +4,23 @@
  * The gateway can serve models that run on a remote payload (the PS5
  * console) instead of local .pai files: an entry registered with
  * pai_gw_add_remote points at a host:port speaking the Prospero
- * Protocol. Generation is bridged per request: connect, negotiate,
- * GENERATE(prompt), then relay each TOKEN chunk back through a
- * callback as it arrives.
+ * Protocol. Generation is bridged over the §24 exchanges:
+ * GENERATE(prompt[, sampler]) -> ACCEPTED -> TOKEN* -> COMPLETE, and
+ * embeddings via the one-shot EMBED/EMBEDDING exchange guarded by
+ * PAI_PROTO_CAP_EMBED.
  *
  * v0 scope: GENERATE carries the prompt plus an optional sampler
  * trailer (§24/§25); zero sampler values fall back to the payload's
- * defaults. Embeddings are bridged with the one-shot EMBED/EMBEDDING
- * exchange guarded by PAI_PROTO_CAP_EMBED.
+ * defaults.
+ *
+ * Connections are pooled per gateway entry (pai_remote_pool_t): the
+ * §24 protocol advertises persistent connections, so repeated gateway
+ * requests reuse one TCP connection + negotiated session instead of
+ * reconnecting per request. A pool is a single slot — the gateway's
+ * per-entry lock serializes exchanges — and transparently reconnects
+ * once when the peer has closed the connection (idle timeout,
+ * payload restart). The one-shot functions below remain as thin
+ * wrappers over a transient pool.
  */
 
 #ifndef PAI_GATEWAY_REMOTE_H
@@ -79,6 +88,57 @@ pai_status_t pai_gw_remote_embed(const char *host, uint16_t port,
                                  const char *text, uint32_t text_len,
                                  float **out_vec, uint32_t *out_dim,
                                  uint64_t timeout_ms);
+
+/* ------------------------------------------------------------------ */
+/* Pooled connections (§24 persistent connections)                     */
+/* ------------------------------------------------------------------ */
+
+/*
+ * A pool is one persistent client connection (transport + negotiated
+ * session) to a payload endpoint, reused across gateway requests.
+ * Exchanges run one at a time: the gateway holds the per-entry lock
+ * while bridging, so a pool is not thread-safe on its own.
+ *
+ * Lifecycle: the connection is established lazily on the first
+ * exchange, kept OPEN for reuse, and transparently re-established
+ * (once per failed exchange, only when nothing was delivered) when
+ * the peer has closed it — idle timeouts and payload restarts cost
+ * one reconnect instead of a per-request connect.
+ */
+typedef struct pai_remote_pool pai_remote_pool_t;
+
+/*
+ * Create a pool bound to host:port (the host string is copied).
+ * Returns NULL on invalid arguments (NULL/empty host, port 0, host
+ * too long) or out of memory.
+ */
+pai_remote_pool_t *pai_remote_pool_create(const char *host, uint16_t port);
+
+/* Release the connection (if any) and free the pool. NULL-safe. */
+void pai_remote_pool_destroy(pai_remote_pool_t *pool);
+
+/*
+ * Pooled generation: same semantics as pai_gw_remote_generate, minus
+ * the per-call connect — the pooled connection is reused (or
+ * re-established when stale). `pool` must be non-NULL and not busy
+ * (exchanges are serialized); otherwise PAI_ERR_INVALID_ARG.
+ */
+pai_status_t pai_remote_pool_generate(pai_remote_pool_t *pool,
+                                      const char *prompt,
+                                      const pai_proto_sampler_t *sampler,
+                                      void (*on_token)(const char *token,
+                                                       void *user),
+                                      void *user, uint32_t *out_tokens,
+                                      uint64_t timeout_ms);
+
+/*
+ * Pooled embedding: same semantics as pai_gw_remote_embed, minus the
+ * per-call connect (see pai_remote_pool_generate).
+ */
+pai_status_t pai_remote_pool_embed(pai_remote_pool_t *pool,
+                                   const char *text, uint32_t text_len,
+                                   float **out_vec, uint32_t *out_dim,
+                                   uint64_t timeout_ms);
 
 #ifdef __cplusplus
 }
