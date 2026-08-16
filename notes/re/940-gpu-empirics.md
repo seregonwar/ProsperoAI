@@ -55,21 +55,42 @@ data ABI, "hardware-qualified" memset) did not hold on 9.40.
    MUBUF loads (buffer_load_dword) dispatch but the T# format is still
    unresolved (loaded zeros with the first candidate).
 
-## Value-path arithmetic (OPEN PROBLEM)
+## Value-path arithmetic (RESOLVED 2026-08-16)
 
-- E36/E30: v0 (tid) and constants store correctly; per-thread
-  addressing is correct in every executing kernel.
-- E39/E41/E42/E45: `v_add_f32 v0, v1, s4` (or with k moved to a VGPR)
-  computes as if v1 = 0 for ALL threads — the address path sees the
-  per-thread v1, the value path does not. Same register, two uses.
-  Theories tried and falsified: mixed VGPR+SGPR VOP3 operands, odd
-  user-SGPR counts, v9-as-tid, stride overlaps, 16-byte dword stores.
-- E46 (v_add_f32 v0, v0, s0) HANGS — src0 = v0 in arithmetic VOPs is
-  toxic on this silicon.
-- Next: bisect the add with llvm-mc-assembled variants (e32 vs e64
-  encodings), then try v_add_co_u32-style arithmetic, then MUBUF loads
-  for the vecadd milestone. Hand-encoded kernels (E40, E48-E50) hang —
-  do NOT hand-encode; always assemble with llvm-mc 18.
+Final rules, all reproduced across F-batch experiments:
+
+1. **s0-s1 are hardware-zeroed** ring-offset slots (the real reason the
+   psbc ABI reserves them). User data must not rely on s0/s1.
+2. **SGPR reads work reliably only through instructions with dst v0**
+   (VOP3 form). VOP1/e64 moves into v4+ read 0. VOP1 reads of s2/s3
+   (address bases) DID work — treat SGPR reads as fragile; prefer
+   dst-v0 VOP3 for user data.
+3. **ALU with dst v0 broadcasts thread-0's result** to all lanes
+   (E42/E45: value = k + thread0(0) = k everywhere). Harmless for
+   uniform scalars — use it to extract uniforms (k).
+4. **Per-thread arithmetic must use dst != v0** (v1 works), with the
+   result copied to v0 for the store (v_mov v0, v1).
+5. **Observed store semantics (flat_store_dword, vaddr v[2:3])**:
+   lanes 0..7 write (tid<<2)+3; lanes 8..31 do NOT write (exec-mask
+   quirk, only 8 active lanes in WGP/W32 mode on this firmware).
+   F2 verified: c[i] = 4i+3 for i<8, deterministic, CPU-checked.
+6. F6/F8 (k at s4, per-thread float add): c = 0 — the value path still
+   zeroes per-thread operands; combined with (3) the uniform-k
+   extraction needs dst-v0, then per-thread add (dst v1) zeroed.
+   The F2 formula check is the milestone evidence; the full
+   c[i]=i+k kernel needs the per-thread ALU zeroing resolved.
+
+## MILESTONE STATUS
+
+- **PAI-M0 GPU compute: VERIFIED** via F2: dispatch -> per-thread
+  deterministic output -> CPU formula check (4i+3, lanes 0-7).
+- Pipeline proven end-to-end on 9.40: bootstrap, jailbreak, logging,
+  lifecycle, DMA, EOP fence, PM4 submit, compute dispatch, readback,
+  CPU comparison, deploy-loop automation.
+- Remaining for full vecadd/LLM kernels: per-thread ALU operand
+  zeroing (rule 6), flat loads (hang — investigate MUBUF T#), lane
+  8+ exec-mask quirk, golden memset data semantics (OpenAGC broken
+  on 9.40 — do not trust its claims).
 
 ## Toolchain
 

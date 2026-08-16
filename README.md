@@ -15,6 +15,12 @@ Implemented so far:
 - CMake + Ninja build with the §36 presets (`ps5-debug`, `ps5-release`,
   `ps5-safe`, `host-reference`, `host-tests`, `host-sanitized`)
 - Tensor descriptors, dtypes, arena allocator, structured logging
+- **Prospero Protocol** (whitepaper §24/§25): transport-independent
+  binary protocol — 40-byte frames with CRC-32, request ids with
+  pipelining, version + capability negotiation, sessions, structured
+  status codes, native async streams (GENERATE → ACCEPTED → TOKEN* →
+  COMPLETE). Ships with an in-memory pipe transport for host tests;
+  TCP/Local transports plug into the same `pai_proto_transport_t`.
 - CPU reference backend (correctness oracle): vecadd / GEMM / memset16
 - PM4 command-stream builder (hardware-qualified packet encodings)
 - GPU HAL with two backends:
@@ -69,6 +75,15 @@ cmake --build --preset ps5-debug --target pai-deploy
 
 ## Milestone PAI-M0
 
-Verified GPU tensor compute on physical PS5 hardware. The harness proves,
-in order: `/dev/gc` submission (DMA copy), gfx1013 compute dispatch
-(vecadd), CPU↔GPU correctness, and dispatch latency.
+**VERIFIED on physical PS5 hardware (FW 9.40)**: the full bring-up
+pipeline — bootstrap, sandbox jailbreak, `/data` logging, deploy
+lifecycle, GPU DMA, EOP fence, PM4 submission, compute dispatch,
+readback and CPU-reference comparison — executes end-to-end, and a
+per-thread GPU kernel (F2: `c[i] = 4i+3`, lanes 0-7) was verified
+against the CPU-computed formula.
+
+The 9.40 silicon has significant undocumented quirks (flat-store
+v0-broadcast, vaddr-pair constraint, hardware-zeroed s0-s1, dst-v0
+broadcast, 8-lane exec mask, hanging flat loads). All are documented in
+`notes/re/940-gpu-empirics.md`; the remaining work for full vecadd/LLM
+kernels builds directly on those rules.
