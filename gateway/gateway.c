@@ -20,6 +20,15 @@
 
 #define GW_PROMPT_MAX PAI_TOK_MAX_INPUT
 
+/* Stop-sequence limits (§26 stop): OpenAI allows up to 4 sequences of
+ * at most 64 chars each. The rolling tail keeps the last
+ * GW_TAIL_MAX bytes of generated text so a stop sequence can be
+ * matched even when it spans token boundaries (tokens decode to at
+ * most 255 chars each). */
+#define GW_STOP_MAX 4u
+#define GW_STOP_MAX_LEN 64u
+#define GW_TAIL_MAX (GW_STOP_MAX_LEN + 256u)
+
 /* ------------------------------------------------------------------ */
 /* Registry                                                            */
 /* ------------------------------------------------------------------ */
@@ -391,45 +400,162 @@ typedef struct gw_gen_ctx {
   uint64_t created;
   char id[64];
   uint32_t generated;   /* completion tokens (usage reporting)     */
+  /* Stop-sequence tracking (§26 stop). */
+  uint32_t n_stops;
+  char stops[GW_STOP_MAX][GW_STOP_MAX_LEN + 1];
+  char tail[GW_TAIL_MAX]; /* rolling suffix of the generated text   */
+  uint32_t tail_len;
+  uint32_t stop_len;    /* length of the matched stop (0 = none)    */
+  int stop_hit;
+  /* response_format: 1 = json_object (post-processed extraction).  */
+  int json_mode;
+  int echo;             /* completions only: prepend the prompt       */
 } gw_gen_ctx_t;
+
+/* Emit one SSE data chunk for a generated text fragment. */
+static void
+emit_chunk(gw_gen_ctx_t *c, const char *text) {
+  pai_json_wb_t wb;
+
+  pai_json_wb_init(&wb);
+  pai_json_wb_puts(&wb, "{\"id\":");
+  pai_json_quote(&wb, c->id, (uint32_t)strlen(c->id));
+  pai_json_wb_puts(&wb, ",\"object\":");
+  pai_json_wb_puts(&wb, c->chat ? "\"chat.completion.chunk\""
+                                : "\"text_completion\"");
+  pai_json_wb_putf(&wb, ",\"created\":%llu,\"model\":",
+                   (unsigned long long)c->created);
+  pai_json_quote(&wb, c->entry->name, (uint32_t)strlen(c->entry->name));
+  pai_json_wb_puts(&wb, ",\"choices\":[{\"index\":0,\"");
+  if (c->chat) {
+    pai_json_wb_puts(&wb, "delta\":{\"role\":\"assistant\",\"content\":");
+    pai_json_quote(&wb, text, (uint32_t)strlen(text));
+    pai_json_wb_puts(&wb, "},\"finish_reason\":null}]}");
+  } else {
+    pai_json_wb_puts(&wb, "text\":");
+    pai_json_quote(&wb, text, (uint32_t)strlen(text));
+    pai_json_wb_puts(&wb, ",\"finish_reason\":null}]}");
+  }
+  if (pai_http_resp_write(c->resp, "data: ", 6) != PAI_OK ||
+      pai_http_resp_write(c->resp, wb.buf, wb.len) != PAI_OK ||
+      pai_http_resp_write(c->resp, "\n\n", 2) != PAI_OK) {
+    c->failed = 1;
+  }
+  pai_json_wb_destroy(&wb);
+}
+
+/* Trim `s` (len bytes) to its outermost balanced JSON object, moving
+ * the object to the front of the buffer. Returns the trimmed length,
+ * 0 when no complete object is present. Used by response_format
+ * json_object (§26): the v0 runtime has no grammar constraint, so the
+ * generated text is post-processed to keep only the JSON object. */
+static uint32_t
+extract_json_object(char *s, uint32_t len) {
+  uint32_t i;
+  int depth = 0;
+  int in_str = 0;
+  int esc = 0;
+  uint32_t start = 0;
+
+  for (i = 0; i < len; i++) {
+    char ch = s[i];
+    if (in_str) {
+      if (esc) {
+        esc = 0;
+      } else if (ch == '\\') {
+        esc = 1;
+      } else if (ch == '"') {
+        in_str = 0;
+      }
+      continue;
+    }
+    if (ch == '"') {
+      in_str = 1;
+      continue;
+    }
+    if (ch == '{') {
+      if (depth == 0) {
+        start = i; /* the object we are balancing */
+      }
+      depth++;
+    } else if (ch == '}') {
+      if (depth > 0) {
+        depth--;
+      }
+      if (depth == 0) {
+        uint32_t n = i + 1 - start;
+        if (start > 0 && s != NULL) {
+          memmove(s, s + start, n);
+        }
+        return n; /* balanced object spanned [start, i] */
+      }
+    }
+  }
+  return 0;
+}
 
 static void
 gen_on_token(const char *token, void *user) {
   gw_gen_ctx_t *c = (gw_gen_ctx_t *)user;
-  pai_json_wb_t wb;
+  uint32_t tl;
+  uint32_t i;
 
-  if (c->failed) {
+  if (c->failed || c->stop_hit) {
+    return; /* error, or a stop sequence already terminated the stream */
+  }
+  tl = (uint32_t)strlen(token);
+  if (c->stream) {
+    emit_chunk(c, token);
+    if (c->failed) {
+      return;
+    }
+  } else if (pai_json_wb_puts(c->out, token) != PAI_OK) {
+    c->failed = 1;
     return;
   }
-  if (c->stream) {
-    pai_json_wb_init(&wb);
-    pai_json_wb_puts(&wb, "{\"id\":");
-    pai_json_quote(&wb, c->id, (uint32_t)strlen(c->id));
-    pai_json_wb_puts(&wb, ",\"object\":");
-    pai_json_wb_puts(&wb, c->chat ? "\"chat.completion.chunk\""
-                                  : "\"text_completion\"");
-    pai_json_wb_putf(&wb, ",\"created\":%llu,\"model\":",
-                     (unsigned long long)c->created);
-    pai_json_quote(&wb, c->entry->name, (uint32_t)strlen(c->entry->name));
-    pai_json_wb_puts(&wb, ",\"choices\":[{\"index\":0,\"");
-    if (c->chat) {
-      pai_json_wb_puts(&wb, "delta\":{\"role\":\"assistant\",\"content\":");
-      pai_json_quote(&wb, token, (uint32_t)strlen(token));
-      pai_json_wb_puts(&wb, "},\"finish_reason\":null}]}");
-    } else {
-      pai_json_wb_puts(&wb, "text\":");
-      pai_json_quote(&wb, token, (uint32_t)strlen(token));
-      pai_json_wb_puts(&wb, ",\"finish_reason\":null}]}");
+
+  /* Stop-sequence detection: match against the tail of the
+   * accumulated generated text (longest match wins). Non-streaming
+   * output is truncated at the stop; a streaming reply keeps the
+   * already-emitted stop bytes (the finish_reason still reports
+   * "stop"). A local session is cancelled so generation halts; a
+   * remote stream simply stops being relayed. */
+  if (c->n_stops == 0) {
+    return;
+  }
+  /* Clamp first so the window math below can never overflow the tail
+   * buffer (tokens decode to at most 255 bytes in practice). */
+  if (tl > GW_TAIL_MAX - 1) {
+    tl = GW_TAIL_MAX - 1;
+  }
+  if (c->tail_len + tl >= GW_TAIL_MAX) {
+    uint32_t keep = GW_TAIL_MAX - 1 - tl;
+    if (c->tail_len > keep) {
+      memmove(c->tail, c->tail + c->tail_len - keep, keep);
+      c->tail_len = keep;
     }
-    if (pai_http_resp_write(c->resp, "data: ", 6) != PAI_OK ||
-        pai_http_resp_write(c->resp, wb.buf, wb.len) != PAI_OK ||
-        pai_http_resp_write(c->resp, "\n\n", 2) != PAI_OK) {
-      c->failed = 1;
+  }
+  memcpy(c->tail + c->tail_len, token, tl);
+  c->tail_len += tl;
+  c->tail[c->tail_len] = '\0';
+
+  for (i = 0; i < c->n_stops; i++) {
+    uint32_t sl = (uint32_t)strlen(c->stops[i]);
+    if (sl > c->stop_len && c->tail_len >= sl &&
+        memcmp(c->tail + c->tail_len - sl, c->stops[i], sl) == 0) {
+      c->stop_len = sl;
+      c->stop_hit = 1;
     }
-    pai_json_wb_destroy(&wb);
-  } else {
-    if (pai_json_wb_puts(c->out, token) != PAI_OK) {
-      c->failed = 1;
+  }
+  if (c->stop_hit) {
+    if (!c->stream && c->out->len >= c->stop_len) {
+      c->out->len -= c->stop_len; /* drop the stop bytes from the reply */
+      if (c->out->buf != NULL) {
+        c->out->buf[c->out->len] = '\0';
+      }
+    }
+    if (!c->entry->remote) {
+      pai_session_cancel(c->entry->session);
     }
   }
 }
@@ -551,6 +677,95 @@ handle_completions(pai_gw_t *gw, const uint8_t *body, uint32_t body_len,
     ctx.resp = resp;
     ctx.chat = chat;
     ctx.stream = bool_member(&doc, root, "stream", 0);
+    /* Stop sequences (§26 stop): a string or an array of up to
+     * GW_STOP_MAX non-empty strings of at most GW_STOP_MAX_LEN
+     * chars. Parsed before out_wb is initialized (early 400 paths
+     * below need no write-buffer cleanup). */
+    {
+      int32_t stop_node = pai_json_member(&doc, root, "stop");
+      if (stop_node >= 0) {
+        if (pai_json_type(&doc, stop_node) == PAI_JSON_STRING) {
+          const char *s = pai_json_str(&doc, stop_node);
+          if (s[0] == '\0' || strlen(s) > GW_STOP_MAX_LEN) {
+            pai_json_destroy(&doc);
+            send_error(resp, 400, "invalid_request_error",
+                       "stop must be a non-empty string of at most 64 chars");
+            return PAI_OK;
+          }
+          strcpy(ctx.stops[0], s);
+          ctx.n_stops = 1;
+        } else if (pai_json_type(&doc, stop_node) == PAI_JSON_ARRAY) {
+          int32_t n = pai_json_array_len(&doc, stop_node);
+          int32_t i;
+          if (n <= 0 || n > (int32_t)GW_STOP_MAX) {
+            pai_json_destroy(&doc);
+            send_error(resp, 400, "invalid_request_error",
+                       "stop must contain 1..4 strings");
+            return PAI_OK;
+          }
+          for (i = 0; i < n; i++) {
+            int32_t e = pai_json_array_at(&doc, stop_node, (uint32_t)i);
+            const char *s;
+            if (pai_json_type(&doc, e) != PAI_JSON_STRING) {
+              pai_json_destroy(&doc);
+              send_error(resp, 400, "invalid_request_error",
+                         "stop must be a string or array of strings");
+              return PAI_OK;
+            }
+            s = pai_json_str(&doc, e);
+            if (s[0] == '\0' || strlen(s) > GW_STOP_MAX_LEN) {
+              pai_json_destroy(&doc);
+              send_error(resp, 400, "invalid_request_error",
+                         "stop must be non-empty strings of at most 64 chars");
+              return PAI_OK;
+            }
+            strcpy(ctx.stops[ctx.n_stops++], s);
+          }
+        } else {
+          pai_json_destroy(&doc);
+          send_error(resp, 400, "invalid_request_error",
+                     "stop must be a string or array of strings");
+          return PAI_OK;
+        }
+      }
+    }
+    /* response_format (§26): {"type":"text"} (default) or
+     * {"type":"json_object"}. v0 has no grammar constraint, so
+     * json_object post-processes the reply to keep only the first
+     * balanced JSON object (non-streaming only). */
+    {
+      int32_t rf = pai_json_member(&doc, root, "response_format");
+      if (rf >= 0) {
+        const char *type;
+        if (pai_json_type(&doc, rf) != PAI_JSON_OBJECT) {
+          pai_json_destroy(&doc);
+          send_error(resp, 400, "invalid_request_error",
+                     "response_format must be an object");
+          return PAI_OK;
+        }
+        type = pai_json_str_member(&doc, rf, "type");
+        if (type == NULL) {
+          type = "text";
+        }
+        if (strcmp(type, "json_object") == 0) {
+          ctx.json_mode = 1;
+        } else if (strcmp(type, "text") != 0) {
+          pai_json_destroy(&doc);
+          send_error(resp, 400, "invalid_request_error",
+                     "response_format type must be text or json_object");
+          return PAI_OK;
+        }
+      }
+    }
+    /* v0 json_object post-processes the reply, which is impossible on
+     * a live stream: refuse the combination instead of silently
+     * streaming unconstrained output. */
+    if (ctx.json_mode && ctx.stream) {
+      pai_json_destroy(&doc);
+      send_error(resp, 400, "invalid_request_error",
+                 "response_format json_object is not supported with stream");
+      return PAI_OK;
+    }
     ctx.created = (uint64_t)time(NULL);
     {
       /* Allocate a unique response id (registry-wide). */
@@ -581,6 +796,29 @@ handle_completions(pai_gw_t *gw, const uint8_t *body, uint32_t body_len,
       entry->session->sampler.top_p = (float)top_p;
       pai_session_set_generation(entry->session, max_tokens, 0);
     }
+    /* Seed (§31 reproducibility): re-init the local PRNG while
+     * preserving the request's sampling config. Remote payloads own
+     * their RNG (the wire sampler carries no seed in v0). */
+    {
+      double seed = num_member(&doc, root, "seed", -1.0);
+      if (seed < -1.0 || seed > 18446744073709551615.0) {
+        pai_gw_mutex_unlock(entry->lock);
+        pai_json_wb_destroy(&out_wb);
+        pai_json_destroy(&doc);
+        send_error(resp, 400, "invalid_request_error", "seed out of range");
+        return PAI_OK;
+      }
+      if (seed >= 0.0 && !entry->remote) {
+        pai_sampler_t saved = entry->session->sampler;
+        pai_sampler_init(&entry->session->sampler, (uint64_t)seed);
+        entry->session->sampler.temperature = saved.temperature;
+        entry->session->sampler.top_k = saved.top_k;
+        entry->session->sampler.top_p = saved.top_p;
+        entry->session->seed = (uint32_t)(uint64_t)seed;
+      }
+    }
+    /* echo (completions only): prepend the prompt to the reply. */
+    ctx.echo = !chat && bool_member(&doc, root, "echo", 0);
     {
       /* Remote: carry the request's effective sampler settings in the
        * GENERATE trailer so the payload applies them (zero/default
@@ -615,6 +853,10 @@ handle_completions(pai_gw_t *gw, const uint8_t *body, uint32_t body_len,
         pai_http_resp_write(resp, "\n\n", 2);
         pai_json_wb_destroy(&wb);
       }
+      if (ctx.echo) {
+        /* echo: the prompt leads the streamed completion. */
+        emit_chunk(&ctx, prompt);
+      }
       if (entry->remote) {
         st = pai_remote_pool_generate(entry->remote_pool, prompt, smp,
                                       gen_on_token, &ctx, &ctx.generated, 0);
@@ -634,6 +876,38 @@ handle_completions(pai_gw_t *gw, const uint8_t *body, uint32_t body_len,
         pai_http_resp_write(resp, hdr, sizeof(hdr) - 1);
         pai_http_resp_write(resp, msg, (uint32_t)strlen(msg));
         pai_http_resp_write(resp, tail, sizeof(tail) - 1);
+      } else {
+        /* Final chunk carries the finish_reason (§26 OpenAI shape):
+         * "length" when the max_tokens cap was hit, "stop" for stop
+         * sequences, EOS, or any other early termination. */
+        const char *reason = ctx.stop_hit
+                                 ? "stop"
+                                 : (ctx.generated >= max_tokens ? "length"
+                                                                : "stop");
+        pai_json_wb_t wb;
+        pai_json_wb_init(&wb);
+        pai_json_wb_puts(&wb, "{\"id\":");
+        pai_json_quote(&wb, ctx.id, (uint32_t)strlen(ctx.id));
+        pai_json_wb_puts(&wb, ",\"object\":");
+        pai_json_wb_puts(&wb, chat ? "\"chat.completion.chunk\""
+                                   : "\"text_completion\"");
+        pai_json_wb_putf(&wb, ",\"created\":%llu,\"model\":",
+                         (unsigned long long)ctx.created);
+        pai_json_quote(&wb, entry->name, (uint32_t)strlen(entry->name));
+        pai_json_wb_puts(&wb, ",\"choices\":[{\"index\":0,\"");
+        if (chat) {
+          pai_json_wb_puts(&wb, "delta\":{},\"finish_reason\":");
+        } else {
+          pai_json_wb_puts(&wb, "text\":\"\",\"finish_reason\":");
+        }
+        pai_json_quote(&wb, reason, (uint32_t)strlen(reason));
+        pai_json_wb_puts(&wb, "}]}");
+        if (pai_http_resp_write(resp, "data: ", 6) != PAI_OK ||
+            pai_http_resp_write(resp, wb.buf, wb.len) != PAI_OK ||
+            pai_http_resp_write(resp, "\n\n", 2) != PAI_OK) {
+          /* The client is gone; nothing left to do. */
+        }
+        pai_json_wb_destroy(&wb);
       }
       pai_http_resp_write(resp, "data: [DONE]\n\n", 15);
       pai_http_resp_end(resp);
@@ -650,6 +924,13 @@ handle_completions(pai_gw_t *gw, const uint8_t *body, uint32_t body_len,
         /* Prompt token count for usage reporting (remote: the payload
          * owns the tokenizer, so v0 reports prompt_tokens as 0). */
         uint32_t ptok = 0;
+        const char *reason = ctx.stop_hit
+                                 ? "stop"
+                                 : (ctx.generated >= max_tokens ? "length"
+                                                                : "stop");
+        const char *text_buf;
+        uint32_t text_n;
+        char *combined = NULL;
         if (!entry->remote) {
           uint32_t ids[4096];
           uint32_t nids = 0;
@@ -658,6 +939,46 @@ handle_completions(pai_gw_t *gw, const uint8_t *body, uint32_t body_len,
                               PAI_OK) {
             ptok = nids;
           }
+        }
+        /* response_format json_object: keep only the first balanced
+         * JSON object of the reply; no object -> 400 (the model did
+         * not honor the requested format). */
+        if (ctx.json_mode) {
+          uint32_t obj_len = extract_json_object(
+              ctx.out->buf != NULL ? ctx.out->buf : "", ctx.out->len);
+          if (obj_len == 0) {
+            pai_gw_mutex_unlock(entry->lock);
+            pai_json_wb_destroy(&out_wb);
+            pai_json_destroy(&doc);
+            send_error(resp, 400, "invalid_request_error",
+                       "response did not match response_format json_object");
+            return PAI_OK;
+          }
+          ctx.out->len = obj_len;
+          if (ctx.out->buf != NULL) {
+            ctx.out->buf[obj_len] = '\0';
+          }
+        }
+        /* echo (completions only): the reply is prompt + completion. */
+        if (ctx.echo) {
+          uint32_t plen = (uint32_t)strlen(prompt);
+          combined = (char *)malloc((size_t)plen + ctx.out->len + 1);
+          if (combined == NULL) {
+            pai_gw_mutex_unlock(entry->lock);
+            pai_json_wb_destroy(&out_wb);
+            pai_json_destroy(&doc);
+            send_error(resp, 500, "server_error", "out of memory");
+            return PAI_OK;
+          }
+          memcpy(combined, prompt, plen);
+          memcpy(combined + plen,
+                 ctx.out->buf != NULL ? ctx.out->buf : "", ctx.out->len);
+          combined[plen + ctx.out->len] = '\0';
+          text_buf = combined;
+          text_n = plen + ctx.out->len;
+        } else {
+          text_buf = ctx.out->buf != NULL ? ctx.out->buf : "";
+          text_n = ctx.out->len;
         }
         {
           pai_json_wb_t wb;
@@ -672,14 +993,16 @@ handle_completions(pai_gw_t *gw, const uint8_t *body, uint32_t body_len,
           pai_json_wb_puts(&wb, ",\"choices\":[{\"index\":0,\"");
           if (chat) {
             pai_json_wb_puts(&wb, "message\":{\"role\":\"assistant\",\"content\":");
-          pai_json_quote(&wb, ctx.out->buf != NULL ? ctx.out->buf : "",
-                         ctx.out->len);
-            pai_json_wb_puts(&wb, "},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":");
+            pai_json_quote(&wb, text_buf, text_n);
+            pai_json_wb_puts(&wb, "},\"finish_reason\":");
+            pai_json_quote(&wb, reason, (uint32_t)strlen(reason));
+            pai_json_wb_puts(&wb, "}],\"usage\":{\"prompt_tokens\":");
           } else {
             pai_json_wb_puts(&wb, "text\":");
-          pai_json_quote(&wb, ctx.out->buf != NULL ? ctx.out->buf : "",
-                         ctx.out->len);
-            pai_json_wb_puts(&wb, ",\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":");
+            pai_json_quote(&wb, text_buf, text_n);
+            pai_json_wb_puts(&wb, ",\"finish_reason\":");
+            pai_json_quote(&wb, reason, (uint32_t)strlen(reason));
+            pai_json_wb_puts(&wb, "}],\"usage\":{\"prompt_tokens\":");
           }
           pai_json_wb_putf(&wb, "%u,\"completion_tokens\":%llu,\"total_tokens\":%u}}",
                            ptok, (unsigned long long)ctx.generated,
@@ -687,6 +1010,7 @@ handle_completions(pai_gw_t *gw, const uint8_t *body, uint32_t body_len,
           send_raw(resp, 200, "application/json", wb.buf, wb.len);
           pai_json_wb_destroy(&wb);
         }
+        free(combined);
       } else {
         if (st == PAI_ERR_MISMATCH && !entry->remote) {
           send_error(resp, 400, "invalid_request_error",

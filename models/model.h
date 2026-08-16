@@ -59,6 +59,7 @@ struct pai_session {
   uint32_t max_tokens;      /* generation cap                           */
   uint32_t eos_token;       /* stop token (0 = none)                    */
   uint32_t seed;
+  int cancelled;            /* early-stop request (see pai_session_cancel) */
   uint64_t generated_tokens;
 };
 
@@ -103,6 +104,15 @@ pai_status_t pai_session_generate(pai_session_t *session, const char *prompt,
                                   void (*on_token)(const char *token,
                                                    void *user),
                                   void *user);
+
+/*
+ * Request early termination of the in-flight generate (§26 stop
+ * sequences): safe to call from the on_token callback (the check runs
+ * after each emitted token). The token that triggered the cancel has
+ * already been emitted; generated_tokens counts it. Cleared at the
+ * start of the next pai_session_generate.
+ */
+void pai_session_cancel(pai_session_t *session);
 
 /* Embeddings (§26 /v1/embeddings) */
 

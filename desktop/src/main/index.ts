@@ -32,6 +32,7 @@ import type {
   HubSearchResult,
   ImportResult,
   LibraryEntry,
+  OptimizeResult,
 } from '../shared/types';
 
 let mainWindow: BrowserWindow | null = null;
@@ -259,6 +260,19 @@ function registerIpc(): void {
       `${entries.length} import · ${ready} pront${ready === 1 ? 'o' : 'i'}, ${failed} fallit${failed === 1 ? 'o' : 'i'}`,
     );
     return { queued: entries.length, entries };
+  });
+
+  ipcMain.handle('library-optimize', async (event, entryId: unknown): Promise<OptimizeResult> => {
+    assertTrustedSender(event.sender.id);
+    const result = await library.optimize(String(entryId ?? ''));
+    events.push(
+      result.ok ? 'INFO' : 'WARN',
+      'library',
+      result.ok
+        ? `piano di ottimizzazione · ${result.plan?.model} · ${((((result.plan?.currentBytes ?? 0) - (result.plan?.planBytes ?? 0)) / 1048576)).toFixed(2)} MiB risparmiati (${result.plan?.feasible ? '' : 'oltre budget '}§15)`
+        : `ottimizzazione fallita · ${result.error ?? 'errore'}`,
+    );
+    return result;
   });
 
   ipcMain.handle('benchmark-run', async (event, model: unknown, rawOptions: unknown): Promise<BenchmarkRun> => {

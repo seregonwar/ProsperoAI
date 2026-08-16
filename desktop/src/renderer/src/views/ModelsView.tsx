@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react';
-import type { GatewayModel, LibraryEntry } from '../../../shared/types';
+import type { GatewayModel, LibraryEntry, OptimizePlan } from '../../../shared/types';
 import { EmptyState, Icon, SectionHeader, StatusDot, formatBytes } from '../components';
 import type { View } from './Overview';
 
@@ -17,6 +17,32 @@ type Filter = 'all' | 'ready' | 'remote' | 'library';
 export function ModelsView({ gatewayModels, library, importing, onImport, onNavigate, expertMode }: ModelsViewProps) {
   const [query, setQuery] = useState('');
   const [filter, setFilter] = useState<Filter>('all');
+  const [optimizingId, setOptimizingId] = useState<string | null>(null);
+  const [plan, setPlan] = useState<OptimizePlan | null>(null);
+  const [optimizeError, setOptimizeError] = useState<string | null>(null);
+
+  async function runOptimize(entry: LibraryEntry): Promise<void> {
+    setOptimizingId(entry.id);
+    setOptimizeError(null);
+    try {
+      const result = await window.prospero.optimizeModel(entry.id);
+      if (result.ok && result.plan) {
+        setPlan(result.plan);
+      } else {
+        setPlan(null);
+        setOptimizeError(result.error ?? 'ottimizzazione fallita');
+      }
+    } catch (error) {
+      setPlan(null);
+      setOptimizeError(error instanceof Error ? error.message : 'ottimizzazione fallita');
+    } finally {
+      setOptimizingId(null);
+    }
+  }
+
+  const planSavings = plan && plan.currentBytes > 0
+    ? 100 * (1 - plan.planBytes / plan.currentBytes)
+    : 0;
 
   const all = useMemo(() => {
     const gateway = gatewayModels.map((model): GatewayModel & { source: 'gateway' } => ({ ...model, source: 'gateway' }));
@@ -113,12 +139,62 @@ export function ModelsView({ gatewayModels, library, importing, onImport, onNavi
                 <StatusDot status={entry.status === 'ready' ? 'online' : entry.status === 'failed' ? 'offline' : 'checking'} />
                 {entry.status}
               </span>
-              <span className="library-message">{entry.message ?? (entry.status === 'ready' ? 'integrità verificata' : '—')}</span>
+              <span className="library-message">
+                {entry.message ?? (entry.status === 'ready' ? 'integrità verificata' : '—')}
+                {entry.kind === 'pai' && entry.status === 'ready' && (
+                  <button
+                    className="small-button"
+                    style={{ marginLeft: 8 }}
+                    onClick={() => void runOptimize(entry)}
+                    disabled={optimizingId !== null}
+                    title="Piano mixed-precision §15 (pai optimize)"
+                  >
+                    {optimizingId === entry.id ? 'Pianifico…' : 'Ottimizza'}
+                  </button>
+                )}
+              </span>
             </div>
           ))}
         </div>
       )}
     </section>
+
+    {optimizeError && <div className="optimize-error"><Icon name="pulse" size={15} /> {optimizeError}</div>}
+
+    {plan && (
+      <section className="panel optimize-panel">
+        <div className="panel-heading">
+          <div><span className="eyebrow">Mixed-precision planner · §15</span><h3>Piano di ottimizzazione · {plan.model}</h3></div>
+          <div className="optimize-actions">
+            <span className="secure-pill"><Icon name="chart" size={14} /> −{planSavings.toFixed(1)}% di peso</span>
+            <button className="icon-button" onClick={() => setPlan(null)} title="Chiudi piano"><Icon name="more" size={15} /></button>
+          </div>
+        </div>
+        <div className="optimize-stats">
+          <div><strong>{formatBytes(plan.currentBytes)}</strong><span>peso attuale</span></div>
+          <div><strong>{formatBytes(plan.planBytes)}</strong><span>piano §15</span></div>
+          <div><strong>{formatBytes(Math.max(0, plan.currentBytes - plan.planBytes))}</strong><span>risparmio</span></div>
+          {plan.budget ? (
+            <div><strong>{formatBytes(plan.budget)}</strong><span>budget · {plan.feasible ? 'raggiunto' : 'non raggiungibile (min ' + formatBytes(plan.minBytes) + ')'}</span></div>
+          ) : (
+            <div><strong>{formatBytes(plan.minBytes)}</strong><span>minimo teorico</span></div>
+          )}
+        </div>
+        <div className="library-table">
+          <div className="library-row library-head"><span>Tensor</span><span>Ruolo</span><span>Attuale</span><span>Piano</span><span>Risparmio</span></div>
+          {plan.tensors.map((tensor) => (
+            <div className="library-row" key={tensor.name}>
+              <span><strong>{tensor.name}</strong><small>{tensor.valueId > 0 ? `value #${tensor.valueId} · ${tensor.numel.toLocaleString('it-IT')} elementi` : `${tensor.numel.toLocaleString('it-IT')} elementi`}</small></span>
+              <span className="library-kind">{tensor.role}</span>
+              <span>{formatBytes(tensor.currentBytes)} <small>{tensor.currentScheme}</small></span>
+              <span>{formatBytes(tensor.planBytes)} <small>{tensor.planScheme}</small></span>
+              <span>{formatBytes(Math.max(0, tensor.currentBytes - tensor.planBytes))}</span>
+            </div>
+          ))}
+        </div>
+        <p className="optimize-note">Il piano è un report (§15): per applicarlo, riquantizza i tensor scelti con `pai convert --quant` e ricarica il modello nel gateway.</p>
+      </section>
+    )}
 
     {expertMode && (
       <div className="pipeline-callout">

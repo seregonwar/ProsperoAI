@@ -128,6 +128,37 @@ export interface ImportResult {
   entries: LibraryEntry[];
 }
 
+/* Mixed-precision plan from `pai optimize` (§15/§20). */
+export type OptimizeRole = 'embedding' | 'attention' | 'mlp' | 'output' | 'norm' | 'other';
+export type OptimizeScheme = 'f32' | 'q8' | 'q4';
+
+export interface OptimizeTensor {
+  name: string;
+  role: OptimizeRole;
+  valueId: number;
+  numel: number;
+  currentScheme: OptimizeScheme;
+  currentBytes: number;
+  planScheme: OptimizeScheme;
+  planBytes: number;
+}
+
+export interface OptimizePlan {
+  model: string;
+  currentBytes: number;
+  planBytes: number;
+  budget?: number;
+  minBytes: number;
+  feasible: boolean;
+  tensors: OptimizeTensor[];
+}
+
+export interface OptimizeResult {
+  ok: boolean;
+  plan?: OptimizePlan;
+  error?: string;
+}
+
 /* ------------------------------------------------------------------ */
 /* Benchmarks (§31: reproducible runs over the real gateway)           */
 /* ------------------------------------------------------------------ */
@@ -264,6 +295,7 @@ export interface ProsperoApi {
   /* Model library / import pipeline (§7/§8) */
   listLibrary(): Promise<LibraryEntry[]>;
   importModels(): Promise<ImportResult>;
+  optimizeModel(entryId: string): Promise<OptimizeResult>;
 
   /* Benchmarks (§31) */
   runBenchmark(model: string, options?: BenchmarkOptions): Promise<BenchmarkRun>;

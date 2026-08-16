@@ -13,10 +13,33 @@ import crypto from 'node:crypto';
 import { execFile, execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
-import type { LibraryEntry, LibraryEntryKind, LibraryEntryStatus } from '../../shared/types';
+import type { LibraryEntry, LibraryEntryKind, LibraryEntryStatus, OptimizePlan, OptimizeResult, OptimizeScheme, OptimizeTensor } from '../../shared/types';
 
 const CONVERT_TIMEOUT_MS = 300_000;
 const VALIDATE_TIMEOUT_MS = 120_000;
+const OPTIMIZE_TIMEOUT_MS = 120_000;
+
+/* Wire shape of `pai optimize --json` (snake_case fields). */
+interface RawOptimizeTensor {
+  name?: unknown;
+  role?: unknown;
+  value_id?: unknown;
+  numel?: unknown;
+  current_scheme?: unknown;
+  current_bytes?: unknown;
+  plan_scheme?: unknown;
+  plan_bytes?: unknown;
+}
+
+interface RawOptimizePlan {
+  model?: unknown;
+  current_bytes?: unknown;
+  plan_bytes?: unknown;
+  budget?: unknown;
+  min_bytes?: unknown;
+  feasible?: unknown;
+  tensors?: RawOptimizeTensor[];
+}
 
 export interface PaiCliInfo {
   path: string;
@@ -105,6 +128,57 @@ export class ModelLibrary {
         resolve({ code: error && typeof error === 'object' && 'code' in error && typeof error.code === 'number' ? error.code : error ? 1 : 0, stdout, stderr });
       });
     });
+  }
+
+  /*
+   * Mixed-precision plan (§15/§20): `pai optimize --json` over a
+   * managed .pai entry. Returns the parsed plan (per-tensor f32/q8/q4
+   * sizes + totals) or an error. The CLI prints a version banner
+   * before the JSON, so parsing starts at the first '{'.
+   */
+  async optimize(entryId: string): Promise<OptimizeResult> {
+    const entry = this.state.find((item) => item.id === entryId);
+    if (!entry || entry.kind !== 'pai' || !entry.libraryPath) {
+      return { ok: false, error: 'nessun container .pai pronto per questa voce' };
+    }
+    const cli = this.findPaiCli();
+    if (!cli) {
+      return { ok: false, error: 'CLI `pai` non trovata (imposta PAI_BIN o aggiungi il binario al PATH)' };
+    }
+    const result = await this.runPai(cli, ['optimize', entry.libraryPath, '--json'], OPTIMIZE_TIMEOUT_MS);
+    if (result.code !== 0) {
+      return { ok: false, error: (result.stderr || result.stdout || 'pai optimize fallito').trim().slice(0, 500) };
+    }
+    try {
+      const start = result.stdout.indexOf('{');
+      if (start < 0) throw new Error('risposta priva di JSON');
+      const parsed = JSON.parse(result.stdout.slice(start)) as RawOptimizePlan;
+      if (!Array.isArray(parsed.tensors)) throw new Error('piano malformato');
+      const tensors: OptimizeTensor[] = parsed.tensors.map((tensor) => ({
+        name: String(tensor.name ?? '?'),
+        role: (['embedding', 'attention', 'mlp', 'output', 'norm', 'other'].includes(String(tensor.role)) ? String(tensor.role) : 'other') as OptimizeTensor['role'],
+        valueId: Number(tensor.value_id ?? 0),
+        numel: Number(tensor.numel ?? 0),
+        currentScheme: (['f32', 'q8', 'q4'].includes(String(tensor.current_scheme)) ? String(tensor.current_scheme) : 'f32') as OptimizeScheme,
+        currentBytes: Number(tensor.current_bytes ?? 0),
+        planScheme: (['f32', 'q8', 'q4'].includes(String(tensor.plan_scheme)) ? String(tensor.plan_scheme) : 'f32') as OptimizeScheme,
+        planBytes: Number(tensor.plan_bytes ?? 0),
+      }));
+      return {
+        ok: true,
+        plan: {
+          model: String(parsed.model ?? entry.name),
+          currentBytes: Number(parsed.current_bytes ?? 0),
+          planBytes: Number(parsed.plan_bytes ?? 0),
+          budget: parsed.budget == null ? undefined : Number(parsed.budget),
+          minBytes: Number(parsed.min_bytes ?? 0),
+          feasible: parsed.feasible !== false,
+          tensors,
+        },
+      };
+    } catch (error) {
+      return { ok: false, error: error instanceof Error ? error.message : 'parse del piano fallito' };
+    }
   }
 
   /*

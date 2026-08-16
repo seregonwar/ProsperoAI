@@ -696,7 +696,8 @@ CHECK(build_fixture());
   }
   pai_json_destroy(&doc);
 
-  /* streaming: one SSE data chunk per token + [DONE] */
+  /* streaming: one SSE data chunk per token + final finish chunk
+   * + [DONE] */
   CHECK(gw_call(&gw, "POST", "/v1/completions",
                 "{\"model\":\"gw_tiny\",\"prompt\":\"a\",\"temperature\":0,"
                 "\"max_tokens\":8,\"stream\":true}",
@@ -706,11 +707,28 @@ CHECK(build_fixture());
   {
     char sse[8192];
     uint32_t sse_len = dechunk_body(&cap, sse, sizeof(sse));
-    CHECK_EQ_INT(count_substr_in(sse, sse_len, "data: {"), 8);
+    CHECK_EQ_INT(count_substr_in(sse, sse_len, "data: {"), 9);
     CHECK_EQ_INT(count_substr_in(sse, sse_len, "data: [DONE]"), 1);
-    /* deterministic stream: b c d a b c d a */
+    /* deterministic stream: b c d a b c d a, then the final chunk
+     * reports the max_tokens cap as finish_reason "length". */
     CHECK(count_substr_in(sse, sse_len, "\"text\":\"b\"") > 0);
+    CHECK(count_substr_in(sse, sse_len, "\"finish_reason\":\"length\"") ==
+          1);
   }
+
+  /* finish_reason: "length" when the cap is hit (non-stream). */
+  CHECK(gw_call(&gw, "POST", "/v1/completions",
+                "{\"model\":\"gw_tiny\",\"prompt\":\"a\",\"temperature\":0,"
+                "\"max_tokens\":8}",
+                &cap) == PAI_OK);
+  CHECK_EQ_INT(resp_status(&cap), 200);
+  CHECK(parse_resp_json(&cap, &doc) == 0);
+  root = pai_json_root(&doc);
+  choices = pai_json_member(&doc, root, "choices");
+  c0 = pai_json_array_at(&doc, choices, 0);
+  CHECK(strcmp(pai_json_str_member(&doc, c0, "finish_reason"), "length") ==
+        0);
+  pai_json_destroy(&doc);
 
   pai_gw_destroy(&gw);
 }
@@ -745,7 +763,7 @@ CHECK(build_fixture());
                 "{\"model\":\"gw_tiny\",\"messages\":[]}", &cap) == PAI_OK);
   CHECK_EQ_INT(resp_status(&cap), 400);
 
-  /* streaming chat: role chunk + 8 token chunks */
+  /* streaming chat: role chunk + 8 token chunks + final chunk */
   CHECK(gw_call(&gw, "POST", "/v1/chat/completions",
                 "{\"model\":\"gw_tiny\",\"messages\":[{\"role\":\"user\","
                 "\"content\":\"a\"}],\"temperature\":0,\"max_tokens\":8,"
@@ -756,11 +774,174 @@ CHECK(build_fixture());
   {
     char sse[8192];
     uint32_t sse_len = dechunk_body(&cap, sse, sizeof(sse));
-    CHECK_EQ_INT(count_substr_in(sse, sse_len, "data: {"), 9);
+    CHECK_EQ_INT(count_substr_in(sse, sse_len, "data: {"), 10);
     CHECK(count_substr_in(sse, sse_len, "\"delta\":{\"role\":\"assistant\"")
           > 0);
+    /* final chunk: empty delta + finish_reason. */
+    CHECK(count_substr_in(sse, sse_len, "\"delta\":{}") == 1);
+    CHECK(count_substr_in(sse, sse_len, "\"finish_reason\":\"length\"") ==
+          1);
   }
 
+  pai_gw_destroy(&gw);
+}
+
+/* ---- stop sequences, echo, seed, response_format (§26) ---- */
+{
+  pai_gw_t gw;
+  cap_t cap;
+  pai_json_doc_t doc;
+  int32_t root, choices, c0;
+
+  CHECK(pai_gw_init(&gw) == PAI_OK);
+  CHECK(pai_gw_add_file(&gw, "gw_tiny.pai") == PAI_OK);
+
+  /* Greedy chain a -> b c d a ...; stop "cd" halts after "bcd" and
+   * the reply is truncated to "b" (bcd minus cd) with finish_reason
+   * "stop" (the cancel stopped generation at 3 emitted tokens). */
+  CHECK(gw_call(&gw, "POST", "/v1/completions",
+                "{\"model\":\"gw_tiny\",\"prompt\":\"a\","
+                "\"temperature\":0,\"max_tokens\":8,\"stop\":\"cd\"}",
+                &cap) == PAI_OK);
+  CHECK_EQ_INT(resp_status(&cap), 200);
+  CHECK(parse_resp_json(&cap, &doc) == 0);
+  root = pai_json_root(&doc);
+  choices = pai_json_member(&doc, root, "choices");
+  c0 = pai_json_array_at(&doc, choices, 0);
+  CHECK(strcmp(pai_json_str_member(&doc, c0, "text"), "b") == 0);
+  CHECK(strcmp(pai_json_str_member(&doc, c0, "finish_reason"), "stop") ==
+        0);
+  {
+    int32_t usage = pai_json_member(&doc, root, "usage");
+    CHECK_EQ_INT(
+        (int)pai_json_num(&doc, pai_json_member(&doc, usage,
+                                                "completion_tokens")),
+        3);
+  }
+  pai_json_destroy(&doc);
+
+  /* stop as an array: "dab" matches after 5 generated tokens
+   * (b c d a b -> "bcdab" ends with "dab"), the longest match wins. */
+  CHECK(gw_call(&gw, "POST", "/v1/completions",
+                "{\"model\":\"gw_tiny\",\"prompt\":\"a\","
+                "\"temperature\":0,\"max_tokens\":8,"
+                "\"stop\":[\"zz\",\"dab\"]}",
+                &cap) == PAI_OK);
+  CHECK_EQ_INT(resp_status(&cap), 200);
+  CHECK(parse_resp_json(&cap, &doc) == 0);
+  root = pai_json_root(&doc);
+  choices = pai_json_member(&doc, root, "choices");
+  c0 = pai_json_array_at(&doc, choices, 0);
+  CHECK(strcmp(pai_json_str_member(&doc, c0, "text"), "bc") == 0);
+  CHECK(strcmp(pai_json_str_member(&doc, c0, "finish_reason"), "stop") ==
+        0);
+  {
+    int32_t usage = pai_json_member(&doc, root, "usage");
+    CHECK_EQ_INT(
+        (int)pai_json_num(&doc, pai_json_member(&doc, usage,
+                                                "completion_tokens")),
+        5);
+  }
+  pai_json_destroy(&doc);
+
+  /* echo: the reply is prompt + completion (a + b c d a = abcda). */
+  CHECK(gw_call(&gw, "POST", "/v1/completions",
+                "{\"model\":\"gw_tiny\",\"prompt\":\"a\","
+                "\"temperature\":0,\"max_tokens\":4,\"echo\":true}",
+                &cap) == PAI_OK);
+  CHECK_EQ_INT(resp_status(&cap), 200);
+  CHECK(parse_resp_json(&cap, &doc) == 0);
+  root = pai_json_root(&doc);
+  choices = pai_json_member(&doc, root, "choices");
+  c0 = pai_json_array_at(&doc, choices, 0);
+  CHECK(strcmp(pai_json_str_member(&doc, c0, "text"), "abcda") == 0);
+  pai_json_destroy(&doc);
+
+  /* seed: accepted and reproducible (two identical requests). */
+  CHECK(gw_call(&gw, "POST", "/v1/completions",
+                "{\"model\":\"gw_tiny\",\"prompt\":\"a\","
+                "\"temperature\":0.7,\"seed\":1234,\"max_tokens\":4}",
+                &cap) == PAI_OK);
+  CHECK_EQ_INT(resp_status(&cap), 200);
+  CHECK(gw_call(&gw, "POST", "/v1/completions",
+                "{\"model\":\"gw_tiny\",\"prompt\":\"a\","
+                "\"temperature\":0.7,\"seed\":1234,\"max_tokens\":4}",
+                &cap) == PAI_OK);
+  CHECK_EQ_INT(resp_status(&cap), 200);
+
+  /* invalid stop / response_format / seed -> 400. */
+  CHECK(gw_call(&gw, "POST", "/v1/completions",
+                "{\"model\":\"gw_tiny\",\"prompt\":\"a\","
+                "\"stop\":\"\"}",
+                &cap) == PAI_OK);
+  CHECK_EQ_INT(resp_status(&cap), 400);
+  CHECK(gw_call(&gw, "POST", "/v1/completions",
+                "{\"model\":\"gw_tiny\",\"prompt\":\"a\","
+                "\"stop\":[1,2]}",
+                &cap) == PAI_OK);
+  CHECK_EQ_INT(resp_status(&cap), 400);
+  CHECK(gw_call(&gw, "POST", "/v1/completions",
+                "{\"model\":\"gw_tiny\",\"prompt\":\"a\","
+                "\"response_format\":{\"type\":\"yaml\"}}",
+                &cap) == PAI_OK);
+  CHECK_EQ_INT(resp_status(&cap), 400);
+  CHECK(gw_call(&gw, "POST", "/v1/completions",
+                "{\"model\":\"gw_tiny\",\"prompt\":\"a\",\"seed\":-2}",
+                &cap) == PAI_OK);
+  CHECK_EQ_INT(resp_status(&cap), 400);
+
+  /* response_format json_object: the fixture never emits JSON, so the
+   * reply cannot be reduced to a balanced object -> 400. */
+  CHECK(gw_call(&gw, "POST", "/v1/completions",
+                "{\"model\":\"gw_tiny\",\"prompt\":\"a\","
+                "\"temperature\":0,\"max_tokens\":4,"
+                "\"response_format\":{\"type\":\"json_object\"}}",
+                &cap) == PAI_OK);
+  CHECK_EQ_INT(resp_status(&cap), 400);
+
+  pai_gw_destroy(&gw);
+}
+
+/* ---- response_format json_object: success path over a remote ---- */
+/* ---- payload (the probe echoes the prompt, so the reply really ---- */
+/* ---- contains a JSON object), plus stream+json refusal       ---- */
+{
+  pai_proto_tcp_listener_t *lst = NULL;
+  remote_probe_t probe;
+  pai_gw_t gw;
+  cap_t cap;
+  pai_json_doc_t doc;
+  int32_t root, choices, c0;
+  uint16_t port = 0;
+
+  CHECK(probe_start(&probe, &lst, &port) == 0);
+  CHECK(pai_gw_init(&gw) == PAI_OK);
+  CHECK(pai_gw_add_remote(&gw, "json-lm", "127.0.0.1", port) == PAI_OK);
+
+  /* The payload echoes the prompt verbatim as 2-char TOKEN chunks, so
+   * the reply is "sure {"a":1} done"; json_object post-processing
+   * keeps only the balanced JSON object. */
+  CHECK(gw_call(&gw, "POST", "/v1/completions",
+                "{\"model\":\"json-lm\",\"prompt\":\"sure {\\\"a\\\":1} done\","
+                "\"max_tokens\":32,\"response_format\":{\"type\":\"json_object\"}}",
+                &cap) == PAI_OK);
+  CHECK_EQ_INT(resp_status(&cap), 200);
+  CHECK(parse_resp_json(&cap, &doc) == 0);
+  root = pai_json_root(&doc);
+  choices = pai_json_member(&doc, root, "choices");
+  c0 = pai_json_array_at(&doc, choices, 0);
+  CHECK(strcmp(pai_json_str_member(&doc, c0, "text"), "{\"a\":1}") == 0);
+  pai_json_destroy(&doc);
+
+  /* stream + json_object is refused (no grammar constraint in v0). */
+  CHECK(gw_call(&gw, "POST", "/v1/completions",
+                "{\"model\":\"json-lm\",\"prompt\":\"x\",\"max_tokens\":4,"
+                "\"stream\":true,\"response_format\":{\"type\":\"json_object\"}}",
+                &cap) == PAI_OK);
+  CHECK_EQ_INT(resp_status(&cap), 400);
+
+  probe_stop(&probe, lst);
+  CHECK_EQ_UINT(probe.finished, 1);
   pai_gw_destroy(&gw);
 }
 
@@ -1004,7 +1185,8 @@ CHECK(build_fixture());
   }
   pai_json_destroy(&doc);
 
-  /* Streaming: one SSE frame per relayed chunk + [DONE]. */
+  /* Streaming: one SSE frame per relayed chunk + final chunk
+   * + [DONE]. */
   CHECK(gw_call(&gw, "POST", "/v1/completions",
                 "{\"model\":\"remote-lm\",\"prompt\":\"abcdef\","
                 "\"max_tokens\":8,\"stream\":true}",
@@ -1013,10 +1195,14 @@ CHECK(build_fixture());
   {
     char sse[4096];
     uint32_t sse_len = dechunk_body(&cap, sse, sizeof(sse));
-    CHECK_EQ_INT(count_substr_in(sse, sse_len, "data: {"), 3);
+    CHECK_EQ_INT(count_substr_in(sse, sse_len, "data: {"), 4);
     CHECK_EQ_INT(count_substr_in(sse, sse_len, "data: [DONE]"), 1);
     CHECK(count_substr_in(sse, sse_len, "\"text\":\"ab\"") > 0);
     CHECK(count_substr_in(sse, sse_len, "\"text\":\"ef\"") > 0);
+    /* The payload stopped before the cap (3 relayed chunks) and no
+     * stop sequence fired: finish_reason "stop". */
+    CHECK(count_substr_in(sse, sse_len, "\"finish_reason\":\"stop\"") ==
+          1);
   }
 
   /* Tokens from an unrelated stream are not relayed (request-id

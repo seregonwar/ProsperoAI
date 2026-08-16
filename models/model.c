@@ -323,6 +323,13 @@ pai_session_set_generation(pai_session_t *session, uint32_t max_tokens,
   return PAI_OK;
 }
 
+void
+pai_session_cancel(pai_session_t *session) {
+  if (session != NULL) {
+    session->cancelled = 1;
+  }
+}
+
 pai_status_t
 pai_session_generate(pai_session_t *session, const char *prompt,
                      void (*on_token)(const char *token, void *user),
@@ -407,6 +414,7 @@ pai_session_generate(pai_session_t *session, const char *prompt,
   cur = ids[n - 1];
 
   session->generated_tokens = 0;
+  session->cancelled = 0;
   if (seq_mode) {
     uint32_t seq_len = n < ctx ? n : ctx;
 
@@ -456,6 +464,9 @@ pai_session_generate(pai_session_t *session, const char *prompt,
       if (on_token != NULL) {
         on_token(text, user);
       }
+      if (session->cancelled) {
+        break; /* early stop (§26 stop sequences) */
+      }
 
       ids[seq_len++] = sampled;
       if (session->eos_token != 0 && sampled == session->eos_token) {
@@ -499,6 +510,9 @@ pai_session_generate(pai_session_t *session, const char *prompt,
       session->generated_tokens++;
       if (on_token != NULL) {
         on_token(text, user);
+      }
+      if (session->cancelled) {
+        break; /* early stop (§26 stop sequences) */
       }
 
       cur = sampled;

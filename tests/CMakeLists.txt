@@ -12,6 +12,7 @@ set(PAI_TESTS
   test_pai
   test_model
   test_quantize
+  test_pai_opt
   test_opt_ops
   test_importer
   test_gguf

@@ -83,7 +83,8 @@ model converters, and serving stacks into one capability-aware runtime.
   `/v1/chat/completions`, `/v1/embeddings`, SSE streaming
 - Prospero Protocol over TCP with negotiation, pipelining, async streams,
   and ping health checks
-- `pai` CLI: `convert`, `inspect`, `validate`, `benchmark`, `serve`,
+- `pai` CLI: `convert`, `inspect` (con `--json`), `optimize`
+  (piano mixed-precision §15), `validate`, `benchmark`, `serve`,
   `proto-ping`
 
 ## Architecture

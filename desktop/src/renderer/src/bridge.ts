@@ -130,6 +130,7 @@ function noopApi(): ProsperoApi {
     onEvent: () => () => undefined,
     listLibrary: async () => [],
     importModels: async () => ({ queued: 0, entries: [] }),
+    optimizeModel: async () => ({ ok: false, error: 'anteprima browser: avvia l’app Electron per pianificare l’ottimizzazione' }),
     runBenchmark: async () => { throw new Error('anteprima browser: benchmark non disponibile'); },
     listBenchmarks: async () => [],
     deleteBenchmark: async () => [],

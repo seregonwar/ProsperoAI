@@ -2,13 +2,15 @@
  * ProsperoAI — `pai` command-line tool (whitepaper §20 official tooling)
  *
  *   pai convert  <desc.txt> <out.pai> [--quant q8|q4] [--group N]
- *   pai inspect  <model.pai>
+ *   pai inspect  <model.pai> [--json]
  *   pai validate <model.pai>
+ *   pai optimize <model.pai> [--budget B] [--group N] [--json]
  *   pai benchmark <model.pai> [--steps N] [--prompt P]
  *
  * The host-side tooling behind ProsperoAI Desktop (§7): model import
  * (conversion + quantization + .pai packaging), container inspection,
- * full validation, and reproducible generation benchmarking (§31).
+ * mixed-precision planning (§15/§20), full validation, and
+ * reproducible generation benchmarking (§31).
  */
 
 #include <bench.h>
@@ -18,12 +20,14 @@
 
 #include <llama.h>
 
+#include <gateway/json.h>
 #include <ir/ir.h>
 #include <pai/api.h>
 #include <pai/dtype.h>
 #include <pai/error.h>
 #include <pai/pai.h>
 #include <pai/version.h>
+#include <pai_opt.h>
 #include <protocol/protocol.h>
 #include <scheduler/scheduler.h>
 
@@ -41,8 +45,12 @@ usage(void) {
       "usage:\n"
       "  pai convert  <desc.txt> <out.pai> [--quant q8|q4] [--group N]\n"
       "               import a model description + raw weights into a .pai\n"
-      "  pai inspect  <model.pai>            dump container contents\n"
+      "  pai inspect  <model.pai> [--json]  dump container contents\n"
       "  pai validate <model.pai>            full integrity + load check\n"
+      "  pai optimize <model.pai> [--budget B] [--group N] [--json]\n"
+      "               mixed-precision plan (§15): per-tensor f32/q8/q4\n"
+      "               sizes; --budget fits B bytes (K/M/G/T or NN% of\n"
+      "               current total), greedy largest-savings first\n"
       "  pai benchmark <model.pai> [--steps N] [--prompt P]\n"
       "               time end-to-end generation\n"
       "  pai serve    <model.pai>... [--remote [name@]host:port]...\n"
@@ -50,6 +58,8 @@ usage(void) {
       "  pai proto-ping <host> <port> [--count N]\n"
       "               Prospero Protocol connectivity check (§24/§25)\n");
 }
+
+static int cmd_inspect_json(const char *path); /* defined below       */
 
 /* ------------------------------------------------------------------ */
 /* convert                                                             */
@@ -149,6 +159,10 @@ cmd_inspect(int argc, char **argv) {
   }
   path = argv[2];
 
+  if (argc >= 4 && strcmp(argv[3], "--json") == 0) {
+    return cmd_inspect_json(path);
+  }
+
   st = pai_pai_read_file(path, &blob, &nbytes);
   if (st != PAI_OK) {
     fprintf(stderr, "inspect: %s\n", pai_status_str(st));
@@ -208,6 +222,382 @@ cmd_inspect(int argc, char **argv) {
     printf("tokenizer: %u tokens, %u merges\n", tok.num_tokens, tok.num_merges);
   }
   pai_tok_destroy(&tok);
+
+  free(blob);
+  return 0;
+}
+
+/* ------------------------------------------------------------------ */
+/* inspect --json (machine-readable report for Desktop §7 tooling)     */
+/* ------------------------------------------------------------------ */
+
+static void
+json_shape(pai_json_wb_t *wb, const uint64_t *shape, uint32_t rank) {
+  uint32_t i;
+  pai_json_wb_puts(wb, "[");
+  for (i = 0; i < rank; i++) {
+    if (i) {
+      pai_json_wb_puts(wb, ",");
+    }
+    pai_json_wb_putf(wb, "%llu", (unsigned long long)shape[i]);
+  }
+  pai_json_wb_puts(wb, "]");
+}
+
+static int
+cmd_inspect_json(const char *path) {
+  uint8_t *blob = NULL;
+  uint32_t nbytes = 0;
+  pai_pai_container_t c;
+  pai_pai_meta_t meta;
+  pai_pai_tensor_t tensors[PAI_PAI_MAX_TENSORS];
+  uint32_t num_tensors = 0;
+  pai_ir_program_t ir;
+  pai_tok_t tok;
+  const uint8_t *sec;
+  uint32_t sec_size;
+  pai_json_wb_t wb;
+  pai_status_t st;
+  uint32_t i;
+
+  st = pai_pai_read_file(path, &blob, &nbytes);
+  if (st != PAI_OK) {
+    fprintf(stderr, "inspect: %s\n", pai_status_str(st));
+    return 1;
+  }
+  st = pai_pai_open(blob, nbytes, &c);
+  if (st != PAI_OK) {
+    fprintf(stderr, "inspect: %s\n", pai_status_str(st));
+    free(blob);
+    return 1;
+  }
+
+  pai_json_wb_init(&wb);
+  pai_json_wb_puts(&wb, "{\"container\":{\"path\":");
+  pai_json_quote(&wb, path, (uint32_t)strlen(path));
+  pai_json_wb_putf(&wb, ",\"bytes\":%u,\"version\":%u,\"sections\":[",
+                   c.nbytes, c.version);
+  for (i = 0; i < c.num_sections; i++) {
+    if (i) {
+      pai_json_wb_puts(&wb, ",");
+    }
+    {
+      const char *sn = pai_pai_section_name(c.sections[i].type);
+      pai_json_wb_puts(&wb, "{\"type\":");
+      pai_json_quote(&wb, sn, (uint32_t)strlen(sn));
+      pai_json_wb_putf(&wb, ",\"offset\":%u,\"size\":%u}",
+                       c.sections[i].offset, c.sections[i].size);
+    }
+  }
+  pai_json_wb_puts(&wb, "]},\"meta\":");
+  sec = pai_pai_section(&c, PAI_PAI_SEC_META, &sec_size);
+  if (sec != NULL && pai_pai_meta_decode(sec, sec_size, &meta) == PAI_OK) {
+    pai_json_wb_puts(&wb, "{\"name\":");
+    pai_json_quote(&wb, meta.name, (uint32_t)strlen(meta.name));
+    pai_json_wb_putf(&wb,
+                     ",\"family\":%u,\"context_len\":%u,"
+                     "\"num_layers\":%u,\"kv_bytes_per_token\":%u,"
+                     "\"vocab_size\":%u}",
+                     meta.family, meta.context_len, meta.num_layers,
+                     meta.kv_bytes_per_token, meta.vocab_size);
+  } else {
+    pai_json_wb_puts(&wb, "null");
+  }
+  pai_json_wb_puts(&wb, ",\"tensors\":[");
+  sec = pai_pai_section(&c, PAI_PAI_SEC_MANIFEST, &sec_size);
+  if (sec != NULL &&
+      pai_pai_manifest_decode(sec, sec_size, tensors, PAI_PAI_MAX_TENSORS,
+                              &num_tensors) == PAI_OK) {
+    for (i = 0; i < num_tensors; i++) {
+      const pai_pai_tensor_t *t = &tensors[i];
+      const char *dn = pai_dtype_name(t->dtype);
+      if (i) {
+        pai_json_wb_puts(&wb, ",");
+      }
+      pai_json_wb_puts(&wb, "{\"name\":");
+      pai_json_quote(&wb, t->name, (uint32_t)strlen(t->name));
+      pai_json_wb_putf(&wb, ",\"value_id\":%u,\"dtype\":", t->value_id);
+      pai_json_quote(&wb, dn, (uint32_t)strlen(dn));
+      pai_json_wb_putf(&wb, ",\"rank\":%u,\"shape\":", t->rank);
+      json_shape(&wb, t->shape, t->rank);
+      pai_json_wb_putf(&wb, ",\"offset\":%llu,\"size_bytes\":%llu}",
+                       (unsigned long long)t->offset,
+                       (unsigned long long)t->size_bytes);
+    }
+  }
+  pai_json_wb_puts(&wb, "],\"ir\":");
+  sec = pai_pai_section(&c, PAI_PAI_SEC_IR, &sec_size);
+  if (sec != NULL && pai_ir_decode(sec, sec_size, &ir) == PAI_OK) {
+    pai_json_wb_putf(&wb, "{\"values\":%u,\"ops\":%u,\"inputs\":%u,"
+                          "\"outputs\":%u,\"ops\":[",
+                     ir.num_values, ir.num_ops, ir.num_inputs,
+                     ir.num_outputs);
+    for (i = 1; i <= ir.num_ops; i++) {
+      const pai_ir_op_t *o = &ir.ops[i];
+      const char *kn = pai_ir_op_kind_name(o->kind);
+      if (i > 1) {
+        pai_json_wb_puts(&wb, ",");
+      }
+      pai_json_wb_putf(&wb, "{\"id\":%u,\"kind\":", i);
+      pai_json_quote(&wb, kn, (uint32_t)strlen(kn));
+      pai_json_wb_putf(&wb, ",\"inputs\":%u,\"outputs\":%u}",
+                       o->num_inputs, o->num_outputs);
+    }
+    pai_json_wb_puts(&wb, "]}");
+  } else {
+    pai_json_wb_puts(&wb, "null");
+  }
+  pai_json_wb_puts(&wb, ",\"tokenizer\":");
+  pai_tok_init(&tok);
+  sec = pai_pai_section(&c, PAI_PAI_SEC_TOKENIZER, &sec_size);
+  if (sec != NULL && pai_tok_deserialize(&tok, sec, sec_size) == PAI_OK) {
+    pai_json_wb_putf(&wb, "{\"tokens\":%u,\"merges\":%u}",
+                     tok.num_tokens, tok.num_merges);
+  } else {
+    pai_json_wb_puts(&wb, "null");
+  }
+  pai_tok_destroy(&tok);
+  pai_json_wb_puts(&wb, "}\n");
+  fwrite(wb.buf, 1, wb.len, stdout);
+  pai_json_wb_destroy(&wb);
+  free(blob);
+  return 0;
+}
+
+/* ------------------------------------------------------------------ */
+/* optimize (whitepaper §15/§20 mixed-precision planner)               */
+/* ------------------------------------------------------------------ */
+
+static void
+fmt_bytes(char *out, size_t cap, uint64_t bytes) {
+  if (bytes >= (UINT64_C(1) << 40)) {
+    snprintf(out, cap, "%.2f TiB",
+             (double)bytes / (double)(UINT64_C(1) << 40));
+  } else if (bytes >= (UINT64_C(1) << 30)) {
+    snprintf(out, cap, "%.2f GiB",
+             (double)bytes / (double)(UINT64_C(1) << 30));
+  } else if (bytes >= (UINT64_C(1) << 20)) {
+    snprintf(out, cap, "%.2f MiB",
+             (double)bytes / (double)(UINT64_C(1) << 20));
+  } else if (bytes >= (UINT64_C(1) << 10)) {
+    snprintf(out, cap, "%.2f KiB",
+             (double)bytes / (double)(UINT64_C(1) << 10));
+  } else {
+    snprintf(out, cap, "%llu B", (unsigned long long)bytes);
+  }
+}
+
+/* Parse a --budget value: plain bytes, K/M/G/T suffix, or NN% of the
+ * current total. Returns 0 with *ok = 0 on malformed input. */
+static uint64_t
+parse_budget(const char *s, uint64_t cur_total, int *ok) {
+  char *end;
+  double v;
+  uint64_t mult;
+
+  *ok = 0;
+  if (s == NULL || s[0] == '\0') {
+    return 0;
+  }
+  v = strtod(s, &end);
+  if (end == s || v < 0) {
+    return 0;
+  }
+  if (*end == '%') {
+    if (end[1] != '\0') {
+      return 0;
+    }
+    *ok = 1;
+    return (uint64_t)(v * 0.01 * (double)cur_total);
+  }
+  /* Binary units, consistent with the KiB/MiB report (fmt_bytes). */
+  mult = 1;
+  if (*end == 'K' || *end == 'k') {
+    mult = UINT64_C(1) << 10;
+    end++;
+  } else if (*end == 'M' || *end == 'm') {
+    mult = UINT64_C(1) << 20;
+    end++;
+  } else if (*end == 'G' || *end == 'g') {
+    mult = UINT64_C(1) << 30;
+    end++;
+  } else if (*end == 'T' || *end == 't') {
+    mult = UINT64_C(1) << 40;
+    end++;
+  }
+  if (*end != '\0') {
+    return 0;
+  }
+  *ok = 1;
+  return (uint64_t)(v * (double)mult);
+}
+
+static int
+cmd_optimize(int argc, char **argv) {
+  const char *path;
+  const char *budget_str = NULL;
+  uint16_t group = 0;
+  int json = 0;
+  uint8_t *blob = NULL;
+  uint32_t nbytes = 0;
+  pai_pai_container_t c;
+  pai_ir_program_t ir;
+  int have_ir = 0;
+  pai_opt_plan_t plan;
+  pai_status_t st;
+  int i;
+
+  if (argc < 3) {
+    usage();
+    return 2;
+  }
+  path = argv[2];
+  for (i = 3; i < argc; i++) {
+    if (strcmp(argv[i], "--budget") == 0 && i + 1 < argc) {
+      budget_str = argv[++i];
+    } else if (strcmp(argv[i], "--group") == 0 && i + 1 < argc) {
+      group = (uint16_t)strtoul(argv[++i], NULL, 10);
+    } else if (strcmp(argv[i], "--json") == 0) {
+      json = 1;
+    } else {
+      usage();
+      return 2;
+    }
+  }
+
+  st = pai_pai_read_file(path, &blob, &nbytes);
+  if (st != PAI_OK) {
+    fprintf(stderr, "optimize: %s\n", pai_status_str(st));
+    return 1;
+  }
+  st = pai_pai_open(blob, nbytes, &c);
+  if (st != PAI_OK) {
+    fprintf(stderr, "optimize: %s\n", pai_status_str(st));
+    free(blob);
+    return 1;
+  }
+  {
+    const uint8_t *sec;
+    uint32_t sec_size;
+    sec = pai_pai_section(&c, PAI_PAI_SEC_IR, &sec_size);
+    if (sec != NULL && pai_ir_decode(sec, sec_size, &ir) == PAI_OK) {
+      have_ir = 1;
+    }
+  }
+
+  /* First pass without a budget to learn the current total (percent
+   * budgets need it), then re-plan with the real budget. */
+  st = pai_opt_plan(&c, have_ir ? &ir : NULL, 0, group, &plan);
+  if (st != PAI_OK) {
+    fprintf(stderr, "optimize: %s\n", pai_status_str(st));
+    free(blob);
+    return 1;
+  }
+  if (budget_str != NULL) {
+    int ok = 0;
+    uint64_t budget = parse_budget(budget_str, plan.cur_total, &ok);
+    if (!ok) {
+      fprintf(stderr, "optimize: invalid --budget '%s'\n", budget_str);
+      free(blob);
+      return 2;
+    }
+    st = pai_opt_plan(&c, have_ir ? &ir : NULL, budget, group, &plan);
+    if (st != PAI_OK) {
+      fprintf(stderr, "optimize: %s\n", pai_status_str(st));
+      free(blob);
+      return 1;
+    }
+  }
+
+  if (json) {
+    pai_json_wb_t wb;
+    uint32_t t;
+    pai_json_wb_init(&wb);
+    pai_json_wb_puts(&wb, "{\"model\":");
+    pai_json_quote(&wb, plan.name, (uint32_t)strlen(plan.name));
+    pai_json_wb_putf(&wb, ",\"current_bytes\":%llu,\"plan_bytes\":%llu",
+                     (unsigned long long)plan.cur_total,
+                     (unsigned long long)plan.plan_total);
+    if (plan.budget != 0) {
+      pai_json_wb_putf(&wb, ",\"budget\":%llu",
+                       (unsigned long long)plan.budget);
+    } else {
+      pai_json_wb_puts(&wb, ",\"budget\":null");
+    }
+    pai_json_wb_putf(&wb, ",\"min_bytes\":%llu,\"feasible\":%s",
+                     (unsigned long long)plan.min_total,
+                     plan.feasible ? "true" : "false");
+    pai_json_wb_puts(&wb, ",\"tensors\":[");
+    for (t = 0; t < plan.num_tensors; t++) {
+      const pai_opt_tensor_t *o = &plan.tensors[t];
+      if (t) {
+        pai_json_wb_puts(&wb, ",");
+      }
+      pai_json_wb_puts(&wb, "{\"name\":");
+      pai_json_quote(&wb, o->name, (uint32_t)strlen(o->name));
+      pai_json_wb_puts(&wb, ",\"role\":");
+      {
+        const char *rn = pai_opt_role_name(o->role);
+        pai_json_quote(&wb, rn, (uint32_t)strlen(rn));
+      }
+      pai_json_wb_putf(&wb, ",\"value_id\":%u,\"numel\":%llu",
+                       o->value_id, (unsigned long long)o->numel);
+      pai_json_wb_puts(&wb, ",\"current_scheme\":");
+      {
+        const char *sn = pai_opt_scheme_name(o->cur_scheme);
+        pai_json_quote(&wb, sn, (uint32_t)strlen(sn));
+      }
+      pai_json_wb_putf(&wb, ",\"current_bytes\":%llu",
+                       (unsigned long long)o->cur_bytes);
+      pai_json_wb_puts(&wb, ",\"plan_scheme\":");
+      {
+        const char *sn = pai_opt_scheme_name(o->chosen);
+        pai_json_quote(&wb, sn, (uint32_t)strlen(sn));
+      }
+      pai_json_wb_putf(&wb, ",\"plan_bytes\":%llu}",
+                       (unsigned long long)o->size_bytes[o->chosen]);
+    }
+    pai_json_wb_puts(&wb, "]}\n");
+    fwrite(wb.buf, 1, wb.len, stdout);
+    pai_json_wb_destroy(&wb);
+  } else {
+    char cur[48];
+    char pln[48];
+    double pct;
+    uint32_t t;
+    pct = plan.cur_total > 0
+              ? 100.0 * (1.0 - (double)plan.plan_total / (double)plan.cur_total)
+              : 0.0;
+    printf("optimize: %s\n", plan.name);
+    fmt_bytes(cur, sizeof(cur), plan.cur_total);
+    printf("  current %s\n", cur);
+    fmt_bytes(pln, sizeof(pln), plan.plan_total);
+    printf("  plan    %s  (-%.1f%%)\n", pln, pct);
+    if (plan.budget != 0) {
+      char bd[48];
+      char mn[48];
+      fmt_bytes(bd, sizeof(bd), plan.budget);
+      fmt_bytes(mn, sizeof(mn), plan.min_total);
+      printf("  budget  %s (%s; min %s)\n", bd,
+             plan.feasible ? "feasible" : "INFEASIBLE — best effort", mn);
+    }
+    printf("  %-30s %-10s %12s %12s %10s\n", "tensor", "role",
+           "current", "plan", "saving");
+    for (t = 0; t < plan.num_tensors; t++) {
+      const pai_opt_tensor_t *o = &plan.tensors[t];
+      char cb[32];
+      char pb[32];
+      char sv[32];
+      fmt_bytes(cb, sizeof(cb), o->cur_bytes);
+      fmt_bytes(pb, sizeof(pb), o->size_bytes[o->chosen]);
+      fmt_bytes(sv, sizeof(sv),
+                o->cur_bytes > o->size_bytes[o->chosen]
+                    ? o->cur_bytes - o->size_bytes[o->chosen]
+                    : 0);
+      printf("  %-30s %-10s %12s %12s %10s\n", o->name,
+             pai_opt_role_name(o->role), cb, pb, sv);
+    }
+  }
 
   free(blob);
   return 0;
@@ -613,11 +1003,24 @@ cmd_serve(int argc, char **argv) {
 
 int
 main(int argc, char **argv) {
+  int i;
+  int json_mode = 0;
+
   if (argc < 2) {
     usage();
     return 2;
   }
-  printf("pai (ProsperoAI %s, %s)\n", pai_version_string(), PAI_MILESTONE);
+  /* Machine-readable modes must keep stdout pure JSON: the version
+   * banner is skipped whenever --json is present. */
+  for (i = 2; i < argc; i++) {
+    if (strcmp(argv[i], "--json") == 0) {
+      json_mode = 1;
+    }
+  }
+  if (!json_mode) {
+    printf("pai (ProsperoAI %s, %s)\n", pai_version_string(),
+           PAI_MILESTONE);
+  }
   if (strcmp(argv[1], "convert") == 0) {
     return cmd_convert(argc, argv);
   }
@@ -629,6 +1032,9 @@ main(int argc, char **argv) {
   }
   if (strcmp(argv[1], "benchmark") == 0) {
     return cmd_benchmark(argc, argv);
+  }
+  if (strcmp(argv[1], "optimize") == 0) {
+    return cmd_optimize(argc, argv);
   }
   if (strcmp(argv[1], "serve") == 0) {
     return cmd_serve(argc, argv);

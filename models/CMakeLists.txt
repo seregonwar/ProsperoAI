@@ -9,6 +9,7 @@ pai_define_library(pai_models
   quantize.c
   container.c
   importer.c
+  pai_opt.c
 )
 
 target_include_directories(pai_models PUBLIC ${PROJECT_SOURCE_DIR})
