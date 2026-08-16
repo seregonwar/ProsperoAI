@@ -171,6 +171,11 @@ pai_gc_buffer_alloc(pai_gpu_device_t *device, pai_gpu_buffer_t *buffer,
     return st;
   }
 
+  /* GPU page-table repair is DANGEROUS without verified 9.40 offsets:
+   * a false-positive gvmspace entry leads to writes on random PTEs and
+   * kills the console UI. Disabled until the layout is diagnosed
+   * (read-only) on hardware. */
+#if 0
   /* Ensure the GPU page tables map this buffer (kernel patch). */
   st = pai_gvmspace_fix(buffer->gpu_addr, phys, buffer->size);
   if (st != PAI_OK) {
@@ -179,6 +184,7 @@ pai_gc_buffer_alloc(pai_gpu_device_t *device, pai_gpu_buffer_t *buffer,
                   "work\n",
                   (unsigned long long)buffer->gpu_addr);
   }
+#endif
 
   return PAI_OK;
 }
