@@ -393,7 +393,9 @@ kernel vtable.
 ## 12. Work Breakdown
 
 1. **T1 — dtype/quant metadata** (tensor/dtype.c): quant descriptor
-   struct, accumulator dtype field, tests.
+   struct, accumulator dtype field, tests. **DONE (2026-08-16)** —
+   `sdk/include/pai/quant.h`, `pai_dtype_accumulator`, tests green
+   (host + sanitized).
 2. **T2 — planner v1** (memory/planner.c): lifetime first-fit, GPU
    arena alignment, weight pinning, budget check, tests.
 3. **T3 — CPU reference ops** (cpu/reference): the §8.3 op set with

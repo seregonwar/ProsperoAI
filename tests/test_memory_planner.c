@@ -173,6 +173,47 @@ TEST_MAIN_BEGIN()
   CHECK_EQ_INT(pai_mem_planner_add(&p, UINT64_MAX, 16, 0, 1),
                PAI_ERR_INVALID_ARG); /* overflow */
   CHECK_EQ_INT(pai_mem_plan_build(NULL, NULL), PAI_ERR_INVALID_ARG);
+  CHECK_EQ_INT(pai_mem_planner_set_arena_align(&p, 0), PAI_ERR_INVALID_ARG);
+  CHECK_EQ_INT(pai_mem_planner_set_arena_align(&p, 3), PAI_ERR_INVALID_ARG);
+  CHECK_EQ_INT(pai_mem_plan_check_budget(NULL, 0), PAI_ERR_INVALID_ARG);
+}
+
+{
+  /* Pinned allocs never reuse: they extend the stable region tail. */
+  static pai_mem_planner_t p;
+  pai_mem_plan_t plan;
+
+  pai_mem_planner_init(&p);
+  CHECK_EQ_INT(pai_mem_planner_add(&p, 100, 16, 0, 2), PAI_OK);
+  CHECK_EQ_INT(pai_mem_planner_add(&p, 100, 16, 2, 4), PAI_OK);
+  CHECK_EQ_INT(pai_mem_planner_add_pinned(&p, 64, 16, 0, 4), PAI_OK);
+  CHECK_EQ_INT(pai_mem_plan_build(&p, &plan), PAI_OK);
+
+  CHECK_EQ_UINT(plan.pinned_allocs, 1);
+  CHECK_EQ_UINT(plan.pinned_bytes, 64);
+  CHECK(plan.offsets[0] != plan.offsets[2]);
+  CHECK(plan.offsets[1] != plan.offsets[2]);
+  CHECK_EQ_UINT(plan.offsets[2] % 16, 0);
+  /* the two unpinned share 100B; the pinned adds 64B after align-up */
+  CHECK_EQ_UINT(plan.region_bytes, 176);
+  pai_mem_plan_free(&plan);
+}
+
+{
+  /* Arena rounding: region_bytes is a multiple of the arena align. */
+  static pai_mem_planner_t p;
+  pai_mem_plan_t plan;
+
+  pai_mem_planner_init(&p);
+  CHECK_EQ_INT(pai_mem_planner_set_arena_align(&p, 4096), PAI_OK);
+  CHECK_EQ_INT(pai_mem_planner_add(&p, 100, 16, 0, 2), PAI_OK);
+  CHECK_EQ_INT(pai_mem_plan_build(&p, &plan), PAI_OK);
+
+  CHECK_EQ_UINT(plan.region_bytes, 4096);
+  CHECK_EQ_INT(pai_mem_plan_check_budget(&plan, 4096), PAI_OK);
+  CHECK_EQ_INT(pai_mem_plan_check_budget(&plan, 4095), PAI_ERR_NOMEM);
+  CHECK_EQ_INT(pai_mem_plan_check_budget(&plan, UINT64_MAX), PAI_OK);
+  pai_mem_plan_free(&plan);
 }
 
 TEST_MAIN_END()

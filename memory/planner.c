@@ -31,6 +31,10 @@ alloc_cmp(const void *a, const void *b) {
   const pai_mem_alloc_t *ea = &pa->alloc;
   const pai_mem_alloc_t *eb = &pb->alloc;
 
+  /* Pinned allocs sort last: they extend the stable region tail. */
+  if (ea->pinned != eb->pinned) {
+    return ea->pinned < eb->pinned ? -1 : 1;
+  }
   if (ea->start != eb->start) {
     return ea->start < eb->start ? -1 : 1;
   }
@@ -47,8 +51,17 @@ pai_mem_planner_init(pai_mem_planner_t *planner) {
 }
 
 pai_status_t
-pai_mem_planner_add(pai_mem_planner_t *planner, uint64_t size, uint64_t align,
-                    uint64_t start, uint64_t end) {
+pai_mem_planner_set_arena_align(pai_mem_planner_t *planner, uint64_t align) {
+  if (!planner || align == 0 || !pai_mem_is_pow2(align)) {
+    return PAI_ERR_INVALID_ARG;
+  }
+  planner->arena_align = align;
+  return PAI_OK;
+}
+
+static pai_status_t
+planner_add_common(pai_mem_planner_t *planner, uint64_t size, uint64_t align,
+                   uint64_t start, uint64_t end, uint32_t pinned) {
   pai_mem_alloc_t *slot;
 
   if (!planner || size == 0 || align == 0 || !pai_mem_is_pow2(align) ||
@@ -64,7 +77,20 @@ pai_mem_planner_add(pai_mem_planner_t *planner, uint64_t size, uint64_t align,
   slot->align = align;
   slot->start = start;
   slot->end = end;
+  slot->pinned = pinned;
   return PAI_OK;
+}
+
+pai_status_t
+pai_mem_planner_add(pai_mem_planner_t *planner, uint64_t size, uint64_t align,
+                    uint64_t start, uint64_t end) {
+  return planner_add_common(planner, size, align, start, end, 0);
+}
+
+pai_status_t
+pai_mem_planner_add_pinned(pai_mem_planner_t *planner, uint64_t size,
+                           uint64_t align, uint64_t start, uint64_t end) {
+  return planner_add_common(planner, size, align, start, end, 1);
 }
 
 /* Insert [off, off+size) into the sorted free list, merging neighbours. */
@@ -174,6 +200,25 @@ pai_mem_plan_build(const pai_mem_planner_t *planner, pai_mem_plan_t *plan) {
 
     naive += aligned_size;
 
+    if (a->pinned) {
+      /* Pinned allocs never reuse space: extend the region tail. */
+      plan->pinned_allocs++;
+      plan->pinned_bytes += a->size;
+      off = pai_mem_align_up(cursor, a->align);
+      if (off > UINT64_MAX - a->size) {
+        st = PAI_ERR_NOMEM; /* region overflow */
+        goto cleanup;
+      }
+      cursor = off + a->size;
+      plan->offsets[add_idx] = off;
+      max_end = max_end > off + a->size ? max_end : off + a->size;
+      live[live_count].end = a->end;
+      live[live_count].off = off;
+      live[live_count].size = a->size;
+      live_count++;
+      continue;
+    }
+
     /* Release allocations whose lifetime ended before this step. */
     for (uint32_t j = 0; j < live_count;) {
       if (live[j].end <= a->start) {
@@ -250,7 +295,11 @@ pai_mem_plan_build(const pai_mem_planner_t *planner, pai_mem_plan_t *plan) {
     }
   }
 
-  plan->region_bytes = cursor > max_end ? cursor : max_end;
+  {
+    uint64_t raw = cursor > max_end ? cursor : max_end;
+    uint64_t arena = planner->arena_align ? planner->arena_align : 1;
+    plan->region_bytes = pai_mem_align_up(raw, arena);
+  }
   plan->naive_bytes = naive;
   plan->reuse_bytes = naive >= plan->region_bytes ? naive - plan->region_bytes : 0;
   plan->peak_live = peak_live;
@@ -261,6 +310,14 @@ cleanup:
   free(pool);
   free(live);
   return st;
+}
+
+pai_status_t
+pai_mem_plan_check_budget(const pai_mem_plan_t *plan, uint64_t budget) {
+  if (!plan) {
+    return PAI_ERR_INVALID_ARG;
+  }
+  return plan->region_bytes <= budget ? PAI_OK : PAI_ERR_NOMEM;
 }
 
 void
