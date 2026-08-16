@@ -259,20 +259,24 @@ pai_gvmspace_probe(uint64_t pml4_phys, uint64_t va, intptr_t dmap_base) {
   uint64_t idx3 = (va >> 30) & 0x1FFu;
   uint64_t idx2 = (va >> 21) & 0x1FFu;
   intptr_t root = dmap_base + (intptr_t)pml4_phys;
-  uint64_t root_e[8];
+  uint64_t root_e[16];
 
-  for (int i = 0; i < 8; i++) {
+  for (int i = 0; i < 16; i++) {
     if (kernel_copyout(root + i * 8, &root_e[i], 8) != 0) {
       root_e[i] = 0;
     }
   }
   PAI_LOG_INFO_(PAI_SUB_GPU,
-                "gvm probe: root[0..7] = %llx %llx %llx %llx %llx %llx "
-                "%llx %llx\n",
+                "gvm probe: root[0..15] = %llx %llx %llx %llx %llx %llx "
+                "%llx %llx %llx %llx %llx %llx %llx %llx %llx %llx\n",
                 (unsigned long long)root_e[0], (unsigned long long)root_e[1],
                 (unsigned long long)root_e[2], (unsigned long long)root_e[3],
                 (unsigned long long)root_e[4], (unsigned long long)root_e[5],
-                (unsigned long long)root_e[6], (unsigned long long)root_e[7]);
+                (unsigned long long)root_e[6], (unsigned long long)root_e[7],
+                (unsigned long long)root_e[8], (unsigned long long)root_e[9],
+                (unsigned long long)root_e[10], (unsigned long long)root_e[11],
+                (unsigned long long)root_e[12], (unsigned long long)root_e[13],
+                (unsigned long long)root_e[14], (unsigned long long)root_e[15]);
 
   /* 3-level interpretation: root = PDPE table, 9.40 PTE format
    * (phys in the low 46 bits). */
