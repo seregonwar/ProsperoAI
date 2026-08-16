@@ -109,6 +109,9 @@ Three distinct read behaviors, all on the same buffers:
 - flat_load_dword: HANGS the wave AND the ring (G16/G17/G18, also
   without any s_waitcnt). The EOP label never fires. Do not use.
 - buffer_load_dword (MUBUF): completes (label fires) but returns 0
+  for ALL T# word3 candidates tried (G21 matrix: 0x31014FAC, 0x00080000,
+  0x00080001, 0x80000400, 0x20002000 - identical 4i+3 output). The
+  vector read path zero-fills; the T# format is NOT the discriminator.
   with T# word3 = 0x31014FAC (G20/G21: stored 4i+0+3). The T# format
   for 9.40 is still unresolved; the vector path itself does not hang.
 - s_load_dword (SMEM): WORKS. G22 PASS: s_load of C[0] returned the
