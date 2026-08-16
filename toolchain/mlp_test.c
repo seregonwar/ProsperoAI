@@ -20,7 +20,9 @@
 #include <pai/tensor.h>
 
 #include <graph/graph.h>
+#include <hal/host_kernels.h>
 #include <profiler/profile.h>
+#include <ref_ops.h>
 #include <scheduler/scheduler.h>
 
 #include <math.h>
@@ -176,8 +178,8 @@ main(void) {
   double y_expected[MLP_OUT];
   pai_status_t st;
 
-  printf("== T7 exit test: MLP %d->%d->%d (Seat B leg: harness + CPU-ref "
-         "+ profile) ==\n",
+  printf("== T7 exit test: MLP %d->%d->%d (B leg: harness + CPU-ref + "
+         "profile; A leg: host-ref mirrors) ==\n",
          MLP_IN, MLP_HID, MLP_OUT);
 
   fill_weights(w1, b1, w2, b2);
@@ -204,9 +206,112 @@ main(void) {
   memcpy(region + pai_graph_mem_plan_offset(&mp, V_W2), w2, sizeof(w2));
   memcpy(region + pai_graph_mem_plan_offset(&mp, V_B2), b2, sizeof(b2));
 
-  /* --- leg A hook: dispatch h/w through GPU serial (G48 matmul fix,
-   * G22) or host-ref mirrors here; compare against pai_ref_compare_f32
-   * with the CPU-ref y read below. --- */
+  /* --- leg A: MLP forward pass through the T4 host-ref mirrors
+   * (pai_host_kernel_t4_* = the GPU serial shaders G45/G47/G48
+   * mirrored on host; HW-validated on console 9021, T4C). The graph
+   * is kept untouched; the mirrors use the same packed-ab / header
+   * ABI as the shaders: matmul header [K, N, a, b], one group per
+   * cell; biasadd header [cols, pad, a, bias], one group per cell;
+   * relu packed (a,b) pairs. y_mir is compared against the double
+   * oracle with pai_ref_compare_f32 (tolerant). --- */
+  {
+    uint32_t ud[16] = {0};
+    uint32_t hdr[6] = {0};
+    float g1[MLP_HID], h_mir[MLP_HID];
+    float g2[MLP_OUT], y_mir[MLP_OUT];
+    float ab[2 * MLP_HID];
+    pai_status_t st_a;
+    uint64_t mism = 0;
+    int all_ok = 1;
+
+    /* G48 matmul: x[1x8] * W1[8x16] -> g1[1x16], one group per cell. */
+    hdr[0] = MLP_IN;
+    hdr[1] = MLP_HID;
+    hdr[2] = (uint32_t)(uintptr_t)x;
+    hdr[3] = (uint32_t)((uintptr_t)x >> 32);
+    hdr[4] = (uint32_t)(uintptr_t)w1;
+    hdr[5] = (uint32_t)((uintptr_t)w1 >> 32);
+    ud[2] = (uint32_t)(uintptr_t)hdr;
+    ud[3] = (uint32_t)((uintptr_t)hdr >> 32);
+    ud[4] = (uint32_t)(uintptr_t)g1;
+    ud[5] = (uint32_t)((uintptr_t)g1 >> 32);
+    st_a = pai_host_kernel_t4_matmul(NULL, ud, 1, MLP_HID);
+    REQUIRE(st_a == PAI_OK);
+
+    /* G47 biasadd: a1[j] = g1[j] + b1[j] (cols = MLP_HID). */
+    hdr[0] = MLP_HID;
+    hdr[1] = 0;
+    hdr[2] = (uint32_t)(uintptr_t)g1;
+    hdr[3] = (uint32_t)((uintptr_t)g1 >> 32);
+    hdr[4] = (uint32_t)(uintptr_t)b1;
+    hdr[5] = (uint32_t)((uintptr_t)b1 >> 32);
+    st_a = pai_host_kernel_t4_biasadd(NULL, ud, 1, MLP_HID);
+    REQUIRE(st_a == PAI_OK);
+
+    /* G45 relu: packed (a, b) pairs; a = g1 (biasadd wrote in place), b
+     * unused. */
+    for (int j = 0; j < MLP_HID; j++) {
+      ab[2 * j] = g1[j];
+      ab[2 * j + 1] = 0.0f;
+    }
+    ud[2] = (uint32_t)(uintptr_t)ab;
+    ud[3] = (uint32_t)((uintptr_t)ab >> 32);
+    ud[4] = (uint32_t)(uintptr_t)h_mir;
+    ud[5] = (uint32_t)((uintptr_t)h_mir >> 32);
+    st_a = pai_host_kernel_t4_relu(NULL, ud, 1, MLP_HID);
+    REQUIRE(st_a == PAI_OK);
+
+    /* G48 matmul: h[1x16] * W2[16x8] -> g2[1x8]. */
+    hdr[0] = MLP_HID;
+    hdr[1] = MLP_OUT;
+    hdr[2] = (uint32_t)(uintptr_t)h_mir;
+    hdr[3] = (uint32_t)((uintptr_t)h_mir >> 32);
+    hdr[4] = (uint32_t)(uintptr_t)w2;
+    hdr[5] = (uint32_t)((uintptr_t)w2 >> 32);
+    ud[2] = (uint32_t)(uintptr_t)hdr;
+    ud[3] = (uint32_t)((uintptr_t)hdr >> 32);
+    ud[4] = (uint32_t)(uintptr_t)g2;
+    ud[5] = (uint32_t)((uintptr_t)g2 >> 32);
+    st_a = pai_host_kernel_t4_matmul(NULL, ud, 1, MLP_OUT);
+    REQUIRE(st_a == PAI_OK);
+
+    /* G47 biasadd: y_mir[j] = g2[j] + b2[j] (cols = MLP_OUT). */
+    hdr[0] = MLP_OUT;
+    hdr[1] = 0;
+    hdr[2] = (uint32_t)(uintptr_t)g2;
+    hdr[3] = (uint32_t)((uintptr_t)g2 >> 32);
+    hdr[4] = (uint32_t)(uintptr_t)b2;
+    hdr[5] = (uint32_t)((uintptr_t)b2 >> 32);
+    ud[2] = (uint32_t)(uintptr_t)hdr;
+    ud[3] = (uint32_t)((uintptr_t)hdr >> 32);
+    ud[4] = (uint32_t)(uintptr_t)y_mir;
+    ud[5] = (uint32_t)((uintptr_t)y_mir >> 32);
+    st_a = pai_host_kernel_t4_biasadd(NULL, ud, 1, MLP_OUT);
+    REQUIRE(st_a == PAI_OK);
+
+    {
+      /* The oracle is double; snap it to float so both sides are the
+       * same arithmetic type (the mirror kernels are f32 end-to-end). */
+      float y_want[MLP_OUT];
+      for (int j = 0; j < MLP_OUT; j++) {
+        y_want[j] = (float)y_expected[j];
+      }
+      st_a = pai_ref_compare_f32(y_mir, y_want, MLP_OUT, 1e-4f, 1e-4f,
+                                 &mism);
+      if (st_a != PAI_OK) {
+        printf("  FAIL leg A: mirror mismatch at %llu (mir=%f want=%f)\n",
+               (unsigned long long)mism,
+               mism < MLP_OUT ? (double)y_mir[mism] : 0.0,
+               mism < MLP_OUT ? (double)y_want[mism] : 0.0);
+        all_ok = 0;
+      }
+    }
+    if (all_ok && st_a == PAI_OK) {
+      printf("  PASS host-ref mirrors (G45/G47/G48): y matches oracle\n");
+    } else {
+      g_failures++;
+    }
+  }
 
   /* 1) CPU-ref through the plan executor + kernel vtable gate. */
   st = pai_sched_execute_vtable(&graph, &mp, &plan, region, &stats);

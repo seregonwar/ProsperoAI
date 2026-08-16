@@ -31,6 +31,7 @@ if(PAI_PLATFORM STREQUAL "host")
     pai_scheduler
     pai_profiler
     pai_cpu_reference
+    pai_gpu_hal
     pai_tensor
     pai_diag
   )
