@@ -60,6 +60,10 @@ const uint32_t pai_gbatch2_code[] = {
 #include "gfx1013/pai_gbatch2.inc"
 };
 
+const uint32_t pai_gbatch3_code[] = {
+#include "gfx1013/pai_gbatch3.inc"
+};
+
 const uint32_t pai_v0model_code[] = {
 #include "gfx1013/pai_v0model.inc"
 };

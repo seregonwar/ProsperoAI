@@ -126,6 +126,13 @@
 #define PAI_G12_OFF 45u
 #define PAI_G12_WORDS 13u
 
+/* G13/G14: literal-source probes (pai_gbatch3.inc). */
+#define PAI_G13_OFF 0u
+#define PAI_G13_WORDS 14u
+#define PAI_G14_OFF 14u
+#define PAI_G14_WORDS 13u
+#define PAI_G14_VALUE 0xDEADBEEFu
+
 /* E31: loadstore with vaddr pairs 1 (v[2:3]) only. */
 #define PAI_LOADSTORE_GOLD_RSRC2 0x0000000Cu
 #define PAI_LOADSTORE_GOLD_CODE_WORDS 20u
@@ -174,6 +181,7 @@ extern const uint32_t pai_shotgun_code[PAI_SHOTGUN_CODE_WORDS];
 extern const uint32_t pai_vecscalar_code[PAI_VECSCALAR_CODE_WORDS];
 extern const uint32_t pai_gbatch_code[];
 extern const uint32_t pai_gbatch2_code[];
+extern const uint32_t pai_gbatch3_code[];
 extern const uint32_t pai_v0model_code[];
 extern const uint32_t pai_loadstore_gold_code[PAI_LOADSTORE_GOLD_CODE_WORDS];
 extern const uint32_t pai_loadstore_code[PAI_LOADSTORE_CODE_WORDS];

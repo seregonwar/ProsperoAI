@@ -1280,6 +1280,49 @@ m0_exp_v0model(m0_ctx_t *ctx) {
     }
   }
 
+  /* G13/G14: literal source probes + formal milestone fill. */
+  {
+    static const uint32_t g_offs[2] = {PAI_G13_OFF, PAI_G14_OFF};
+    static const uint32_t g_lens[2] = {PAI_G13_WORDS, PAI_G14_WORDS};
+    static const char *const g_names[2] = {"G13", "G14"};
+
+    for (uint32_t variant = 0; variant < 2; variant++) {
+      const char *name = g_names[variant];
+      if (!host) {
+        pai_gpu_reset(gpu);
+      }
+      memcpy(ctx->code.cpu_addr, &pai_gbatch3_code[g_offs[variant]],
+             g_lens[variant] * sizeof(uint32_t));
+      if (host) {
+        pai_gpu_host_register_shader(gpu, ctx->code.gpu_addr,
+                                     pai_host_kernel_g7, NULL);
+      }
+      ud[0] = 0;
+      ud[1] = 0;
+      ud[2] = (uint32_t)(ctx->c.gpu_addr & 0xFFFFFFFFu);
+      ud[3] = (uint32_t)(ctx->c.gpu_addr >> 32);
+      m0_build_dispatch_stream(ctx, stream, M0_PM4_CAP, PAI_ARITH4_RSRC2,
+                               PAI_EXP_THREADS_X, 1, ud, 4, &stream_len);
+      m0_run_gpu(ctx, stream, stream_len, c32, 128, 0xCC, name);
+      PAI_LOG_INFO_(PAI_SUB_GPU, "[M0-%s] c[0..15] = %08x %08x %08x %08x "
+                    "%08x %08x %08x %08x %08x %08x %08x %08x %08x %08x "
+                    "%08x %08x\n",
+                    name, c32[0], c32[1], c32[2], c32[3], c32[4], c32[5],
+                    c32[6], c32[7], c32[8], c32[9], c32[10], c32[11], c32[12],
+                    c32[13], c32[14], c32[15]);
+      if (variant == 1) {
+        int ok = 1;
+        for (uint32_t i = 0; i < PAI_EXP_THREADS_X; i++) {
+          if (c32[i] != PAI_G14_VALUE) {
+            ok = 0;
+            break;
+          }
+        }
+        m0_exp_report("G14", ok);
+      }
+    }
+  }
+
   /* G9-G12: store data source probes (raw dumps, no formula check). */
   {
     static const uint32_t g_offs[4] = {PAI_G9_OFF, PAI_G10_OFF, PAI_G11_OFF,
