@@ -1789,6 +1789,9 @@ m0_exp_v0model(m0_ctx_t *ctx) {
     pai_gpu_reset(gpu);
   }
   {
+    static const uint32_t tb_candidates[] = {PAI_G20_TBUF_WORD3,
+                                             0x00080000u, 0x00080001u,
+                                             0x80000400u, 0x20002000u};
     uint32_t *c21 = (uint32_t *)ctx->c.cpu_addr;
     memcpy(ctx->code.cpu_addr, pai_mubufload_g15_code,
            PAI_G21_CODE_WORDS * sizeof(uint32_t));
@@ -1796,20 +1799,22 @@ m0_exp_v0model(m0_ctx_t *ctx) {
       pai_gpu_host_register_shader(gpu, ctx->code.gpu_addr,
                                    pai_host_kernel_g8, NULL);
     }
-    ud[0] = (uint32_t)(ctx->c.gpu_addr & 0xFFFFFFFFu);
-    ud[1] = (uint32_t)(ctx->c.gpu_addr >> 32);
-    ud[2] = 4096u;
-    ud[3] = PAI_G20_TBUF_WORD3;
-    ud[4] = (uint32_t)(ctx->c.gpu_addr & 0xFFFFFFFFu);
-    ud[5] = (uint32_t)(ctx->c.gpu_addr >> 32);
-    m0_build_dispatch_stream(ctx, stream, M0_PM4_CAP, PAI_G21_RSRC2,
-                             PAI_EXP_THREADS_X, 1, ud, 6, &stream_len);
-    m0_run_gpu(ctx, stream, stream_len, c21, 128, 0xA5, "G21");
-    PAI_LOG_INFO_(PAI_SUB_GPU,
-                  "[M0-G21] c[0..7] = %08x %08x %08x %08x %08x %08x "
-                  "%08x %08x\n",
-                  c21[0], c21[1], c21[2], c21[3], c21[4], c21[5], c21[6],
-                  c21[7]);
+    for (uint32_t variant = 0;
+         variant < sizeof(tb_candidates) / sizeof(tb_candidates[0]);
+         variant++) {
+      ud[0] = (uint32_t)(ctx->c.gpu_addr & 0xFFFFFFFFu);
+      ud[1] = (uint32_t)(ctx->c.gpu_addr >> 32);
+      ud[2] = 4096u;
+      ud[3] = tb_candidates[variant];
+      ud[4] = (uint32_t)(ctx->c.gpu_addr & 0xFFFFFFFFu);
+      ud[5] = (uint32_t)(ctx->c.gpu_addr >> 32);
+      m0_build_dispatch_stream(ctx, stream, M0_PM4_CAP, PAI_G21_RSRC2,
+                               PAI_EXP_THREADS_X, 1, ud, 6, &stream_len);
+      m0_run_gpu(ctx, stream, stream_len, c21, 128, 0xA5, "G21");
+      PAI_LOG_INFO_(PAI_SUB_GPU,
+                    "[M0-G21] T# 0x%08x: c[0..3] = %08x %08x %08x %08x\n",
+                    tb_candidates[variant], c21[0], c21[1], c21[2], c21[3]);
+    }
     {
       uint32_t want0 = PAI_G20_VALUE + 3u;
       uint32_t want1 = PAI_G20_VALUE + 4u + 3u;
