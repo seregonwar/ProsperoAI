@@ -142,14 +142,59 @@ pai_gvm_walk(pai_gvmspace_ctx_t *g, uint64_t va, uint64_t *out_pde_addr,
   return PAI_OK;
 }
 
+/* Diagnostic: dump the process vmspace pointer landscape so the real
+ * 9.40 GPU-pmap layout can be derived from hardware instead of from
+ * the 11.20 spoofer assumptions. */
+static void
+pai_gvm_dump_layout(void) {
+  intptr_t proc = kernel_get_proc(getpid());
+  intptr_t vmspace = kernel_getlong(proc + KERNEL_OFFSET_PROC_P_VMSPACE);
+  uint64_t v;
+
+  PAI_LOG_INFO_(PAI_SUB_GPU, "gvm diag: proc=0x%llx vmspace=0x%llx\n",
+                (unsigned long long)proc, (unsigned long long)vmspace);
+
+  for (intptr_t off = 0x100; off <= 0x600; off += 8) {
+    uint64_t val = kernel_getlong(vmspace + off);
+    if (val >= (uint64_t)(vmspace - 0x200000) &&
+        val < (uint64_t)(vmspace + 0x200000)) {
+      PAI_LOG_INFO_(PAI_SUB_GPU, "gvm diag: vmspace+0x%lx -> 0x%llx (delta "
+                    "0x%llx)\n",
+                    (unsigned long)off, (unsigned long long)val,
+                    (unsigned long long)(val - (uint64_t)vmspace));
+    }
+  }
+
+  /* Dump the first 0x40 bytes of each pmap-like pointer. */
+  for (intptr_t off = 0x1C8; off <= 0x1F0; off += 8) {
+    intptr_t pmap = (intptr_t)kernel_getlong(vmspace + off);
+    if (!pmap || pmap == -1) {
+      continue;
+    }
+    PAI_LOG_INFO_(PAI_SUB_GPU, "gvm diag: pmap@+0x%lx = 0x%llx: ", 
+                  (unsigned long)off, (unsigned long long)pmap);
+    for (int i = 0; i < 8; i++) {
+      v = kernel_getlong(pmap + i * 8);
+      PAI_LOG_INFO_(PAI_SUB_GPU, "%llx ", (unsigned long long)v);
+    }
+    PAI_LOG_INFO_(PAI_SUB_GPU, "\n");
+  }
+}
+
 pai_status_t
 pai_gvmspace_fix(uint64_t gpu_va, uint64_t phys, uint64_t size) {
   static pai_gvmspace_ctx_t g;
+  static int dumped = 0;
   uint64_t probe_va;
   uint64_t pde_addr = 0;
   uint64_t pde = 0;
   uint64_t new_pde;
   pai_status_t st;
+
+  if (!dumped) {
+    dumped = 1;
+    pai_gvm_dump_layout();
+  }
 
   if (!g.found) {
     intptr_t data_base = (intptr_t)KERNEL_ADDRESS_DATA_BASE;
