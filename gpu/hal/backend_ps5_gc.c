@@ -38,6 +38,8 @@
 #define AGC_GC_IOCTL_QUEUE_CREATE 0xC0408121u /* nr=0x21, RW, 64 bytes */
 #define AGC_GC_IOCTL_MAKESYSMAP 0xC0088109u /* nr=0x09, RW, 8 bytes:
                                              * in: CPU VA, out: GPU VA */
+#define AGC_GC_IOCTL_SETUP_ASYNC 0x80048126u /* nr=0x26, R, 4 bytes:
+                                              * arg 1 = init async gfx */
 
 /* GPU register space (SPRX-confirmed): mapped on the gc fd when the
  * context query reports an uninitialized context (caps lower 16 == 0). */
@@ -401,7 +403,15 @@ pai_gc_init(pai_gpu_device_t *device) {
   /* Read-only layout diagnostic for the GPU page-table work. */
   (void)pai_gvmspace_diag();
 
-  /* Probe the LIVE GPU pml4 (from the diag) against the acqrb VA — the
+  /* SPRX-confirmed async-graphics setup: value 1 initializes the
+   * async compute path (4-byte READ ioctl, no address payload). */
+  {
+    uint32_t async_arg = 1u;
+    int arc = ioctl(st->fd, AGC_GC_IOCTL_SETUP_ASYNC, &async_arg);
+    PAI_LOG_INFO_(PAI_SUB_GPU, "gc setup_async: rc=%d\n", arc);
+  }
+
+  /* Probe the LIVE GPU pml4 (from the diag) against the acqrb VA - the
    * kernel's own GPU mapping must be present there. Read-only. */
   {
     uint64_t pml4_phys = 0;
