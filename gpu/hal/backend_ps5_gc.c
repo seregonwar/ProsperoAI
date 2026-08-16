@@ -16,6 +16,7 @@
  */
 
 #include <hal/hal.h>
+#include <ps5/gvmspace.h>
 #include <pm4/pm4.h>
 
 #include <pai/log.h>
@@ -114,7 +115,8 @@ pai_gc_now_ns(void) {
 }
 
 static pai_status_t
-pai_gc_alloc_dmem(pai_gpu_buffer_t *buffer, uint64_t size, const char *name) {
+pai_gc_alloc_dmem(pai_gpu_buffer_t *buffer, uint64_t size, const char *name,
+                  uint64_t *out_phys) {
   off_t phys = 0;
   void *va = NULL;
   int r;
@@ -147,35 +149,38 @@ pai_gc_alloc_dmem(pai_gpu_buffer_t *buffer, uint64_t size, const char *name) {
   buffer->gpu_addr = (uint64_t)(uintptr_t)va;
   buffer->cpu_addr = va;
   buffer->flags = PAI_GPU_BUF_CPU_VISIBLE | PAI_GPU_BUF_CPU_COHERENT;
+  if (out_phys) {
+    *out_phys = (uint64_t)phys;
+  }
   return PAI_OK;
 }
 
 static pai_status_t
 pai_gc_buffer_alloc(pai_gpu_device_t *device, pai_gpu_buffer_t *buffer,
                     uint64_t size, uint32_t flags) {
-  void *va = NULL;
-  int r;
+  pai_status_t st;
+  uint64_t phys = 0;
 
   (void)device;
   (void)flags;
 
-  /* Prefer flexible memory (SPRX uses type 0x33 for all GPU regions):
-   * the kernel maps it CPU+GPU unified with a full GPU page table. */
-  r = sceKernelMapNamedSystemFlexibleMemory(&va, (size_t)size, 0x33, 0,
-                                            "pai-gpu");
-  if (r == 0 && va != NULL) {
-    buffer->size = size;
-    buffer->gpu_addr = (uint64_t)(uintptr_t)va;
-    buffer->cpu_addr = va;
-    buffer->flags = PAI_GPU_BUF_CPU_VISIBLE | PAI_GPU_BUF_CPU_COHERENT;
-    return PAI_OK;
+  /* Direct memory gives us the physical address, which the GPU
+   * page-table repair needs. */
+  st = pai_gc_alloc_dmem(buffer, size, "pai-gpu", &phys);
+  if (st != PAI_OK) {
+    return st;
   }
 
-  PAI_LOG_DEBUG_(PAI_SUB_GPU,
-                 "flexible memory alloc failed (0x%08x); falling back to "
-                 "dmem\n",
-                 r);
-  return pai_gc_alloc_dmem(buffer, size, "pai-gpu");
+  /* Ensure the GPU page tables map this buffer (kernel patch). */
+  st = pai_gvmspace_fix(buffer->gpu_addr, phys, buffer->size);
+  if (st != PAI_OK) {
+    PAI_LOG_WARN_(PAI_SUB_GPU,
+                  "gvmspace fix failed for 0x%llx; shader loads may not "
+                  "work\n",
+                  (unsigned long long)buffer->gpu_addr);
+  }
+
+  return PAI_OK;
 }
 
 static void
@@ -383,14 +388,14 @@ pai_gc_init(pai_gpu_device_t *device) {
 
   st->cb_buf = (pai_gpu_buffer_t *)calloc(1, sizeof(*st->cb_buf));
   if (!st->cb_buf ||
-      pai_gc_alloc_dmem(st->cb_buf, PAI_GC_CB_BUF_SIZE, "pai-cb") != PAI_OK) {
+      pai_gc_alloc_dmem(st->cb_buf, PAI_GC_CB_BUF_SIZE, "pai-cb", NULL) != PAI_OK) {
     return PAI_ERR_NOMEM;
   }
 
   /* 16-dword NOP trailer: forces the ring to run the final descriptor. */
   trailer = (pai_gpu_buffer_t *)calloc(1, sizeof(*trailer));
   if (!trailer ||
-      pai_gc_alloc_dmem(trailer, PAI_GPU_ALLOC_ALIGN, "pai-trailer") !=
+      pai_gc_alloc_dmem(trailer, PAI_GPU_ALLOC_ALIGN, "pai-trailer", NULL) !=
           PAI_OK) {
     return PAI_ERR_NOMEM;
   }

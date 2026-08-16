@@ -13,4 +13,5 @@ pai_define_library(pai_gpu_hal
 
 target_include_directories(pai_gpu_hal PUBLIC
   ${PROJECT_SOURCE_DIR}/gpu
+  ${PROJECT_SOURCE_DIR}/platform
 )
