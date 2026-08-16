@@ -353,13 +353,10 @@ pai_gc_init(pai_gpu_device_t *device) {
     }
   }
 
-  /* DANGEROUS without full ring init: the kernel wires our ring to the
-   * GPU compute engine, which executes garbage from the uninitialized
-   * ring and corrupts the display pipeline. Disabled until the DingDong
-   * ring bring-up is implemented properly. */
-#if 0
   /* Driver-style context bring-up: ACQRB + EOP FIFO flexible-memory
-   * regions and the authenticated special queue (SPRX magic tokens). */
+   * regions (allocation only — SAFE, no ring). The queue creation is
+   * disabled: the kernel wires the ring to the GPU compute engine,
+   * which executes garbage and kills the UI. */
   if (sceKernelMapNamedSystemFlexibleMemory(&st->acqrb, 0x1E0000, 0x33, 0,
                                             "SceGnmACQRB") != 0 ||
       sceKernelMapNamedSystemFlexibleMemory(&st->eop_fifo, 0x3C000, 0x33, 0,
@@ -368,47 +365,25 @@ pai_gc_init(pai_gpu_device_t *device) {
                   "gc internal memory allocation failed; shader loads may "
                   "not work\n");
   } else {
-    pai_gc_queue_create_arg_t qarg;
-    uint64_t acqrb_va = (uint64_t)(uintptr_t)st->acqrb;
-    uint64_t eop_va = (uint64_t)(uintptr_t)st->eop_fifo;
-    int qret;
-
-    memset(&qarg, 0, sizeof(qarg));
-    qarg.magic1 = 0xaf1e80b7u;
-    qarg.magic2 = 0x8b4cdd90u;
-    qarg.magic3 = 0x99f68d6cu;
-    qarg.token = 0xe5fcc174u;
-    qarg.pipe_id = 0xcu;
-    qarg.caller_arg = acqrb_va + 0x1CC000; /* queue metadata */
-    qarg.mmio_base = (uint64_t)(uintptr_t)st->mmio;
-    qarg.ring_addr = eop_va + 0x39000;
-    qarg.ring_size = 0x1000;
-
-    qret = ioctl(st->fd, AGC_GC_IOCTL_QUEUE_CREATE, &qarg);
-    if (qret != 0) {
-      PAI_LOG_WARN_(PAI_SUB_GPU,
-                    "gc queue create failed (errno %d); shader loads may "
-                    "not work\n",
-                    errno);
-    } else {
-      PAI_LOG_INFO_(PAI_SUB_GPU,
-                    "gc special queue created (acqrb=0x%llx eop=0x%llx)\n",
-                    (unsigned long long)acqrb_va, (unsigned long long)eop_va);
-    }
+    PAI_LOG_INFO_(PAI_SUB_GPU,
+                  "gc internal memory ready (acqrb=0x%llx eop=0x%llx)\n",
+                  (unsigned long long)(uintptr_t)st->acqrb,
+                  (unsigned long long)(uintptr_t)st->eop_fifo);
   }
-
-#endif
 
   /* Read-only layout diagnostic for the GPU page-table work. */
   (void)pai_gvmspace_diag();
 
-  /* Probe the LIVE GPU pml4 (from the diag) against a typical GPU VA.
-   * Read-only. */
+  /* Probe the LIVE GPU pml4 (from the diag) against the acqrb VA — the
+   * kernel's own GPU mapping must be present there. Read-only. */
   {
     uint64_t pml4_phys = 0;
     intptr_t dmap = 0;
+    uint64_t probe_va = st->acqrb
+                            ? (uint64_t)(uintptr_t)st->acqrb
+                            : 0x200400000ULL;
     if (pai_gvmspace_layout(&pml4_phys, &dmap) == 0) {
-      (void)pai_gvmspace_probe(pml4_phys, 0x200400000ULL, dmap);
+      (void)pai_gvmspace_probe(pml4_phys, probe_va, dmap);
     } else {
       PAI_LOG_WARN_(PAI_SUB_GPU, "gvm probe: no layout available\n");
     }
