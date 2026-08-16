@@ -30,3 +30,4 @@ __pycache__/
 *w_out.bin
 /tiny-*.bin
 /tiny-*.wgt
+*.zip
