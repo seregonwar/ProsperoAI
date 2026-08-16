@@ -251,9 +251,84 @@ pai_gvmspace_diag(void) {
   return PAI_OK;
 }
 
-/* Public accessors for the probe. */
-int pai_gvmspace_layout(uint64_t *out_pml4_phys, intptr_t *out_dmap) {
+/*
+ * Read-only: resolve the CPU physical address of a kernel-mapped VA
+ * by walking the process CPU page tables.
+ */
+int
+pai_cpu_phys_of_va(uint64_t va, uint64_t *out_phys) {
+  intptr_t proc = kernel_get_proc(getpid());
+  intptr_t vmspace;
+  uint64_t cr3 = 0;
+  uint64_t e4, e3, e2, e1;
+
+  if (!proc) {
+    return -1;
+  }
+  vmspace = kernel_getlong(proc + KERNEL_OFFSET_PROC_P_VMSPACE);
+  if (!vmspace || vmspace == -1) {
+    return -1;
+  }
+
+  /* The inline vm_pmap starts with pm_cr3: a physical address < 4 GB.
+   * Scan the vmspace for a qword that looks like a CR3. */
+  for (intptr_t off = 0; off < 0x800; off += 8) {
+    uint64_t v = kernel_getlong(vmspace + off);
+    if (v < 0x400000000ULL && (v & 0xFFFULL) == 0) {
+      uint64_t next = kernel_getlong(vmspace + off + 8);
+      /* pm_cr3 followed by a kernel VA or another phys: plausible. */
+      if ((next == 0) || (next < 0x400000000ULL) ||
+          (next > 0xFFFF800000000000ULL)) {
+        cr3 = v;
+        break;
+      }
+    }
+  }
+  if (!cr3) {
+    return -1;
+  }
+
   if (!g_diag_have_layout) {
+    return -1;
+  }
+
+  if (kernel_copyout(g_diag_dmap + (intptr_t)(cr3 +
+                                               ((va >> 39) & 0x1FF) * 8),
+                     &e4, 8) != 0 ||
+      !(e4 & 1)) {
+    return -1;
+  }
+  if (kernel_copyout(g_diag_dmap + (intptr_t)((e4 & 0x000FFFFFFFFFF000ULL) +
+                                               ((va >> 30) & 0x1FF) * 8),
+                     &e3, 8) != 0 ||
+      !(e3 & 1)) {
+    return -1;
+  }
+  if (kernel_copyout(g_diag_dmap + (intptr_t)((e3 & 0x000FFFFFFFFFF000ULL) +
+                                               ((va >> 21) & 0x1FF) * 8),
+                     &e2, 8) != 0 ||
+      !(e2 & 1)) {
+    return -1;
+  }
+
+  if (e2 & 0x80) {
+    /* 2 MB leaf. */
+    *out_phys = (e2 & 0x000FFFFFE00000ULL) | (va & 0x1FFFFFULL);
+  } else {
+    if (kernel_copyout(g_diag_dmap +
+                           (intptr_t)((e2 & 0x000FFFFFFFFFF000ULL) +
+                                      ((va >> 12) & 0x1FF) * 8),
+                       &e1, 8) != 0 ||
+        !(e1 & 1)) {
+      return -1;
+    }
+    *out_phys = (e1 & 0x000FFFFFFFFFF000ULL) | (va & 0xFFFULL);
+  }
+  return 0;
+}
+
+/* Public accessors for the probe. */
+int pai_gvmspace_layout(uint64_t *out_pml4_phys, intptr_t *out_dmap) {  if (!g_diag_have_layout) {
     return -1;
   }
   if (out_pml4_phys) {

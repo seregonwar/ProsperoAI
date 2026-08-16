@@ -35,6 +35,13 @@ pai_status_t pai_gvmspace_probe(uint64_t pml4_phys, uint64_t va,
                                 intptr_t dmap_base);
 
 /*
+ * Read-only: resolve the CPU physical address of a kernel-mapped VA by
+ * walking the process CPU page tables (CR3 discovered from the inline
+ * vm_pmap). Returns -1 on failure.
+ */
+int pai_cpu_phys_of_va(uint64_t va, uint64_t *out_phys);
+
+/*
  * Read-only: dump the first 4 words of a raw CPU physical address
  * through the direct map. Used to locate where GPU writes actually
  * land (compare with the syscall phys values).

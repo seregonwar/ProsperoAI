@@ -2679,15 +2679,21 @@ main(void) {
     } else {
       PAI_LOG_INFO_(PAI_SUB_CORE, "staging2: c PDE page unreadable\n");
     }
-    /* Where do the GPU stores physically land? Guess: the GPU-BUS
-     * aperture base is 0x2000000000 (syscall phys - base = cpu phys). */
-    if (pai_gvmspace_dump_phys(ctx.c.phys - 0x2000000000ULL, w) == 0) {
-      PAI_LOG_INFO_(PAI_SUB_CORE,
-                    "staging2: c phys(0x%llx) page = %08x %08x %08x %08x\n",
-                    (unsigned long long)(ctx.c.phys - 0x2000000000ULL),
-                    w[0], w[1], w[2], w[3]);
-    } else {
-      PAI_LOG_INFO_(PAI_SUB_CORE, "staging2: c phys page unreadable\n");
+    /* Where do the GPU stores physically land? Resolve the CPU phys
+     * of the c VA via the CPU page tables and dump it. */
+    {
+      uint64_t cphys = 0;
+      if (pai_cpu_phys_of_va(ctx.c.gpu_addr, &cphys) == 0) {
+        PAI_LOG_INFO_(PAI_SUB_CORE, "staging2: c cpu phys = 0x%llx\n",
+                      (unsigned long long)cphys);
+        if (pai_gvmspace_dump_phys(cphys, w) == 0) {
+          PAI_LOG_INFO_(PAI_SUB_CORE,
+                        "staging2: c phys page = %08x %08x %08x %08x\n",
+                        w[0], w[1], w[2], w[3]);
+        }
+      } else {
+        PAI_LOG_INFO_(PAI_SUB_CORE, "staging2: c cpu phys unresolved\n");
+      }
     }
   }
 
