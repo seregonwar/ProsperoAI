@@ -279,16 +279,35 @@ pai_gvmspace_probe(uint64_t pml4_phys, uint64_t va, intptr_t dmap_base) {
   e3 = root_e[idx3];
   if (e3 & PAI_GPU_VALID) {
     uint64_t pdpe_phys = e3 & PAI_GPU_PHYS_MASK_940 & ~0xFFFULL;
-    if (kernel_copyout(dmap_base + (intptr_t)(pdpe_phys + idx2 * 8), &e2,
-                       8) == 0) {
-      PAI_LOG_INFO_(PAI_SUB_GPU,
-                    "gvm probe (3-level): pdpe=0x%llx (phys 0x%llx) "
-                    "va=0x%llx pde=0x%llx (%s)\n",
-                    (unsigned long long)e3, (unsigned long long)pdpe_phys,
-                    (unsigned long long)va, (unsigned long long)e2,
-                    (e2 & PAI_GPU_VALID) ? "valid" : "INVALID");
-      return PAI_OK;
+    uint64_t pde_page[16];
+
+    PAI_LOG_INFO_(PAI_SUB_GPU, "gvm probe: pdpe=0x%llx phys=0x%llx\n",
+                  (unsigned long long)e3, (unsigned long long)pdpe_phys);
+    for (int i = 0; i < 16; i++) {
+      if (kernel_copyout(dmap_base + (intptr_t)(pdpe_phys + i * 8),
+                         &pde_page[i], 8) != 0) {
+        pde_page[i] = 0;
+      }
     }
+    PAI_LOG_INFO_(PAI_SUB_GPU,
+                  "gvm probe: pde[0..15] = %llx %llx %llx %llx %llx %llx "
+                  "%llx %llx %llx %llx %llx %llx %llx %llx %llx %llx\n",
+                  (unsigned long long)pde_page[0], (unsigned long long)pde_page[1],
+                  (unsigned long long)pde_page[2], (unsigned long long)pde_page[3],
+                  (unsigned long long)pde_page[4], (unsigned long long)pde_page[5],
+                  (unsigned long long)pde_page[6], (unsigned long long)pde_page[7],
+                  (unsigned long long)pde_page[8], (unsigned long long)pde_page[9],
+                  (unsigned long long)pde_page[10], (unsigned long long)pde_page[11],
+                  (unsigned long long)pde_page[12], (unsigned long long)pde_page[13],
+                  (unsigned long long)pde_page[14], (unsigned long long)pde_page[15]);
+    e2 = pde_page[idx2];
+    PAI_LOG_INFO_(PAI_SUB_GPU,
+                  "gvm probe (3-level): va=0x%llx idx2=%llu pde=0x%llx "
+                  "(%s)\n",
+                  (unsigned long long)va, (unsigned long long)idx2,
+                  (unsigned long long)e2,
+                  (e2 & PAI_GPU_VALID) ? "valid" : "INVALID");
+    return PAI_OK;
   }
 
   /* 4-level interpretation: root = pml4 table. */
