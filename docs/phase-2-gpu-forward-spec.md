@@ -61,7 +61,7 @@ does the repack once per layer (weights are static across tokens).
 | 3 | Q = E·Wq | G40 | `SEQ` | `D_MODEL` | x = RoPE'd E row i |
 | 4 | K = E·Wk | G40 | `SEQ` | `D_MODEL` | |
 | 5 | V = E·Wv | G40 | `SEQ` | `D_MODEL` | |
-| 6 | attention (causal GQA) | **host** | — | — | no validated kernel (softmax serial plan below) |
+| 6 | attention (causal GQA) | §6 serial plan | `SEQ*H*(~8)` | see §6 | |
 | 7 | O = Attn·Wo | G40 | `SEQ` | `D_MODEL` | |
 | 8 | residual + (host add or G42) | G42 | 1 | `SEQ*D_MODEL` | packed (a,b) |
 | 9 | RMSNorm | G71-based | `SEQ` | see §4 | |
@@ -101,13 +101,41 @@ Float-only margin already contracted in `nonlinear_contract` (§1).
    G40 rows). Contract: `exp2f(x·log2e) == expf(x)` max rel
    1.18e-06, softmax row sum 1.000000041 in 2^x form.
 
-## 6. Softmax (attention rows) — serial plan (future)
+## 6. Causal GQA attention — full serial kernel plan (all primitives
+HW-validated: G40/G42/G71/G72/G75/G76)
 
-No validated kernel yet; the serial recipe from `nonlinear_contract`
-§3/§5: max pass → `2^((s−m)·log2e)` via G72 → float sum → reciprocal
-+ mul. Cost per row `O(seq)` dispatches. **For the first GPU forward,
-keep attention on host** (sez.12 does exactly this); the softmax GPU
-leg is a follow-up once `v_rcp`/division is probed.
+For each (row p, query head hh), KV head kh = (hh·HK)/H, hd = D_MODEL/H:
+
+1. **scores** via G40: `groups_x = p+1`, `x = q[row p, head hh]` (hd
+   floats), W rows = the K-cache rows `k[t, kh]` for t = 0..p (each
+   hd floats, repacked into the header from the position-major cache
+   — host copies O(p·hd) per call, fine at this scale).
+   `y[t] = Σ_d q[d]·K[t][d]` = raw score_t.
+2. **scale + prescale** (2 elementwise passes, G42-family):
+   `u[t] = (score[t]·inv − m)·log2e` with `inv = 1/√hd` and `m` the
+   row max (serial reduce using the v_max building block, G76).
+   NOTE: softmax is NOT scale-invariant — the `·inv` must land before
+   the exp, hence the two-pass form; `×log2e` is the G72 prescale.
+3. **exp** via G72: `e[t] = 2^u[t]` (one dispatch, groups = p+1).
+4. **sum** (serial reduce, float accumulation — margin already
+   contracted in nonlinear_contract sez.6).
+5. **reciprocal** via G75: `r = rcp(sum)` (groups = 1).
+6. **normalize**: `soft[t] = e[t]·r` (one mul pass).
+7. **weighted sum** via G40: `groups_x = hd`, `x = soft[0..p]`, W
+   rows = V-cache transposed (`hdr[4+d*(p+1)+t] = V[t·D + kh·HD + d]`)
+   → `out[d] = Σ_t soft[t]·V[t][d]` for d = 0..hd−1.
+
+Total per (p, hh): 2×G40 + 2 elementwise + 2 serial reduces + G72 +
+G75 + 1 mul ≈ 8 dispatches. For the prefill (SEQ=3, H=2 → 6 pairs)
+≈ 48 dispatches — heavy but serial-model-consistent (the ~2–4 GB/s
+apparent signal is a harness timing marker, not a throughput claim).
+Softmax numerics locked host-side in `nonlinear_contract` sez.6
+(e·rcp(sum): max |d| 5.96e-08, row sum 0.999999954).
+
+For the decode loop the same plan runs per new row with p growing;
+the score G40 W-repack is per-step (the cache grows), the softmax
+passes are per-step too. GQA: all heads share KV head 0 (HK=1) so the
+K/V cache rows are reused — the W repack is shared across heads.
 
 ## 7. Buffer layout
 
@@ -162,6 +190,16 @@ leg is a follow-up once `v_rcp`/division is probed.
   reduce pass over it, same shape as the dot-sum.
 - Per-row G40 means 21+ dispatches per prefill — dispatch overhead is
   the known serial-model cost (apparent ~2–4 GB/s signal only).
-- Attention on host for the first GPU forward is the agreed scope;
-  full on-GPU attention is a follow-up with the §6 serial plan — all
-  its primitives (max/rcp/exp-2^x/mul-add) are now HW-validated.
+- ~~Attention on host~~ — the §6 serial plan is now fully buildable:
+  every primitive (max G76, rcp G75, exp-2^x G72, G40 gemv, mul/add
+  G42) is HW-validated. Cost: ~8 dispatches per (row, head); the
+  first GPU forward keeps attention host-side (G74 did), the serial
+  attention kernel is the follow-up to remove the last host stage.
+- **G77 decode loop (in flight, Seat A):** the autoregressive loop on
+  GPU — per-step QKV/out/MLP/logits via G40, RoPE tables generated
+  once (G67/G70) and reused, K/V cache host-grown. Pre-commit review
+  (B): must use a separate RoPE'd `e_l` buffer for QKV (no in-place
+  GEMM — row g+1 re-reads overwritten x[g]) and for the attention
+  residual (not the Q projection), and the host oracle chain must add
+  the RoPE'd embedding in the residual (aligned with decoder_test's
+  double oracle).
