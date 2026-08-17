@@ -1833,6 +1833,311 @@ m0_exp_rope_tables_gpu(m0_ctx_t *ctx, uint32_t *stream, uint32_t *ud,
   return 0;
 }
 
+/* G81 helpers: GPU nonlinear stages for the 100%-GPU forward.
+ * All are assembled from individually HW-validated kernels.
+ * ctx->a header, ctx->b x/pack, ctx->c out are scratch. */
+static void
+m0_exp_attn_row_gpu(m0_ctx_t *ctx, uint32_t *stream, uint32_t *ud,
+                    const float *qrow, const float *krow, const float *vrow,
+                    float *out_row, uint32_t seq, uint32_t hd,
+                    uint32_t kh) {
+  /* G78 pattern per (row p, head hh): scores via G40, e via REAL G72,
+   * rcp via REAL G75, out via G40. qrow = q[p,hh], k/v rows = k/v
+   * cache rows for head kh, positions 0..p (p = seq-1 here). */
+  static float wbuf_k[4 * 8], wbuf_v[8 * 4];
+  static float scores[8], soft[8];
+  uint32_t stream_len = 0;
+  float m = 0.0f, sum = 0.0f, rc = 0.0f;
+  const float inv = 1.0f / sqrtf((float)hd);
+
+  (void)kh;
+  /* 1) scores via G40 (groups = seq) */
+  for (uint32_t t = 0; t < seq; t++) {
+    for (uint32_t d = 0; d < hd; d++) {
+      wbuf_k[d * seq + t] = krow[t * hd + d];
+    }
+  }
+  m0_exp_gemm_g40(ctx, stream, ud, qrow, wbuf_k, scores, 1, hd, seq);
+  for (uint32_t t = 0; t < seq; t++) {
+    scores[t] *= inv;
+  }
+  m = scores[0];
+  for (uint32_t t = 1; t < seq; t++) {
+    if (scores[t] > m) {
+      m = scores[t];
+    }
+  }
+  /* 4) e via REAL G72 */
+  {
+    uint32_t *h = (uint32_t *)ctx->a.cpu_addr;
+    memcpy(ctx->code.cpu_addr, &pai_nlexp_code[PAI_NLEXP_EXP_OFF],
+           PAI_NLEXP_EXP_WORDS * sizeof(uint32_t));
+    if (pai_gpu_device_backend(ctx->gpu) == PAI_GPU_BACKEND_HOST_REF) {
+      pai_gpu_host_register_shader(ctx->gpu, ctx->code.gpu_addr,
+                                   pai_host_kernel_nlexp_exp, NULL);
+    }
+    h[0] = seq;
+    h[1] = 0;
+    for (uint32_t t = 0; t < seq; t++) {
+      float x = (scores[t] - m) * (float)PAI_G72_LOG2E;
+      memcpy(&h[2 + t], &x, 4);
+      sum += exp2f((scores[t] - m) * (float)PAI_G72_LOG2E);
+    }
+    pai_gpu_buffer_flush(ctx->gpu, &ctx->a);
+    pai_gpu_buffer_flush(ctx->gpu, &ctx->code);
+    ud[0] = 0;
+    ud[1] = 0;
+    ud[2] = (uint32_t)(ctx->a.gpu_addr & 0xFFFFFFFFu);
+    ud[3] = (uint32_t)(ctx->a.gpu_addr >> 32);
+    ud[4] = (uint32_t)(ctx->c.gpu_addr & 0xFFFFFFFFu);
+    ud[5] = (uint32_t)(ctx->c.gpu_addr >> 32);
+    m0_build_dispatch_stream(ctx, stream, M0_PM4_CAP, PAI_NLEXP_RSRC2,
+                             PAI_NLEXP_THREADS, seq, ud, 6, &stream_len);
+    m0_run_gpu(ctx, stream, stream_len, ctx->c.cpu_addr, seq * 4, 0xCC,
+               "G81");
+    for (uint32_t t = 0; t < seq; t++) {
+      memcpy(&soft[t], &((float *)ctx->c.cpu_addr)[t], 4);
+    }
+  }
+  /* 5) rcp via REAL G75 */
+  {
+    uint32_t *h = (uint32_t *)ctx->a.cpu_addr;
+    memcpy(ctx->code.cpu_addr, &pai_nlexp_code[PAI_NLEXP_RCP_OFF],
+           PAI_NLEXP_RCP_WORDS * sizeof(uint32_t));
+    if (pai_gpu_device_backend(ctx->gpu) == PAI_GPU_BACKEND_HOST_REF) {
+      pai_gpu_host_register_shader(ctx->gpu, ctx->code.gpu_addr,
+                                   pai_host_kernel_nlexp_rcp, NULL);
+    }
+    h[0] = 1;
+    h[1] = 0;
+    memcpy(&h[2], &sum, 4);
+    pai_gpu_buffer_flush(ctx->gpu, &ctx->a);
+    pai_gpu_buffer_flush(ctx->gpu, &ctx->code);
+    m0_build_dispatch_stream(ctx, stream, M0_PM4_CAP, PAI_NLEXP_RSRC2,
+                             PAI_NLEXP_THREADS, 1, ud, 6, &stream_len);
+    m0_run_gpu(ctx, stream, stream_len, ctx->c.cpu_addr, 4, 0xCC, "G81");
+    memcpy(&rc, ctx->c.cpu_addr, 4);
+  }
+  /* 6) soft = e * rcp */
+  for (uint32_t t = 0; t < seq; t++) {
+    soft[t] *= rc;
+  }
+  /* 7) out via G40: y[d] = sum_t soft[t]*v[t,kh][d] */
+  for (uint32_t t = 0; t < seq; t++) {
+    for (uint32_t d = 0; d < hd; d++) {
+      wbuf_v[t * hd + d] = vrow[t * hd + d];
+    }
+  }
+  m0_exp_gemm_g40(ctx, stream, ud, soft, wbuf_v, out_row, 1, seq, hd);
+}
+
+/* G79 pattern: per row: dot via G40, inv via REAL G71, c = x*(g*inv)
+ * via G42 t4_mul1d. Rows processed one at a time. */
+static void
+m0_exp_rmsnorm_gpu(m0_ctx_t *ctx, uint32_t *stream, uint32_t *ud,
+                   const float *x, const float *gamma, float *out,
+                   uint32_t rows, uint32_t n, float eps) {
+  for (uint32_t r = 0; r < rows; r++) {
+    const float *xr = x + r * n;
+    float s = 0.0f, inv = 0.0f;
+    static float pack[2 * 8];
+    uint32_t stream_len = 0;
+
+    m0_exp_gemm_g40(ctx, stream, ud, xr, xr, &s, 1, n, 1);
+    {
+      uint32_t *h = (uint32_t *)ctx->a.cpu_addr;
+      memcpy(ctx->code.cpu_addr, &pai_nlexp_code[PAI_NLEXP_RSQ_OFF],
+             PAI_NLEXP_RSQ_WORDS * sizeof(uint32_t));
+      if (pai_gpu_device_backend(ctx->gpu) == PAI_GPU_BACKEND_HOST_REF) {
+        pai_gpu_host_register_shader(ctx->gpu, ctx->code.gpu_addr,
+                                     pai_host_kernel_nlexp_rsq, NULL);
+      }
+      float arg = s / (float)n + eps;
+      h[0] = 1;
+      h[1] = 0;
+      memcpy(&h[2], &arg, 4);
+      pai_gpu_buffer_flush(ctx->gpu, &ctx->a);
+      pai_gpu_buffer_flush(ctx->gpu, &ctx->code);
+      ud[0] = 0;
+      ud[1] = 0;
+      ud[2] = (uint32_t)(ctx->a.gpu_addr & 0xFFFFFFFFu);
+      ud[3] = (uint32_t)(ctx->a.gpu_addr >> 32);
+      ud[4] = (uint32_t)(ctx->c.gpu_addr & 0xFFFFFFFFu);
+      ud[5] = (uint32_t)(ctx->c.gpu_addr >> 32);
+      m0_build_dispatch_stream(ctx, stream, M0_PM4_CAP, PAI_NLEXP_RSRC2,
+                               PAI_NLEXP_THREADS, 1, ud, 6, &stream_len);
+      m0_run_gpu(ctx, stream, stream_len, ctx->c.cpu_addr, 4, 0xCC,
+                 "G81");
+      memcpy(&inv, ctx->c.cpu_addr, 4);
+    }
+    {
+      memcpy(ctx->code.cpu_addr, &pai_t4_ops_code[PAI_T4_MUL1D_OFF],
+             PAI_T4_MUL1D_WORDS * sizeof(uint32_t));
+      if (pai_gpu_device_backend(ctx->gpu) == PAI_GPU_BACKEND_HOST_REF) {
+        pai_gpu_host_register_shader(ctx->gpu, ctx->code.gpu_addr,
+                                     pai_host_kernel_t4_mul1d, NULL);
+      }
+      for (uint32_t i = 0; i < n; i++) {
+        float bv = gamma[r * n + i] * inv;
+        memcpy(&pack[2 * i], &xr[i], 4);
+        memcpy(&pack[2 * i + 1], &bv, 4);
+      }
+      memcpy(ctx->b.cpu_addr, pack, 2 * n * sizeof(float));
+      pai_gpu_buffer_flush(ctx->gpu, &ctx->b);
+      pai_gpu_buffer_flush(ctx->gpu, &ctx->code);
+      ud[2] = (uint32_t)(ctx->b.gpu_addr & 0xFFFFFFFFu);
+      ud[3] = (uint32_t)(ctx->b.gpu_addr >> 32);
+      ud[4] = (uint32_t)(ctx->c.gpu_addr & 0xFFFFFFFFu);
+      ud[5] = (uint32_t)(ctx->c.gpu_addr >> 32);
+      m0_build_dispatch_stream(ctx, stream, M0_PM4_CAP, PAI_T4_RSRC2,
+                               PAI_T4_THREADS, n, ud, 6, &stream_len);
+      m0_run_gpu(ctx, stream, stream_len, ctx->c.cpu_addr, n * 4, 0xCC,
+                 "G81");
+      memcpy(out + r * n, ctx->c.cpu_addr, n * sizeof(float));
+    }
+  }
+}
+
+/* G80 pattern: per element prescale host, e via REAL G72, d = 1+e via
+ * G42 t4_add1d, rc via REAL G75, c = x*rc via G42 t4_mul1d. */
+static void
+m0_exp_silu_gpu(m0_ctx_t *ctx, uint32_t *stream, uint32_t *ud,
+                const float *x, float *out, uint32_t n) {
+  static float pack[2 * 64];
+  uint32_t *h = (uint32_t *)ctx->a.cpu_addr;
+  uint32_t stream_len = 0;
+
+  /* 1+2) prescale + exp via REAL G72 */
+  memcpy(ctx->code.cpu_addr, &pai_nlexp_code[PAI_NLEXP_EXP_OFF],
+         PAI_NLEXP_EXP_WORDS * sizeof(uint32_t));
+  if (pai_gpu_device_backend(ctx->gpu) == PAI_GPU_BACKEND_HOST_REF) {
+    pai_gpu_host_register_shader(ctx->gpu, ctx->code.gpu_addr,
+                                 pai_host_kernel_nlexp_exp, NULL);
+  }
+  h[0] = n;
+  h[1] = 0;
+  for (uint32_t i = 0; i < n; i++) {
+    float xs = -x[i] * (float)PAI_G72_LOG2E;
+    memcpy(&h[2 + i], &xs, 4);
+  }
+  pai_gpu_buffer_flush(ctx->gpu, &ctx->a);
+  pai_gpu_buffer_flush(ctx->gpu, &ctx->code);
+  ud[0] = 0;
+  ud[1] = 0;
+  ud[2] = (uint32_t)(ctx->a.gpu_addr & 0xFFFFFFFFu);
+  ud[3] = (uint32_t)(ctx->a.gpu_addr >> 32);
+  ud[4] = (uint32_t)(ctx->c.gpu_addr & 0xFFFFFFFFu);
+  ud[5] = (uint32_t)(ctx->c.gpu_addr >> 32);
+  m0_build_dispatch_stream(ctx, stream, M0_PM4_CAP, PAI_NLEXP_RSRC2,
+                           PAI_NLEXP_THREADS, n, ud, 6, &stream_len);
+  m0_run_gpu(ctx, stream, stream_len, ctx->c.cpu_addr, n * 4, 0xCC,
+             "G81");
+  /* 3) d = 1+e via G42 t4_add1d */
+  {
+    memcpy(ctx->code.cpu_addr, &pai_t4_ops_code[PAI_T4_ADD1D_OFF],
+           PAI_T4_ADD1D_WORDS * sizeof(uint32_t));
+    if (pai_gpu_device_backend(ctx->gpu) == PAI_GPU_BACKEND_HOST_REF) {
+      pai_gpu_host_register_shader(ctx->gpu, ctx->code.gpu_addr,
+                                   pai_host_kernel_t4_add1d, NULL);
+    }
+    for (uint32_t i = 0; i < n; i++) {
+      float one = 1.0f;
+      memcpy(&pack[2 * i], &one, 4);
+      memcpy(&pack[2 * i + 1], &((float *)ctx->c.cpu_addr)[i], 4);
+    }
+    memcpy(ctx->b.cpu_addr, pack, 2 * n * sizeof(float));
+    pai_gpu_buffer_flush(ctx->gpu, &ctx->b);
+    pai_gpu_buffer_flush(ctx->gpu, &ctx->code);
+    ud[2] = (uint32_t)(ctx->b.gpu_addr & 0xFFFFFFFFu);
+    ud[3] = (uint32_t)(ctx->b.gpu_addr >> 32);
+    ud[4] = (uint32_t)(ctx->c.gpu_addr & 0xFFFFFFFFu);
+    ud[5] = (uint32_t)(ctx->c.gpu_addr >> 32);
+    m0_build_dispatch_stream(ctx, stream, M0_PM4_CAP, PAI_T4_RSRC2,
+                             PAI_T4_THREADS, n, ud, 6, &stream_len);
+    m0_run_gpu(ctx, stream, stream_len, ctx->c.cpu_addr, n * 4, 0xCC,
+               "G81");
+  }
+  /* 4) rc = 1/d via REAL G75 */
+  {
+    memcpy(ctx->code.cpu_addr, &pai_nlexp_code[PAI_NLEXP_RCP_OFF],
+           PAI_NLEXP_RCP_WORDS * sizeof(uint32_t));
+    if (pai_gpu_device_backend(ctx->gpu) == PAI_GPU_BACKEND_HOST_REF) {
+      pai_gpu_host_register_shader(ctx->gpu, ctx->code.gpu_addr,
+                                   pai_host_kernel_nlexp_rcp, NULL);
+    }
+    h[0] = n;
+    h[1] = 0;
+    memcpy(&h[2], ctx->c.cpu_addr, n * sizeof(float));
+    pai_gpu_buffer_flush(ctx->gpu, &ctx->a);
+    pai_gpu_buffer_flush(ctx->gpu, &ctx->code);
+    ud[2] = (uint32_t)(ctx->a.gpu_addr & 0xFFFFFFFFu);
+    ud[3] = (uint32_t)(ctx->a.gpu_addr >> 32);
+    ud[4] = (uint32_t)(ctx->c.gpu_addr & 0xFFFFFFFFu);
+    ud[5] = (uint32_t)(ctx->c.gpu_addr >> 32);
+    m0_build_dispatch_stream(ctx, stream, M0_PM4_CAP, PAI_NLEXP_RSRC2,
+                             PAI_NLEXP_THREADS, n, ud, 6, &stream_len);
+    m0_run_gpu(ctx, stream, stream_len, ctx->c.cpu_addr, n * 4, 0xCC,
+               "G81");
+  }
+  /* 5) c = x*rc via G42 t4_mul1d */
+  {
+    memcpy(ctx->code.cpu_addr, &pai_t4_ops_code[PAI_T4_MUL1D_OFF],
+           PAI_T4_MUL1D_WORDS * sizeof(uint32_t));
+    if (pai_gpu_device_backend(ctx->gpu) == PAI_GPU_BACKEND_HOST_REF) {
+      pai_gpu_host_register_shader(ctx->gpu, ctx->code.gpu_addr,
+                                   pai_host_kernel_t4_mul1d, NULL);
+    }
+    for (uint32_t i = 0; i < n; i++) {
+      memcpy(&pack[2 * i], &x[i], 4);
+      memcpy(&pack[2 * i + 1], &((float *)ctx->c.cpu_addr)[i], 4);
+    }
+    memcpy(ctx->b.cpu_addr, pack, 2 * n * sizeof(float));
+    pai_gpu_buffer_flush(ctx->gpu, &ctx->b);
+    pai_gpu_buffer_flush(ctx->gpu, &ctx->code);
+    ud[2] = (uint32_t)(ctx->b.gpu_addr & 0xFFFFFFFFu);
+    ud[3] = (uint32_t)(ctx->b.gpu_addr >> 32);
+    ud[4] = (uint32_t)(ctx->c.gpu_addr & 0xFFFFFFFFu);
+    ud[5] = (uint32_t)(ctx->c.gpu_addr >> 32);
+    m0_build_dispatch_stream(ctx, stream, M0_PM4_CAP, PAI_T4_RSRC2,
+                             PAI_T4_THREADS, n, ud, 6, &stream_len);
+    m0_run_gpu(ctx, stream, stream_len, ctx->c.cpu_addr, n * 4, 0xCC,
+               "G81");
+    memcpy(out, ctx->c.cpu_addr, n * sizeof(float));
+  }
+}
+
+/* G42 add: out = a + b elementwise (packed pairs). */
+static void
+m0_exp_add_gpu(m0_ctx_t *ctx, uint32_t *stream, uint32_t *ud,
+               const float *a, const float *b, float *out, uint32_t n) {
+  static float pack[2 * 64];
+  uint32_t stream_len = 0;
+  memcpy(ctx->code.cpu_addr, &pai_t4_ops_code[PAI_T4_ADD1D_OFF],
+         PAI_T4_ADD1D_WORDS * sizeof(uint32_t));
+  if (pai_gpu_device_backend(ctx->gpu) == PAI_GPU_BACKEND_HOST_REF) {
+    pai_gpu_host_register_shader(ctx->gpu, ctx->code.gpu_addr,
+                                 pai_host_kernel_t4_add1d, NULL);
+  }
+  for (uint32_t i = 0; i < n; i++) {
+    memcpy(&pack[2 * i], &a[i], 4);
+    memcpy(&pack[2 * i + 1], &b[i], 4);
+  }
+  memcpy(ctx->b.cpu_addr, pack, 2 * n * sizeof(float));
+  pai_gpu_buffer_flush(ctx->gpu, &ctx->b);
+  pai_gpu_buffer_flush(ctx->gpu, &ctx->code);
+  ud[0] = 0;
+  ud[1] = 0;
+  ud[2] = (uint32_t)(ctx->b.gpu_addr & 0xFFFFFFFFu);
+  ud[3] = (uint32_t)(ctx->b.gpu_addr >> 32);
+  ud[4] = (uint32_t)(ctx->c.gpu_addr & 0xFFFFFFFFu);
+  ud[5] = (uint32_t)(ctx->c.gpu_addr >> 32);
+  m0_build_dispatch_stream(ctx, stream, M0_PM4_CAP, PAI_T4_RSRC2,
+                           PAI_T4_THREADS, n, ud, 6, &stream_len);
+  m0_run_gpu(ctx, stream, stream_len, ctx->c.cpu_addr, n * 4, 0xCC,
+             "G81");
+  memcpy(out, ctx->c.cpu_addr, n * sizeof(float));
+}
+
 /* G77: host reference chain for the decoder forward over a prefix of
  * `len` positions (decoder_test sez.13 oracle side, float ref_ops).
  * Same sizes as G74: D_MODEL 8, H 2, HK 1, HD 4, R2 2, MLP_HID 16,
@@ -6111,6 +6416,230 @@ h48[0] = kk;
                   (double)ref80[2], (double)ref80[3],
                   (unsigned long long)mism);
     m0_exp_report("G80", ok);
+  }
+
+  /* G81: 100%-GPU decoder prefill forward - all spec §3 stages via
+   * validated kernels: RoPE tables G67/G70 (helper), QKV/out/MLP/
+   * logits via G40, attention via G78 pattern, RMSNorm via G79
+   * pattern, SiLU via G80 pattern, residual + biasadd via G42/G47.
+   * Differential vs m0_decoder_ref_chain (== decoder_test oracle). */
+  if (!host) {
+    pai_gpu_reset(gpu);
+  }
+  {
+    enum {
+      G81_D = 8, G81_H = 2, G81_HD = 4, G81_R2 = 2, G81_SEQ = 3,
+      G81_MLP = 16, G81_VOCAB = 16
+    };
+    static float wemb[G81_VOCAB * G81_D];
+    static float wq[G81_D * G81_D], wk[G81_D * G81_D], wv[G81_D * G81_D];
+    static float wo[G81_D * G81_D], wout[G81_D * G81_VOCAB];
+    static float g1[G81_D], g2[G81_D];
+    static float w1[G81_D * G81_MLP], b1[G81_MLP];
+    static float w2[G81_MLP * G81_D], b2[G81_D];
+    static float ct[G81_SEQ * G81_R2], sint[G81_SEQ * G81_R2];
+    static float e[G81_SEQ * G81_D], er[G81_SEQ * G81_D];
+    static float qg[G81_SEQ * G81_D], kg[G81_SEQ * G81_D];
+    static float vg[G81_SEQ * G81_D], attn[G81_SEQ * G81_D];
+    static float og[G81_SEQ * G81_D], h1a[G81_SEQ * G81_D];
+    static float h1g[G81_SEQ * G81_D], gmlp[G81_SEQ * G81_MLP];
+    static float ag[G81_SEQ * G81_MLP], h2g[G81_SEQ * G81_MLP];
+    static float mlp[G81_SEQ * G81_D], h3a[G81_SEQ * G81_D];
+    static float h3g[G81_SEQ * G81_D];
+    static float lg[G81_SEQ * G81_VOCAB], ref[G81_SEQ * G81_VOCAB];
+    int toks[G81_SEQ] = {2, 5, 9};
+    uint64_t mism = 0;
+    int ok = 1;
+    pai_status_t stp;
+    float eps;
+    memcpy(&eps, &(uint32_t){0x3727C5ACu}, 4); /* 1e-5f */
+
+    /* deterministic weights (same generators as G74) */
+    for (uint32_t i = 0; i < G81_VOCAB * G81_D; i++) {
+      wemb[i] = (float)(((int)((i * 3) % 7)) - 3) * 0.4f;
+    }
+    for (uint32_t i = 0; i < G81_D; i++) {
+      for (uint32_t j = 0; j < G81_D; j++) {
+        wq[i * G81_D + j] =
+            (float)(((int)((i * 3 + j * 5) % 11)) - 5) * 0.1f;
+        wk[i * G81_D + j] =
+            (float)(((int)((i * 7 + j * 3) % 11)) - 5) * 0.1f;
+        wv[i * G81_D + j] =
+            (float)(((int)((i * 5 + j * 7) % 11)) - 5) * 0.1f;
+        wo[i * G81_D + j] =
+            (float)(((int)((i * 11 + j * 2) % 11)) - 5) * 0.1f;
+      }
+      g1[i] = 1.0f + 0.1f * (float)i;
+      g2[i] = 1.0f - 0.05f * (float)i;
+    }
+    for (uint32_t i = 0; i < G81_D; i++) {
+      for (uint32_t j = 0; j < G81_MLP; j++) {
+        w1[i * G81_MLP + j] =
+            (float)(((int)((i * 3 + j * 5) % 7)) - 3) * 0.1f;
+      }
+    }
+    for (uint32_t j = 0; j < G81_MLP; j++) {
+      b1[j] = (float)(j % 5) * 0.05f;
+    }
+    for (uint32_t i = 0; i < G81_MLP; i++) {
+      for (uint32_t j = 0; j < G81_D; j++) {
+        w2[i * G81_D + j] =
+            (float)(((int)((i * 7 + j * 2) % 9)) - 4) * 0.05f;
+      }
+    }
+    for (uint32_t j = 0; j < G81_D; j++) {
+      b2[j] = (float)((j * 3) % 4) * 0.1f;
+    }
+    for (uint32_t i = 0; i < G81_D; i++) {
+      for (uint32_t j = 0; j < G81_VOCAB; j++) {
+        wout[i * G81_VOCAB + j] =
+            (float)(((int)((i * 7 + j * 3) % 9)) - 4) * 0.1f;
+      }
+    }
+
+    /* embed + RoPE tables on-GPU + RoPE apply host */
+    for (uint32_t p = 0; p < G81_SEQ; p++) {
+      memcpy(&e[p * G81_D], &wemb[toks[p] * G81_D],
+             G81_D * sizeof(float));
+    }
+    m0_exp_rope_tables_gpu(ctx, stream, ud, G81_SEQ, G81_R2, 10000.0f,
+                           ct, sint);
+    stp = pai_ref_rope_f32(e, G81_SEQ * G81_H, G81_HD, G81_SEQ, G81_H,
+                           ct, sint, G81_R2, er);
+    ok = ok && (stp == PAI_OK);
+
+    /* QKV via G40 */
+    m0_exp_gemm_g40(ctx, stream, ud, er, wq, qg, G81_SEQ, G81_D, G81_D);
+    m0_exp_gemm_g40(ctx, stream, ud, er, wk, kg, G81_SEQ, G81_D, G81_D);
+    m0_exp_gemm_g40(ctx, stream, ud, er, wv, vg, G81_SEQ, G81_D, G81_D);
+
+    /* attention ON-GPU (G78 pattern): per row, per head */
+    memset(attn, 0, sizeof(attn));
+    for (uint32_t p = 0; p < G81_SEQ; p++) {
+      for (uint32_t hh = 0; hh < G81_H; hh++) {
+        uint32_t kh = (hh * 1u) / G81_H; /* HK = 1 */
+        const float *qp = qg + (p * G81_H + hh) * G81_HD;
+        static float krows[3 * 4], vrows[3 * 4];
+        for (uint32_t t = 0; t <= p; t++) {
+          memcpy(&krows[t * G81_HD],
+                 &kg[(t * 1u + kh) * G81_HD], G81_HD * sizeof(float));
+          memcpy(&vrows[t * G81_HD],
+                 &vg[(t * 1u + kh) * G81_HD], G81_HD * sizeof(float));
+        }
+        m0_exp_attn_row_gpu(ctx, stream, ud, qp, krows, vrows,
+                            attn + (p * G81_H + hh) * G81_HD, p + 1,
+                            G81_HD, kh);
+      }
+    }
+
+    /* out-proj G40 + residual G42 (uses RoPE'd er, aligned oracle) */
+    m0_exp_gemm_g40(ctx, stream, ud, attn, wo, og, G81_SEQ, G81_D, G81_D);
+    m0_exp_add_gpu(ctx, stream, ud, og, er, h1a, G81_SEQ * G81_D);
+    m0_exp_rmsnorm_gpu(ctx, stream, ud, h1a, g1, h1g, G81_SEQ, G81_D,
+                       eps);
+
+    /* MLP: W1 G40 + biasadd G42-pattern + SiLU G80 + W2 G40 + biasadd */
+    m0_exp_gemm_g40(ctx, stream, ud, h1g, w1, gmlp, G81_SEQ, G81_D,
+                    G81_MLP);
+    /* biasadd via G47 t4_biasadd (one group per row, cols = MLP) */
+    {
+      uint32_t *h47 = (uint32_t *)ctx->a.cpu_addr;
+      uint32_t stream_len = 0;
+      for (uint32_t r = 0; r < G81_SEQ; r++) {
+        memcpy(ctx->code.cpu_addr, &pai_t4_ops_code[PAI_T4_BIASADD_OFF],
+               PAI_T4_BIASADD_WORDS * sizeof(uint32_t));
+        if (host) {
+          pai_gpu_host_register_shader(gpu, ctx->code.gpu_addr,
+                                       pai_host_kernel_t4_biasadd, NULL);
+        }
+        h47[0] = G81_MLP;
+        h47[1] = 0;
+        memcpy(ctx->b.cpu_addr, gmlp + r * G81_MLP,
+               G81_MLP * sizeof(float));
+        memcpy(ctx->b.cpu_addr + (uint64_t)G81_MLP * 4, b1,
+               G81_MLP * sizeof(float));
+        h47[2] = (uint32_t)(ctx->b.gpu_addr & 0xFFFFFFFFu);
+        h47[3] = (uint32_t)(ctx->b.gpu_addr >> 32);
+        h47[4] = (uint32_t)((ctx->b.gpu_addr + G81_MLP * 4) & 0xFFFFFFFFu);
+        h47[5] = (uint32_t)((ctx->b.gpu_addr + G81_MLP * 4) >> 32);
+        pai_gpu_buffer_flush(ctx->gpu, &ctx->a);
+        pai_gpu_buffer_flush(ctx->gpu, &ctx->b);
+        pai_gpu_buffer_flush(ctx->gpu, &ctx->code);
+        ud[2] = (uint32_t)(ctx->a.gpu_addr & 0xFFFFFFFFu);
+        ud[3] = (uint32_t)(ctx->a.gpu_addr >> 32);
+        ud[4] = (uint32_t)(ctx->c.gpu_addr & 0xFFFFFFFFu);
+        ud[5] = (uint32_t)(ctx->c.gpu_addr >> 32);
+        m0_build_dispatch_stream(ctx, stream, M0_PM4_CAP, PAI_T4_RSRC2,
+                                 PAI_T4_THREADS, 1, ud, 6, &stream_len);
+        m0_run_gpu(ctx, stream, stream_len, ctx->c.cpu_addr,
+                   G81_MLP * 4, 0xCC, "G81");
+        memcpy(ag + r * G81_MLP, ctx->c.cpu_addr,
+               G81_MLP * sizeof(float));
+      }
+    }
+    m0_exp_silu_gpu(ctx, stream, ud, ag, h2g, G81_SEQ * G81_MLP);
+    m0_exp_gemm_g40(ctx, stream, ud, h2g, w2, mlp, G81_SEQ, G81_MLP,
+                    G81_D);
+    {
+      uint32_t *h47 = (uint32_t *)ctx->a.cpu_addr;
+      uint32_t stream_len = 0;
+      for (uint32_t r = 0; r < G81_SEQ; r++) {
+        memcpy(ctx->code.cpu_addr, &pai_t4_ops_code[PAI_T4_BIASADD_OFF],
+               PAI_T4_BIASADD_WORDS * sizeof(uint32_t));
+        if (host) {
+          pai_gpu_host_register_shader(gpu, ctx->code.gpu_addr,
+                                       pai_host_kernel_t4_biasadd, NULL);
+        }
+        h47[0] = G81_D;
+        h47[1] = 0;
+        memcpy(ctx->b.cpu_addr, mlp + r * G81_D, G81_D * sizeof(float));
+        memcpy(ctx->b.cpu_addr + (uint64_t)G81_D * 4, b2,
+               G81_D * sizeof(float));
+        h47[2] = (uint32_t)(ctx->b.gpu_addr & 0xFFFFFFFFu);
+        h47[3] = (uint32_t)(ctx->b.gpu_addr >> 32);
+        h47[4] = (uint32_t)((ctx->b.gpu_addr + G81_D * 4) & 0xFFFFFFFFu);
+        h47[5] = (uint32_t)((ctx->b.gpu_addr + G81_D * 4) >> 32);
+        pai_gpu_buffer_flush(ctx->gpu, &ctx->a);
+        pai_gpu_buffer_flush(ctx->gpu, &ctx->b);
+        pai_gpu_buffer_flush(ctx->gpu, &ctx->code);
+        ud[2] = (uint32_t)(ctx->a.gpu_addr & 0xFFFFFFFFu);
+        ud[3] = (uint32_t)(ctx->a.gpu_addr >> 32);
+        ud[4] = (uint32_t)(ctx->c.gpu_addr & 0xFFFFFFFFu);
+        ud[5] = (uint32_t)(ctx->c.gpu_addr >> 32);
+        m0_build_dispatch_stream(ctx, stream, M0_PM4_CAP, PAI_T4_RSRC2,
+                                 PAI_T4_THREADS, 1, ud, 6, &stream_len);
+        m0_run_gpu(ctx, stream, stream_len, ctx->c.cpu_addr, G81_D * 4,
+                   0xCC, "G81");
+        memcpy(h3a + r * G81_D, ctx->c.cpu_addr, G81_D * sizeof(float));
+      }
+    }
+    /* residual G42 + RMSNorm G79 */
+    m0_exp_add_gpu(ctx, stream, ud, h1g, h3a, h3g, G81_SEQ * G81_D);
+    m0_exp_rmsnorm_gpu(ctx, stream, ud, h3g, g2, h1g, G81_SEQ, G81_D,
+                       eps);
+
+    /* logits via G40 */
+    m0_exp_gemm_g40(ctx, stream, ud, h1g, wout, lg, G81_SEQ, G81_D,
+                    G81_VOCAB);
+
+    /* oracle: m0_decoder_ref_chain (== decoder_test sez.12) */
+    {
+      static float oct[G81_SEQ * G81_R2], ost[G81_SEQ * G81_R2];
+      pai_ref_rope_cossin_f32(G81_SEQ, G81_R2, 10000.0f, oct, ost);
+      m0_decoder_ref_chain(toks, G81_SEQ, wemb, wq, wk, wv, wo, g1, w1,
+                           b1, w2, b2, g2, wout, oct, ost, ref);
+    }
+    stp = pai_ref_compare_f32(lg, ref, G81_SEQ * G81_VOCAB, 1e-4f,
+                              1e-4f, &mism);
+    ok = ok && (stp == PAI_OK);
+    PAI_LOG_INFO_(PAI_SUB_GPU,
+                  "[M0-G81] logits[0..3]=%.4f %.4f %.4f %.4f "
+                  "ref[0..3]=%.4f %.4f %.4f %.4f mism=%llu\n",
+                  (double)lg[0], (double)lg[1], (double)lg[2],
+                  (double)lg[3], (double)ref[0], (double)ref[1],
+                  (double)ref[2], (double)ref[3],
+                  (unsigned long long)mism);
+    m0_exp_report("G81", ok);
   }
 
   /* G17: load from the kernel's own acqrb VA - does ANY load complete,
