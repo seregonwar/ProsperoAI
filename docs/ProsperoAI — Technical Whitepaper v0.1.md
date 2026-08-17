@@ -1797,7 +1797,14 @@ Open gates before Phase 1 / PAI-M2 work should prioritize:
   implication: pos tables ARE generatable on-GPU wave-parallel
   with per-column `scale = inv_freq/(2π)` and the `(4i+3)` lane
   mapping — oracle stays `pai_ref_rope_cossin_f32` (θ=p·inv_freq,
-  commit `e157131`).
+  commit `e157131`). G67 in flight: on-GPU RoPE table generator
+  (ropegen.s) — `groups_x=r2` (one column per group, G40 TGID_X
+  pattern), NUM_THREAD_X=32, lane l computes p=4l+3,
+  `c[p·r2+i] = cos/sin(2π·scale·(4l+3))` with scale loaded per
+  group via `s_load_dword`; differential vs `pai_ref_rope_cossin_f32`
+  on rows 3,7,…,31 (B-side review: compare only written rows,
+  ctx≥32, explicit base 10000, cos²+sin²=1 check, host mirror must
+  reproduce the GPU turns formula — not radians).
   Empirical note: RSRC1 `VGPRS` must
   cover the VGPRs a kernel actually touches (G55/G56 use v1-v6,
   lanepick v16-v31 → `PAI_EXP_RSRC1_VGPR32=0x602C0003`).
