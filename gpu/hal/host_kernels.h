@@ -227,11 +227,14 @@ pai_status_t pai_host_kernel_ropegen_sin(void *ctx,
 /* G71/G72 serial v_rsq/v_exp probes (nlexp.s): header (n, pad, x[])
  * at ud[2:3], C at ud[4:5]; c[e] = 1/sqrtf(x[e]) / expf(x[e]). The
  * mirror uses the MATH conventions; the payload locks the 9.40 HW
- * convention empirically (v_exp may be 2^x). */
-pai_status_t pai_host_kernel_nlexp_rsq(void *ctx,
-                                      const uint32_t user_data[16],
-                                      uint32_t threads_x,
-                                      uint32_t group_x);
+ * convention empirically (v_exp may be 2^x). */pai_status_t pai_host_kernel_nlexp_rsq(void *ctx, const uint32_t user_data[16],
+                                      uint32_t threads_x, uint32_t group_x);
+
+/* G40: VALU float GEMV serial-per-row (fgemv_serial.s). W header at
+ * ud[2:3]: [K, pad, x_lo, x_hi, W[g*K+k]...]; C at ud[4:5]; one
+ * group per row. */
+pai_status_t pai_host_kernel_fgemv(void *ctx, const uint32_t user_data[16],
+                                   uint32_t threads_x, uint32_t group_x);
 pai_status_t pai_host_kernel_nlexp_exp(void *ctx,
                                       const uint32_t user_data[16],
                                       uint32_t threads_x,

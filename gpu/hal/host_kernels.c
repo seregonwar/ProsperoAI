@@ -838,6 +838,34 @@ pai_host_kernel_nlexp_exp(void *ctx, const uint32_t user_data[16],
   return pai_host_kernel_nlexp(ctx, user_data, threads_x, group_x, 1);
 }
 
+/* G40: VALU float GEMV serial-per-row (fgemv_serial.s). W header at
+ * ud[2:3]: [K, pad, x_lo, x_hi, W[g*K+k]...]; C at ud[4:5]; TGID_X
+ * = row g, one group per row: y[g] = sum_k W[g,k] * x[k]. Same float
+ * accumulation order as the shader (v_add_f32 chain) - host compare
+ * uses the tolerant 1e-4 compare like the payload. */
+pai_status_t
+pai_host_kernel_fgemv(void *ctx, const uint32_t user_data[16],
+                      uint32_t threads_x, uint32_t group_x) {
+  const uint32_t *h = (const uint32_t *)(uintptr_t)pai_ud64(user_data, 2);
+  const float *w = (const float *)(const void *)(h + 4);
+  const float *x = (const float *)(uintptr_t)pai_ud64(h, 2);
+  float *y = (float *)(uintptr_t)pai_ud64(user_data, 4);
+  uint32_t kdim = h[0];
+
+  (void)ctx;
+  (void)threads_x;
+
+  for (uint32_t g = 0; g < group_x; g++) {
+    const float *row = w + g * kdim;
+    float acc = 0.0f;
+    for (uint32_t k = 0; k < kdim; k++) {
+      acc += row[k] * x[k];
+    }
+    y[g] = acc;
+  }
+  return PAI_OK;
+}
+
 pai_status_t
 pai_host_kernel_int_matmul(void *ctx, const uint32_t user_data[16],
                            uint32_t threads_x, uint32_t group_x) {

@@ -574,6 +574,43 @@ TEST_MAIN_BEGIN()
       }
     }
 
+    /* G40: VALU float GEMV serial-per-row - header [K, pad, x_lo,
+     * x_hi, W[g*K+k]...] at ud[2:3], y at ud[4:5], one group per
+     * row (same values as the payload probe, tolerant compare). */
+    {
+      uint32_t m = 8u, kk = 32u;
+      uint32_t h40[4 + 8u * 32u];
+      float x40[32];
+      float y40[8];
+      float want40[8];
+      uint32_t *w40 = h40 + 4;
+      ud[2] = (uint32_t)(uintptr_t)h40;
+      ud[3] = (uint32_t)((uintptr_t)h40 >> 32);
+      ud[4] = (uint32_t)(uintptr_t)y40;
+      ud[5] = (uint32_t)((uintptr_t)y40 >> 32);
+      h40[0] = kk;
+      h40[1] = 0;
+      h40[2] = (uint32_t)(uintptr_t)x40;
+      h40[3] = (uint32_t)((uintptr_t)x40 >> 32);
+      for (uint32_t g = 0; g < m; g++) {
+        want40[g] = 0.0f;
+        for (uint32_t t = 0; t < kk; t++) {
+          float wv = 0.5f + 0.1f * (float)g + 0.01f * (float)t;
+          float xv = 1.0f - 0.02f * (float)t;
+          memcpy(&w40[g * kk + t], &wv, 4);
+          want40[g] += wv * xv;
+        }
+      }
+      for (uint32_t t = 0; t < kk; t++) {
+        float xv = 1.0f - 0.02f * (float)t;
+        memcpy(&x40[t], &xv, 4);
+      }
+      CHECK(pai_host_kernel_fgemv(NULL, ud, 1, m) == PAI_OK);
+      for (uint32_t g = 0; g < m; g++) {
+        CHECK(fabsf(y40[g] - want40[g]) < 1e-4f * (1.0f + fabsf(want40[g])));
+      }
+    }
+
     /* G57: per-lane select from 16-dword block (lanepick mirror). */
     {
       uint32_t h57[16];

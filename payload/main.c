@@ -3306,7 +3306,7 @@ m0_exp_v0model(m0_ctx_t *ctx) {
            PAI_FGEMV_CODE_WORDS * sizeof(uint32_t));
     if (host) {
       pai_gpu_host_register_shader(gpu, ctx->code.gpu_addr,
-                                   pai_host_kernel_g8, NULL);
+                                   pai_host_kernel_fgemv, NULL);
     }
     w32[0] = k;
     w32[1] = 0;
