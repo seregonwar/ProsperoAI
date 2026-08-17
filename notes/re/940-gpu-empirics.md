@@ -400,6 +400,15 @@ HW-validated PASS (commit a8d9089).
   serial PASS bad=0. Closes spec sez.10 risks (v_rcp/v_max) - all
   softmax/SiLU primitives now HW-proven: division via v_rcp,
   max pass via v_max, exp via 2^x prescale, rsqrt via v_rsq.
+  G77 (run 144815): FULL autoregressive decode loop on-GPU - prefill
+  + 4 generated tokens via G40 GEMMs (per-row, transposed-W) +
+  G67/G70 RoPE tables (loaded once, reused at every step, p grows),
+  attention/RMSNorm/SiLU/residual host ref_ops, oracle
+  m0_decoder_ref_chain (full-prefix re-forward with same weights);
+  every step tok==ref_argmax, logits mism=0, bad_steps=0 (PASS).
+  First-token -> next-token loop closed on 9.40 (decoder_test sez.13
+  contract). Convention locked: residual adds the RoPE-ROTATED
+  embedding (oracle applies rope_f32 in-place), not the raw embed.
 - Open (do not block M1 closeout): MUBUF T# / flat loads, lane 8+
   exec mask, LDS (M1C) pending AGC CS blob @ 0x213.
 

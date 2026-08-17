@@ -1833,6 +1833,60 @@ m0_exp_rope_tables_gpu(m0_ctx_t *ctx, uint32_t *stream, uint32_t *ud,
   return 0;
 }
 
+/* G77: host reference chain for the decoder forward over a prefix of
+ * `len` positions (decoder_test sez.13 oracle side, float ref_ops).
+ * Same sizes as G74: D_MODEL 8, H 2, HK 1, HD 4, R2 2, MLP_HID 16,
+ * VOCAB 16. seq_in holds the INPUT tokens for positions 0..len-1.
+ * Writes logits[len*VOCAB]. */
+static void
+m0_decoder_ref_chain(const int *seq_in, uint32_t len, const float *emb,
+                     const float *wq, const float *wk, const float *wv,
+                     const float *wo, const float *g1, const float *w1,
+                     const float *b1, const float *w2, const float *b2,
+                     const float *g2, const float *wout, const float *oct,
+                     const float *ost, float *logits_out) {
+  enum {
+    RC_D = 8, RC_H = 2, RC_HD = 4, RC_R2 = 2, RC_MLP = 16, RC_VOCAB = 16
+  };
+  static float e[7 * RC_D], re[7 * RC_D];
+  static float rq[7 * RC_D], rkv[7 * RC_D], rvv[7 * RC_D];
+  static float rat[7 * RC_D], ro[7 * RC_D];
+  static float rh1[7 * RC_D], rgm[7 * RC_MLP], rh2[7 * RC_MLP];
+  static float rmlp[7 * RC_D], rh3[7 * RC_D];
+
+  for (uint32_t p = 0; p < len; p++) {
+    memcpy(&e[p * RC_D], &emb[seq_in[p] * RC_D], RC_D * sizeof(float));
+  }
+  pai_ref_rope_f32(e, len * RC_H, RC_HD, len, RC_H, oct, ost, RC_R2, re);
+  pai_ref_gemm_f32(len, RC_D, RC_D, re, wq, rq);
+  pai_ref_gemm_f32(len, RC_D, RC_D, re, wk, rkv);
+  pai_ref_gemm_f32(len, RC_D, RC_D, re, wv, rvv);
+  pai_ref_attention_f32(RC_H, RC_H / 2u, len, RC_HD, rq, rkv, rvv, rat);
+  pai_ref_gemm_f32(len, RC_D, RC_D, rat, wo, ro);
+  for (uint32_t i = 0; i < len * RC_D; i++) {
+    /* residual uses the RoPE-ROTATED embedding (decoder_test oracle
+     * applies rope_f32 in-place, so e stays rotated) */
+    rh1[i] = ro[i] + re[i];
+  }
+  for (uint32_t p = 0; p < len; p++) {
+    pai_ref_rmsnorm_gamma_f32(rh1 + p * RC_D, rh1 + p * RC_D, RC_D, g1,
+                              1e-5f);
+  }
+  pai_ref_gemm_f32(len, RC_MLP, RC_D, rh1, w1, rgm);
+  pai_ref_biasadd_f32(rgm, b1, rh2, len, RC_MLP);
+  pai_ref_silu_f32(rh2, rh2, len * RC_MLP);
+  pai_ref_gemm_f32(len, RC_D, RC_MLP, rh2, w2, rmlp);
+  pai_ref_biasadd_f32(rmlp, b2, rh3, len, RC_D);
+  for (uint32_t i = 0; i < len * RC_D; i++) {
+    rh3[i] = rh1[i] + rh3[i];
+  }
+  for (uint32_t p = 0; p < len; p++) {
+    pai_ref_rmsnorm_gamma_f32(rh3 + p * RC_D, rh3 + p * RC_D, RC_D, g2,
+                              1e-5f);
+  }
+  pai_ref_gemm_f32(len, RC_VOCAB, RC_D, rh3, wout, logits_out);
+}
+
 /* E34-E37: the flat v0-broadcast model — loads and the real vecadd. */
 static int
 m0_exp_v0model(m0_ctx_t *ctx) {
@@ -5183,7 +5237,9 @@ h48[0] = kk;
     /* out-proj G40 + residual */
     m0_exp_gemm_g40(ctx, stream, ud, attn, wo, o, G74_SEQ, G74_D, G74_D);
     for (uint32_t i = 0; i < G74_SEQ * G74_D; i++) {
-      h1a[i] = o[i] + e[i];
+      /* residual uses the RoPE-ROTATED embedding (decoder_test oracle
+       * applies rope_f32 in-place, so e stays rotated): h1a = o + er */
+      h1a[i] = o[i] + er[i];
     }
     for (uint32_t p = 0; p < G74_SEQ; p++) {
       pai_ref_rmsnorm_gamma_f32(h1a + p * G74_D, h1 + p * G74_D, G74_D, g1,
@@ -5228,7 +5284,8 @@ h48[0] = kk;
                             rvv, rat);
       pai_ref_gemm_f32(G74_SEQ, G74_D, G74_D, rat, wo, ro);
       for (uint32_t i = 0; i < G74_SEQ * G74_D; i++) {
-        rh1[i] = ro[i] + e[i];
+        /* same rotated-embedding residual as the GPU chain */
+        rh1[i] = ro[i] + re[i];
       }
       for (uint32_t p = 0; p < G74_SEQ; p++) {
         pai_ref_rmsnorm_gamma_f32(rh1 + p * G74_D, rh1 + p * G74_D, G74_D,
@@ -5437,6 +5494,230 @@ h48[0] = kk;
                   (double)((float *)c76)[6], (double)((float *)c76)[7],
                   nbad_mx, nbad_mn, fmis_mx, fmis_mn);
     m0_exp_report("G76", ok_mx && ok_mn);
+  }
+
+  /* G77: on-GPU AUTOREGRESSIVE decode loop (decoder_test sez.13
+   * differential): prefill (SEQ=3) + NGEN=4 steps, every linear
+   * layer via the validated G40 path (QKV/out/MLP/logits per-row,
+   * one row per step), RoPE tables via the G67/G70 on-GPU path
+   * loaded ONCE for CTX_TOTAL positions and reused at every step,
+   * K/V cache grown host-side per step. Each step: logits 1e-4 +
+   * greedy argmax vs m0_decoder_ref_chain (== full-prefix oracle). */
+  if (!host) {
+    pai_gpu_reset(gpu);
+  }
+  {
+    enum {
+      G77_D = 8, G77_H = 2, G77_HD = 4, G77_R2 = 2, G77_SEQ = 3,
+      G77_NGEN = 4, G77_CTX = 7, G77_MLP = 16, G77_VOCAB = 16
+    };
+    static float wemb[G77_VOCAB * G77_D];
+    static float wq[G77_D * G77_D], wk[G77_D * G77_D], wv[G77_D * G77_D];
+    static float wo[G77_D * G77_D], wout[G77_D * G77_VOCAB];
+    static float g1[G77_D], g2[G77_D];
+    static float w1[G77_D * G77_MLP], b1[G77_MLP];
+    static float w2[G77_MLP * G77_D], b2[G77_D];
+    static float ct[G77_CTX * G77_R2], sint[G77_CTX * G77_R2];
+    static float oct[G77_CTX * G77_R2], ost[G77_CTX * G77_R2];
+    static float kc[G77_CTX * G77_D], vc[G77_CTX * G77_D];
+    static float e_p[G77_CTX * G77_D];
+    int toks[G77_SEQ] = {2, 5, 9};
+    int toks_x[G77_CTX], seq_in[G77_CTX];
+    int ok_all = 1;
+    int argmax_g = -1;
+    int p, g;
+    uint32_t step_bad = 0;
+
+    /* deterministic weights (decoder_test fill_weights) */
+    for (uint32_t i = 0; i < G77_VOCAB * G77_D; i++) {
+      wemb[i] = (float)((int)(i % 11) - 5) * 0.1f;
+    }
+    for (uint32_t i = 0; i < G77_D; i++) {
+      for (uint32_t j = 0; j < G77_D; j++) {
+        float v = (float)(((int)((i * 3 + j * 5) % 7)) - 3) * 0.1f;
+        wq[i * G77_D + j] = v;
+        wk[i * G77_D + j] = v * 0.9f;
+        wv[i * G77_D + j] = v * 1.1f;
+        wo[i * G77_D + j] = v * 0.8f;
+        wout[i * G77_D + j] =
+            (float)(((int)((i * 5 + j * 7) % 9)) - 4) * 0.05f;
+      }
+    }
+    for (uint32_t i = 0; i < G77_D; i++) {
+      g1[i] = 1.0f + 0.1f * (float)i;
+      g2[i] = 1.0f - 0.05f * (float)i;
+    }
+    for (uint32_t i = 0; i < G77_D; i++) {
+      for (uint32_t j = 0; j < G77_MLP; j++) {
+        w1[i * G77_MLP + j] =
+            (float)(((int)((i * 3 + j * 5) % 7)) - 3) * 0.1f;
+      }
+    }
+    for (uint32_t j = 0; j < G77_MLP; j++) {
+      b1[j] = (float)(j % 5) * 0.05f;
+    }
+    for (uint32_t i = 0; i < G77_MLP; i++) {
+      for (uint32_t j = 0; j < G77_D; j++) {
+        w2[i * G77_D + j] =
+            (float)(((int)((i * 7 + j * 2) % 9)) - 4) * 0.05f;
+      }
+    }
+    for (uint32_t j = 0; j < G77_D; j++) {
+      b2[j] = (float)((j * 3) % 4) * 0.1f;
+    }
+
+    /* RoPE tables loaded ONCE for all CTX_TOTAL positions (B's note:
+     * reuse at every step, p grows). */
+    m0_exp_rope_tables_gpu(ctx, stream, ud, G77_CTX, G77_R2, 10000.0f,
+                           ct, sint);
+    pai_ref_rope_cossin_f32(G77_CTX, G77_R2, 10000.0f, oct, ost);
+    memcpy(toks_x, toks, G77_SEQ * sizeof(int));
+    memcpy(seq_in, toks, G77_SEQ * sizeof(int));
+
+    /* prefill: embed + RoPE + QKV via G40 into the cache */
+    memset(e_p, 0, sizeof(e_p));
+    for (p = 0; p < G77_SEQ; p++) {
+      memcpy(&e_p[p * G77_D], &wemb[toks[p] * G77_D],
+             G77_D * sizeof(float));
+    }
+    {
+      static float er[G77_CTX * G77_D];
+      static float q_t[G77_CTX * G77_D];
+      pai_ref_rope_f32(e_p, G77_SEQ * G77_H, G77_HD, G77_SEQ, G77_H, ct,
+                       sint, G77_R2, er);
+      m0_exp_gemm_g40(ctx, stream, ud, er, wq, q_t, G77_SEQ, G77_D,
+                      G77_D);
+      m0_exp_gemm_g40(ctx, stream, ud, er, wk, kc, G77_SEQ, G77_D,
+                      G77_D);
+      m0_exp_gemm_g40(ctx, stream, ud, er, wv, vc, G77_SEQ, G77_D,
+                      G77_D);
+    }
+
+    for (g = 0; g < G77_NGEN; g++) {
+      float q_l[G77_D], k_r[G77_D], v_r[G77_D];
+      float e_l[G77_D];
+      float at_r[G77_D], op_r[G77_D], h1a_r[G77_D], h1_r[G77_D];
+      float gm_r[G77_MLP], ag_r[G77_MLP], h2_r[G77_MLP];
+      float ml_r[G77_D], h3a_r[G77_D], h3_r[G77_D];
+      float lg_r[G77_VOCAB];
+      static float lg_ref[G77_CTX * G77_VOCAB];
+      uint64_t mism = 0;
+      pai_status_t stp;
+      uint32_t tok = G77_VOCAB;
+      int ok_step = 1;
+
+      p = G77_SEQ + g;
+      seq_in[p] = toks_x[p - 1];
+
+      /* RoPE at position p: zero-padded prefix, last row = new token */
+      memset(e_p, 0, sizeof(e_p));
+      memcpy(&e_p[p * G77_D], &wemb[toks_x[p - 1] * G77_D],
+             G77_D * sizeof(float));
+      {
+        static float er2[G77_CTX * G77_D];
+        pai_ref_rope_f32(e_p, (uint64_t)(p + 1) * G77_H, G77_HD,
+                         (uint64_t)p + 1, G77_H, ct, sint, G77_R2, er2);
+        memcpy(e_l, &er2[p * G77_D], G77_D * sizeof(float));
+        /* QKV via G40 (one row each) - all THREE use the RoPE'd
+         * embedding e_l (decoder_test sez.13 semantics); append K/V
+         * to the cache. */
+        m0_exp_gemm_g40(ctx, stream, ud, e_l, wq, q_l, 1, G77_D, G77_D);
+        m0_exp_gemm_g40(ctx, stream, ud, e_l, wk, k_r, 1, G77_D, G77_D);
+        m0_exp_gemm_g40(ctx, stream, ud, e_l, wv, v_r, 1, G77_D, G77_D);
+      }
+      memcpy(&kc[p * G77_D], k_r, G77_D * sizeof(float));
+      memcpy(&vc[p * G77_D], v_r, G77_D * sizeof(float));
+
+      /* causal attention over the cache, last row only */
+      {
+        static float qp[G77_CTX * G77_D], op[G77_CTX * G77_D];
+        memset(qp, 0, sizeof(qp));
+        memcpy(&qp[p * G77_D], q_l, G77_D * sizeof(float));
+        memset(op, 0, sizeof(op));
+        pai_ref_attention_f32(G77_H, G77_H / 2u, (uint64_t)p + 1, G77_HD,
+                              qp, kc, vc, op);
+        memcpy(at_r, &op[p * G77_D], G77_D * sizeof(float));
+      }
+
+      /* out proj (G40) + residual + RMSNorm */
+      m0_exp_gemm_g40(ctx, stream, ud, at_r, wo, op_r, 1, G77_D, G77_D);
+      for (int i = 0; i < G77_D; i++) {
+        /* residual uses the RoPE-ROTATED embedding (oracle e_last) */
+        h1a_r[i] = op_r[i] + e_l[i];
+      }
+      pai_ref_rmsnorm_gamma_f32(h1a_r, h1_r, G77_D, g1, 1e-5f);
+
+      /* SiLU MLP via G40 + residual + RMSNorm */
+      m0_exp_gemm_g40(ctx, stream, ud, h1_r, w1, gm_r, 1, G77_D, G77_MLP);
+      pai_ref_biasadd_f32(gm_r, b1, ag_r, 1, G77_MLP);
+      pai_ref_silu_f32(ag_r, h2_r, G77_MLP);
+      m0_exp_gemm_g40(ctx, stream, ud, h2_r, w2, ml_r, 1, G77_MLP, G77_D);
+      pai_ref_biasadd_f32(ml_r, b2, h3a_r, 1, G77_D);
+      for (int i = 0; i < G77_D; i++) {
+        h3_r[i] = h1_r[i] + h3a_r[i];
+      }
+      pai_ref_rmsnorm_gamma_f32(h3_r, h1_r, G77_D, g2, 1e-5f);
+
+      /* logits via G40 */
+      m0_exp_gemm_g40(ctx, stream, ud, h1_r, wout, lg_r, 1, G77_D,
+                      G77_VOCAB);
+
+      /* oracle: full forward over the extended prefix */
+      m0_decoder_ref_chain(seq_in, (uint32_t)p + 1, wemb, wq, wk, wv, wo,
+                           g1, w1, b1, w2, b2, g2, wout, oct, ost, lg_ref);
+      stp = pai_ref_compare_f32(lg_r, &lg_ref[p * G77_VOCAB], G77_VOCAB,
+                                1e-4f, 1e-4f, &mism);
+      if (stp != PAI_OK) {
+        ok_step = 0;
+      }
+      {
+        int bi = 0;
+        for (int i = 1; i < G77_VOCAB; i++) {
+          if (lg_r[i] > lg_r[bi]) {
+            bi = i;
+          }
+        }
+        tok = (uint32_t)bi;
+      }
+      {
+        int br = 0;
+        for (int i = 1; i < G77_VOCAB; i++) {
+          if (lg_ref[p * G77_VOCAB + i] > lg_ref[p * G77_VOCAB + br]) {
+            br = i;
+          }
+        }
+        if ((int)tok != br) {
+          ok_step = 0;
+        }
+      }
+      if (!ok_step) {
+        ok_all = 0;
+        step_bad++;
+      }
+      {
+        int br2 = 0;
+        for (int i = 1; i < G77_VOCAB; i++) {
+          if (lg_ref[p * G77_VOCAB + i] > lg_ref[p * G77_VOCAB + br2]) {
+            br2 = i;
+          }
+        }
+        PAI_LOG_INFO_(PAI_SUB_GPU,
+                      "[M0-G77] step %u pos %d tok=%u ref_argmax=%d "
+                      "logits[0..3]=%.4f %.4f %.4f %.4f mism=%llu\n", g,
+                      p, tok, br2, (double)lg_r[0], (double)lg_r[1],
+                      (double)lg_r[2], (double)lg_r[3],
+                      (unsigned long long)mism);
+      }
+      toks_x[p] = (int)tok;
+      (void)argmax_g;
+    }
+    PAI_LOG_INFO_(PAI_SUB_GPU, "[M0-G77] NGEN=%u bad_steps=%u toks=",
+                  G77_NGEN, step_bad);
+    for (int i = 0; i < G77_CTX; i++) {
+      PAI_LOG_INFO_(PAI_SUB_GPU, "%d%s", toks_x[i],
+                    i == G77_CTX - 1 ? "\n" : " ");
+    }
+    m0_exp_report("G77", ok_all);
   }
 
   /* G17: load from the kernel's own acqrb VA - does ANY load complete,
