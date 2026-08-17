@@ -407,6 +407,9 @@
 #define PAI_ROPEGEN_SIN_OFF 26u
 #define PAI_ROPEGEN_SIN_WORDS 34u
 #define PAI_ROPEGEN_CODE_WORDS 60u
+#define PAI_ROPEGEN_SIN_VSIN_WORD 17u /* v_sin_f32 in sin entry
+                                         (abs word 43, sin off 26;
+                                         7E026B01; v_cos=7E026D01) */
 #define PAI_G35_WORDS 15u
 #define PAI_G32_WORDS 16u
 #define PAI_G25_VALUE 0xDEAD0001u

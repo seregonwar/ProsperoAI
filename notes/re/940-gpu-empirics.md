@@ -347,30 +347,31 @@ HW-validated PASS (commit a8d9089).
 
 ## Status
 
-## G67/G68: on-GPU RoPE table generator (serial-per-element)
+## G67-G70: on-GPU RoPE table generator (serial-per-element)
 
 - G67 (cos, commit d502b10): HW-VALIDATED — groups_x = ctx*r2 (128),
   1 thread/group, TGID_X = e = p*r2+i, theta_turns[e] host-computed
   (= theta/2pi so the turns convention cancels), s_load per element
   (G40 pattern), v_cos/v_sin, flat store at C[0..ctx*r2). All 128
-  values exact vs pai_ref_rope_cossin_f32 oracle. The on-GPU RoPE
-  cos table generator is DONE.
-- G68 (sin): NOT HW-validated yet — blocked by post-panic GPU state.
-  Symptoms on PS5 after a kernel panic + reboot: EOP label NEVER fires
-  for the G68 dispatch (30s x 3 fences) even though G67 with the SAME
-  dispatch shape retires instantly; first submission produces zero
-  writes in 30s; re-submit writes ~112/128 values, all EXACT (no '?'
-  entries in the bitmap); holes at e=13..15, 22..29, 32..36 with the
-  occasional extra (e=8, e=99) — i.e. head stable, tail varies. The
-  queue recovers afterwards (G17+26 experiments run, 59/60 PASS).
-  M0-B (golden memset) also fails in every run since the panic.
-- Interpretation: kernel logic correct (every landed value matches the
-  oracle; mirror ABI locked by B's ropegen_diff harness, ctest 32/32).
-  The sin dispatch failing to retire while the identical cos dispatch
-  succeeds points to a wedged GPU/transcendental-unit state after the
-  9.40 kernel panic, not an instruction bug. Retry G68 on a healthy
-  console; if it still fails there, probe v_sin serial-per-element
-  with a cos-store control kernel.
+  values exact vs pai_ref_rope_cossin_f32 oracle.
+- G68 (sin): FAIL — but NOT a GPU-state flake. EOP label NEVER fires
+  (30s x 3 fences), first submission zero writes in 30s, re-submit
+  ~112/128 exact writes, holes at e=13..15, 22..29, 32..36 + occasional
+  extras; queue recovers afterwards (G17+26 run). M0-B also fails in
+  every post-panic run, which initially suggested a wedged GPU.
+- G69 (sin kernel, v_sin word 17 patched 7E026B01 -> 7E026D01 = v_cos):
+  PASS, bad=0, all 128 exact — in the SAME run where G68 fails.
+  Conclusion: SERIAL-PER-ELEMENT v_sin_f32 IS TOXIC on 9.40 (waves
+  hang, dispatch never retires, EOP never fires) while v_cos_f32 is
+  fine. G65/G66 only validated v_sin wave-parallel (1 group, many
+  lanes) — the serial form was never exercised before.
+- G70 (sin via cos-shift): PASS, bad=0 — dispatch the cos path with
+  theta_turns' = theta_turns - 0.25 (i.e. cos(2pi*(tt-0.25)) =
+  cos(theta-pi/2) = sin(theta)), writing the sin half. Production
+  sin-table path validated.
+- Empirical rule 9.40: v_cos_f32 OK serial; v_sin_f32 OK wave-parallel
+  (G66) but TOXIC serial-per-element. RoPE tables on GPU: cos = G67
+  direct, sin = G70 cos-shift.
 
 - Working: bootstrap, jailbreak, /data logging, lifecycle listener,
   notify, DMA, fence, dispatch, SMEM loads, integer ALU, stores,
