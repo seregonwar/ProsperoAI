@@ -644,6 +644,88 @@ pai_host_kernel_ramp2(void *ctx, const uint32_t user_data[16],
 }
 
 pai_status_t
+pai_host_kernel_lanepick(void *ctx, const uint32_t user_data[16],
+                              uint32_t threads_x, uint32_t group_x) {
+  const uint32_t *h = (const uint32_t *)(uintptr_t)pai_ud64(user_data, 2);
+  uint32_t *c = (uint32_t *)(uintptr_t)pai_ud64(user_data, 4);
+
+  (void)ctx;
+  (void)threads_x;
+  (void)group_x;
+
+  for (uint32_t i = 0; i < 8; i++) {
+    c[i] = h[i];
+  }
+  return PAI_OK;
+}
+
+pai_status_t
+pai_host_kernel_blockdump(void *ctx, const uint32_t user_data[16],
+                               uint32_t threads_x, uint32_t group_x) {
+  const uint32_t *h = (const uint32_t *)(uintptr_t)pai_ud64(user_data, 2);
+  uint32_t *c = (uint32_t *)(uintptr_t)pai_ud64(user_data, 4);
+
+  (void)ctx;
+  (void)threads_x;
+  (void)group_x;
+
+  for (uint32_t i = 0; i < 8; i++) {
+    c[i] = h[i];
+  }
+  return PAI_OK;
+}
+
+pai_status_t
+pai_host_kernel_vpick(void *ctx, const uint32_t user_data[16],
+                          uint32_t threads_x, uint32_t group_x) {
+  const uint32_t *h = (const uint32_t *)(uintptr_t)pai_ud64(user_data, 2);
+  uint32_t *c = (uint32_t *)(uintptr_t)pai_ud64(user_data, 4);
+
+  (void)ctx;
+  (void)threads_x;
+  (void)group_x;
+
+  for (uint32_t i = 0; i < 8; i++) {
+    c[i] = h[0];
+  }
+  return PAI_OK;
+}
+
+pai_status_t
+pai_host_kernel_vpick2(void *ctx, const uint32_t user_data[16],
+                           uint32_t threads_x, uint32_t group_x) {
+  const uint32_t *h = (const uint32_t *)(uintptr_t)pai_ud64(user_data, 2);
+  uint32_t *c = (uint32_t *)(uintptr_t)pai_ud64(user_data, 4);
+
+  (void)ctx;
+  (void)threads_x;
+  (void)group_x;
+
+  for (uint32_t i = 0; i < 8; i++) {
+    c[i] = h[0];
+  }
+  return PAI_OK;
+}
+
+/* G64 v_movrels in-ceiling (v7..v14 + m0=7): lane i selects h[7+i],
+ * so the 8 storing lanes write h[7..14]. Mirrors the real kernel. */
+pai_status_t
+pai_host_kernel_movrels(void *ctx, const uint32_t user_data[16],
+                        uint32_t threads_x, uint32_t group_x) {
+  const uint32_t *h = (const uint32_t *)(uintptr_t)pai_ud64(user_data, 2);
+  uint32_t *c = (uint32_t *)(uintptr_t)pai_ud64(user_data, 4);
+
+  (void)ctx;
+  (void)threads_x;
+  (void)group_x;
+
+  for (uint32_t i = 0; i < 8; i++) {
+    c[i] = h[7 + i];
+  }
+  return PAI_OK;
+}
+
+pai_status_t
 pai_host_kernel_int_matmul(void *ctx, const uint32_t user_data[16],
                            uint32_t threads_x, uint32_t group_x) {
   const uint32_t *h = (const uint32_t *)(uintptr_t)pai_ud64(user_data, 2);

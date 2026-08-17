@@ -386,6 +386,98 @@ TEST_MAIN_BEGIN()
         CHECK(c56[i] == want);
       }
     }
+
+    /* G58: block dump - s16..s23 via direct copies (blockdump mirror). */
+    {
+      uint32_t h58[16];
+      uint32_t c58[8];
+      for (uint32_t i = 0; i < 16; i++) {
+        h58[i] = 0x10000000u + i;
+      }
+      ud[0] = 0;
+      ud[1] = 0;
+      ud[2] = (uint32_t)(uintptr_t)h58;
+      ud[3] = (uint32_t)((uintptr_t)h58 >> 32);
+      ud[4] = (uint32_t)(uintptr_t)c58;
+      ud[5] = (uint32_t)((uintptr_t)c58 >> 32);
+      CHECK(pai_host_kernel_blockdump(NULL, ud, 1, 1) == PAI_OK);
+      for (uint32_t i = 0; i < 8; i++) {
+        CHECK_EQ_UINT(c58[i], h58[i]);
+      }
+    }
+
+    /* G59: direct v16 read, no movrels (vpick mirror) - all lanes h[0]. */
+    {
+      uint32_t h59[16];
+      uint32_t c59[8];
+      for (uint32_t i = 0; i < 16; i++) {
+        h59[i] = 0x10000000u + i;
+      }
+      ud[0] = 0;
+      ud[1] = 0;
+      ud[2] = (uint32_t)(uintptr_t)h59;
+      ud[3] = (uint32_t)((uintptr_t)h59 >> 32);
+      ud[4] = (uint32_t)(uintptr_t)c59;
+      ud[5] = (uint32_t)((uintptr_t)c59 >> 32);
+      CHECK(pai_host_kernel_vpick(NULL, ud, 32, 1) == PAI_OK);
+      for (uint32_t i = 0; i < 8; i++) {
+        CHECK_EQ_UINT(c59[i], h59[0]);
+      }
+    }
+
+    /* G60: v8..v15 block copies, all lanes h[0] (vpick2 mirror). */
+    {
+      uint32_t h60[16];
+      uint32_t c60[8];
+      for (uint32_t i = 0; i < 16; i++) {
+        h60[i] = 0x10000000u + i;
+      }
+      ud[0] = 0;
+      ud[1] = 0;
+      ud[2] = (uint32_t)(uintptr_t)h60;
+      ud[3] = (uint32_t)((uintptr_t)h60 >> 32);
+      ud[4] = (uint32_t)(uintptr_t)c60;
+      ud[5] = (uint32_t)((uintptr_t)c60 >> 32);
+      CHECK(pai_host_kernel_vpick2(NULL, ud, 32, 1) == PAI_OK);
+      for (uint32_t i = 0; i < 8; i++) {
+        CHECK_EQ_UINT(c60[i], h60[0]);
+      }
+    }
+
+    /* G64: v_movrels in-ceiling - lane i selects h[7+i] (movrels
+     * mirror: c[i] = h[7+i]). */
+    {
+      uint32_t h64[16];
+      uint32_t c64[8];
+      for (uint32_t i = 0; i < 16; i++) {
+        h64[i] = 0x10000000u + i;
+      }
+      ud[2] = (uint32_t)(uintptr_t)h64;
+      ud[3] = (uint32_t)((uintptr_t)h64 >> 32);
+      ud[4] = (uint32_t)(uintptr_t)c64;
+      ud[5] = (uint32_t)((uintptr_t)c64 >> 32);
+      CHECK(pai_host_kernel_movrels(NULL, ud, 32, 1) == PAI_OK);
+      for (uint32_t i = 0; i < 8; i++) {
+        CHECK_EQ_UINT(c64[i], h64[7 + i]);
+      }
+    }
+
+    /* G57: per-lane select from 16-dword block (lanepick mirror). */
+    {
+      uint32_t h57[16];
+      uint32_t *c57 = (uint32_t *)cbuf;
+      for (uint32_t i = 0; i < 16; i++) {
+        h57[i] = 0x10000000u + i;
+      }
+      ud[2] = (uint32_t)(uintptr_t)h57;
+      ud[3] = (uint32_t)((uintptr_t)h57 >> 32);
+      ud[4] = (uint32_t)(uintptr_t)cbuf;
+      ud[5] = (uint32_t)((uintptr_t)cbuf >> 32);
+      CHECK(pai_host_kernel_lanepick(NULL, ud, 32, 1) == PAI_OK);
+      for (uint32_t i = 0; i < 8; i++) {
+        CHECK_EQ_UINT(c57[i], h57[i]);
+      }
+    }
   }
 
   pai_gpu_buffer_free(dev, &label);

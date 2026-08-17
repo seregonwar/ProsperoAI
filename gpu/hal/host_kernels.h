@@ -176,4 +176,28 @@ pai_status_t pai_host_kernel_ramp(void *ctx, const uint32_t user_data[16],
 pai_status_t pai_host_kernel_ramp2(void *ctx, const uint32_t user_data[16],
                                    uint32_t threads_x, uint32_t group_x);
 
+/* G57 per-lane select: header ptr at ud[2:3] (16 dwords), C at
+ * ud[4:5]; lane i stores header[i] for the 8 storing lanes. */
+pai_status_t pai_host_kernel_lanepick(void *ctx, const uint32_t user_data[16],
+                                      uint32_t threads_x, uint32_t group_x);
+
+/* G58 block dump: header ptr at ud[2:3] (16 dwords), C at ud[4:5];
+ * c[0..7] = header[0..7] (s16..s23 copies, no movrels). */
+pai_status_t pai_host_kernel_blockdump(void *ctx, const uint32_t user_data[16],
+                                       uint32_t threads_x, uint32_t group_x);
+
+/* G59 direct v16 read: header ptr at ud[2:3], C at ud[4:5]; every
+ * storing lane writes header[0] (mirrors the real kernel reading v16). */
+pai_status_t pai_host_kernel_vpick(void *ctx, const uint32_t user_data[16],
+                                   uint32_t threads_x, uint32_t group_x);
+
+/* G60 v8..v15 block: same as vpick (header ptr ud[2:3], C ud[4:5],
+ * every storing lane writes header[0]). */
+pai_status_t pai_host_kernel_vpick2(void *ctx, const uint32_t user_data[16],
+                                    uint32_t threads_x, uint32_t group_x);
+
+/* G64 v_movrels in-ceiling (v7..v14 + m0=7): lane i selects h[7+i]. */
+pai_status_t pai_host_kernel_movrels(void *ctx, const uint32_t user_data[16],
+                                     uint32_t threads_x, uint32_t group_x);
+
 #endif /* PAI_GPU_HOST_KERNELS_H */

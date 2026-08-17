@@ -14,7 +14,13 @@
 #include <stdint.h>
 
 /* Both kernels use the OpenAGC-proven RSRC1 (WGP_MODE + W32_EN). */
+/* RSRC1 base for experiments. VGPRS field (bits 0-5) = 0 by default
+ * (8 VGPRs, granularity 8 on gfx10); G57 needs 32 VGPRs for the
+ * v[16:31] block copies AND 32 SGPRs for the s_load_dwordx16
+ * s[16:31] block (SGPRS field bits 6-11), so it overrides with
+ * PAI_EXP_RSRC1_BLOCK32. */
 #define PAI_EXP_RSRC1  0x602C0000u
+#define PAI_EXP_RSRC1_BLOCK32 0x602C0043u
 #define PAI_EXP_RSRC3  0x00000000u
 #define PAI_EXP_THREADS_X 32u
 
@@ -345,6 +351,37 @@
  * proves the scalar-read path works wave-parallel (x-side of GEMV). */
 #define PAI_RAMP2_RSRC2 PAI_RAMP_RSRC2
 #define PAI_RAMP2_CODE_WORDS 22u
+
+/* G57: per-lane select from an s_load_dwordx16 block (lanepick.s) via
+ * v_movrels_b32 (m0 base + v0 index). Unlock probe for wave-parallel
+ * GEMV: gives each lane its own element without vector loads. */
+#define PAI_LANEPICK_RSRC2 PAI_RAMP_RSRC2
+#define PAI_LANEPICK_CODE_WORDS 33u
+
+/* G58: s_load_dwordx16 block dump (blockdump.s) - bisection probe for
+ * G57: does the 16-dword block land in s[16:31] when 32 SGPRs are
+ * allocated? c[0..7] = s16..s23 via direct v_mov copies, no movrels. */
+#define PAI_BLOCKDUMP_RSRC2 PAI_RAMP_RSRC2
+#define PAI_BLOCKDUMP_CODE_WORDS 59u
+
+/* G59: direct v16 read (vpick.s) - decisive bisection for G57: if
+ * c[0..7] == header[0], v16+ copies land and v_movrels is broken; if
+ * garbage, the v16+ copies are dropped (RSRC1 VGPRS wrong). */
+#define PAI_VPICK_RSRC2 PAI_RAMP_RSRC2
+#define PAI_VPICK_CODE_WORDS 24u
+
+/* G60: v8..v15 block copies under STANDARD RSRC1 (vpick2.s) - golden
+ * E22 proves v6-v9 work with 0x602C0000; does v15 also? Separates a
+ * real VGPR ceiling from the BLOCK32 RSRC1 change. */
+#define PAI_VPICK2_RSRC2 PAI_RAMP_RSRC2
+#define PAI_VPICK2_CODE_WORDS 24u
+
+/* G64: v_movrels_b32 with in-ceiling block v7..v14 + m0=7 (movrels.s)
+ * - the one untested piece: G57's v16+ copies were dropped by the
+ * 16-VGPR hardware ceiling (G59/G63), so movrels read garbage there.
+ * c[i] = h[7+i] = 0x10000007+i for lanes 0..7. */
+#define PAI_MOVRELS_RSRC2 PAI_RAMP_RSRC2
+#define PAI_MOVRELS_CODE_WORDS 25u
 #define PAI_G35_WORDS 15u
 #define PAI_G32_WORDS 16u
 #define PAI_G25_VALUE 0xDEAD0001u
@@ -460,6 +497,11 @@ extern const uint32_t pai_t4_ops_code[PAI_T4_CODE_WORDS];
 extern const uint32_t pai_int_ops_code[PAI_INT_CODE_WORDS];
 extern const uint32_t pai_ramp_code[PAI_RAMP_CODE_WORDS];
 extern const uint32_t pai_ramp2_code[PAI_RAMP2_CODE_WORDS];
+extern const uint32_t pai_lanepick_code[PAI_LANEPICK_CODE_WORDS];
+extern const uint32_t pai_blockdump_code[PAI_BLOCKDUMP_CODE_WORDS];
+extern const uint32_t pai_vpick_code[PAI_VPICK_CODE_WORDS];
+extern const uint32_t pai_vpick2_code[PAI_VPICK2_CODE_WORDS];
+extern const uint32_t pai_movrels_code[PAI_MOVRELS_CODE_WORDS];
 extern const uint32_t pai_hbatch_code[];
 extern const uint32_t pai_hbatch2_code[];
 extern const uint32_t pai_hbatch3_code[PAI_H10_CODE_WORDS];

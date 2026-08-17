@@ -336,10 +336,11 @@ m0_stage_a(m0_ctx_t *ctx) {
 /* Stage E — compute bring-up experiment matrix. */
 
 static void
-m0_build_dispatch_stream(m0_ctx_t *ctx, uint32_t *stream, uint32_t cap,
-                         uint32_t rsrc2, uint32_t threads_x, uint32_t groups_x,
-                         const uint32_t *user_data, uint32_t ud_count,
-                         uint32_t *out_len) {
+m0_build_dispatch_stream_rsrc1(m0_ctx_t *ctx, uint32_t *stream, uint32_t cap,
+                               uint32_t rsrc1, uint32_t rsrc2,
+                               uint32_t threads_x, uint32_t groups_x,
+                               const uint32_t *user_data, uint32_t ud_count,
+                               uint32_t *out_len) {
   pai_pm4_builder_t pb;
   uint32_t vals[9];
   uint64_t code = ctx->code.gpu_addr;
@@ -350,7 +351,7 @@ m0_build_dispatch_stream(m0_ctx_t *ctx, uint32_t *stream, uint32_t cap,
   vals[1] = (uint32_t)(code >> 40);
   pai_pm4_set_sh_reg_compute(&pb, PAI_REG_COMPUTE_PGM_LO, 2, vals);
 
-  vals[0] = PAI_EXP_RSRC1;
+  vals[0] = rsrc1;
   vals[1] = rsrc2;
   pai_pm4_set_sh_reg_compute(&pb, PAI_REG_COMPUTE_PGM_RSRC1, 2, vals);
 
@@ -368,6 +369,16 @@ m0_build_dispatch_stream(m0_ctx_t *ctx, uint32_t *stream, uint32_t cap,
   pai_pm4_dispatch_direct(&pb, groups_x, 1, 1, 0);
 
   *out_len = pb.len;
+}
+
+static void
+m0_build_dispatch_stream(m0_ctx_t *ctx, uint32_t *stream, uint32_t cap,
+                         uint32_t rsrc2, uint32_t threads_x, uint32_t groups_x,
+                         const uint32_t *user_data, uint32_t ud_count,
+                         uint32_t *out_len) {
+  m0_build_dispatch_stream_rsrc1(ctx, stream, cap, PAI_EXP_RSRC1, rsrc2,
+                                 threads_x, groups_x, user_data, ud_count,
+                                 out_len);
 }
 
 /* Full OpenAGC dispatch preamble (agcGfx1013DispatchComputeCommon):
@@ -3907,6 +3918,393 @@ h48[0] = kk;
       }
     }
     m0_exp_report("G56", ok);
+  }
+
+  /* G57: per-lane select from an s_load_dwordx16 block - can a lane
+   * pick its own element out of a 16-dword scalar load (v_movrels_b32
+   * with m0 base + v0 index)? The unlock for wave-parallel GEMV
+   * (per-lane W[i,k] access without vector loads). */
+  if (!host) {
+    pai_gpu_reset(gpu);
+  }
+  {
+    uint32_t *h57 = (uint32_t *)ctx->a.cpu_addr;
+    uint32_t *c57 = (uint32_t *)ctx->c.cpu_addr;
+    uint32_t stream_len = 0;
+    int ok = 1;
+
+    memset(c57, 0xCC, 64 * sizeof(uint32_t));
+    for (uint32_t i = 0; i < 16; i++) {
+      h57[i] = 0x10000000u + i;
+    }
+    memcpy(ctx->code.cpu_addr, pai_lanepick_code,
+           PAI_LANEPICK_CODE_WORDS * sizeof(uint32_t));
+    if (host) {
+      pai_gpu_host_register_shader(gpu, ctx->code.gpu_addr,
+                                   pai_host_kernel_lanepick, NULL);
+    }
+    pai_gpu_buffer_flush(ctx->gpu, &ctx->a);
+    pai_gpu_buffer_flush(ctx->gpu, &ctx->code);
+    ud[0] = 0;
+    ud[1] = 0;
+    ud[2] = (uint32_t)(ctx->a.gpu_addr & 0xFFFFFFFFu);
+    ud[3] = (uint32_t)(ctx->a.gpu_addr >> 32);
+    ud[4] = (uint32_t)(ctx->c.gpu_addr & 0xFFFFFFFFu);
+    ud[5] = (uint32_t)(ctx->c.gpu_addr >> 32);
+    m0_build_dispatch_stream_rsrc1(ctx, stream, M0_PM4_CAP,
+                                   PAI_EXP_RSRC1_BLOCK32,
+                                   PAI_LANEPICK_RSRC2, PAI_EXP_THREADS_X,
+                                   1, ud, 6, &stream_len);
+    m0_run_gpu(ctx, stream, stream_len, c57, 64, 0xCC, "G57");
+    PAI_LOG_INFO_(PAI_SUB_GPU,
+                  "[M0-G57] c[0..7] = %08x %08x %08x %08x %08x %08x %08x "
+                  "%08x\n",
+                  c57[0], c57[1], c57[2], c57[3], c57[4], c57[5], c57[6],
+                  c57[7]);
+    for (uint32_t i = 0; i < 8 && ok; i++) {
+      if (c57[i] != h57[i]) {
+        ok = 0;
+      }
+    }
+    m0_exp_report("G57", ok);
+  }
+
+  /* G58: block dump bisection - does s_load_dwordx16 populate
+   * s[16:31] with 32 SGPRs allocated? Direct v_mov copies to c, no
+   * v_movrels. Isolates block SMEM load from G57's select. */
+  if (!host) {
+    pai_gpu_reset(gpu);
+  }
+  {
+    uint32_t *h58 = (uint32_t *)ctx->a.cpu_addr;
+    uint32_t *c58 = (uint32_t *)ctx->c.cpu_addr;
+    uint32_t stream_len = 0;
+    int ok = 1;
+
+    memset(c58, 0xCC, 64 * sizeof(uint32_t));
+    for (uint32_t i = 0; i < 16; i++) {
+      h58[i] = 0x10000000u + i;
+    }
+    memcpy(ctx->code.cpu_addr, pai_blockdump_code,
+           PAI_BLOCKDUMP_CODE_WORDS * sizeof(uint32_t));
+    if (host) {
+      pai_gpu_host_register_shader(gpu, ctx->code.gpu_addr,
+                                   pai_host_kernel_blockdump, NULL);
+    }
+    pai_gpu_buffer_flush(ctx->gpu, &ctx->a);
+    pai_gpu_buffer_flush(ctx->gpu, &ctx->code);
+    ud[0] = 0;
+    ud[1] = 0;
+    ud[2] = (uint32_t)(ctx->a.gpu_addr & 0xFFFFFFFFu);
+    ud[3] = (uint32_t)(ctx->a.gpu_addr >> 32);
+    ud[4] = (uint32_t)(ctx->c.gpu_addr & 0xFFFFFFFFu);
+    ud[5] = (uint32_t)(ctx->c.gpu_addr >> 32);
+    m0_build_dispatch_stream_rsrc1(ctx, stream, M0_PM4_CAP,
+                                   PAI_EXP_RSRC1_BLOCK32,
+                                   PAI_BLOCKDUMP_RSRC2, 1,
+                                   1, ud, 6, &stream_len);
+    m0_run_gpu(ctx, stream, stream_len, c58, 64, 0xCC, "G58");
+    PAI_LOG_INFO_(PAI_SUB_GPU,
+                  "[M0-G58] c[0..7] = %08x %08x %08x %08x %08x %08x %08x "
+                  "%08x\n",
+                  c58[0], c58[1], c58[2], c58[3], c58[4], c58[5], c58[6],
+                  c58[7]);
+    for (uint32_t i = 0; i < 8 && ok; i++) {
+      if (c58[i] != h58[i]) {
+        ok = 0;
+      }
+    }
+    m0_exp_report("G58", ok);
+  }
+
+  /* G59: direct v16 read, no movrels - decisive bisection for G57.
+   * If c[0..7] == header[0], v16+ copies land and v_movrels_b32 is
+   * the non-functional piece. If garbage, copies to v16+ are dropped. */
+  if (!host) {
+    pai_gpu_reset(gpu);
+  }
+  {
+    uint32_t *h59 = (uint32_t *)ctx->a.cpu_addr;
+    uint32_t *c59 = (uint32_t *)ctx->c.cpu_addr;
+    uint32_t stream_len = 0;
+    int ok = 1;
+
+    memset(c59, 0xCC, 64 * sizeof(uint32_t));
+    for (uint32_t i = 0; i < 16; i++) {
+      h59[i] = 0x10000000u + i;
+    }
+    memcpy(ctx->code.cpu_addr, pai_vpick_code,
+           PAI_VPICK_CODE_WORDS * sizeof(uint32_t));
+    if (host) {
+      pai_gpu_host_register_shader(gpu, ctx->code.gpu_addr,
+                                   pai_host_kernel_vpick, NULL);
+    }
+    pai_gpu_buffer_flush(ctx->gpu, &ctx->a);
+    pai_gpu_buffer_flush(ctx->gpu, &ctx->code);
+    ud[0] = 0;
+    ud[1] = 0;
+    ud[2] = (uint32_t)(ctx->a.gpu_addr & 0xFFFFFFFFu);
+    ud[3] = (uint32_t)(ctx->a.gpu_addr >> 32);
+    ud[4] = (uint32_t)(ctx->c.gpu_addr & 0xFFFFFFFFu);
+    ud[5] = (uint32_t)(ctx->c.gpu_addr >> 32);
+    m0_build_dispatch_stream_rsrc1(ctx, stream, M0_PM4_CAP,
+                                   PAI_EXP_RSRC1_BLOCK32,
+                                   PAI_VPICK_RSRC2, PAI_EXP_THREADS_X,
+                                   1, ud, 6, &stream_len);
+    m0_run_gpu(ctx, stream, stream_len, c59, 64, 0xCC, "G59");
+    PAI_LOG_INFO_(PAI_SUB_GPU,
+                  "[M0-G59] c[0..7] = %08x %08x %08x %08x %08x %08x %08x "
+                  "%08x\n",
+                  c59[0], c59[1], c59[2], c59[3], c59[4], c59[5], c59[6],
+                  c59[7]);
+    for (uint32_t i = 0; i < 8 && ok; i++) {
+      if (c59[i] != h59[0]) {
+        ok = 0;
+      }
+    }
+    m0_exp_report("G59", ok);
+  }
+
+  /* G60: v8..v15 block copies under STANDARD RSRC1 (0x602C0000) -
+   * golden E22 proves v6-v9 work with this RSRC1; does v15? If yes,
+   * the v16+ failure is a real ceiling (or BLOCK32 broke it), and
+   * G61 (v16 + standard RSRC1) discriminates the two. */
+  if (!host) {
+    pai_gpu_reset(gpu);
+  }
+  {
+    uint32_t *h60 = (uint32_t *)ctx->a.cpu_addr;
+    uint32_t *c60 = (uint32_t *)ctx->c.cpu_addr;
+    uint32_t stream_len = 0;
+    int ok = 1;
+
+    memset(c60, 0xCC, 64 * sizeof(uint32_t));
+    for (uint32_t i = 0; i < 16; i++) {
+      h60[i] = 0x10000000u + i;
+    }
+    memcpy(ctx->code.cpu_addr, pai_vpick2_code,
+           PAI_VPICK2_CODE_WORDS * sizeof(uint32_t));
+    if (host) {
+      pai_gpu_host_register_shader(gpu, ctx->code.gpu_addr,
+                                   pai_host_kernel_vpick2, NULL);
+    }
+    pai_gpu_buffer_flush(ctx->gpu, &ctx->a);
+    pai_gpu_buffer_flush(ctx->gpu, &ctx->code);
+    ud[0] = 0;
+    ud[1] = 0;
+    ud[2] = (uint32_t)(ctx->a.gpu_addr & 0xFFFFFFFFu);
+    ud[3] = (uint32_t)(ctx->a.gpu_addr >> 32);
+    ud[4] = (uint32_t)(ctx->c.gpu_addr & 0xFFFFFFFFu);
+    ud[5] = (uint32_t)(ctx->c.gpu_addr >> 32);
+    m0_build_dispatch_stream(ctx, stream, M0_PM4_CAP, PAI_VPICK2_RSRC2,
+                             PAI_EXP_THREADS_X, 1, ud, 6, &stream_len);
+    m0_run_gpu(ctx, stream, stream_len, c60, 64, 0xCC, "G60");
+    PAI_LOG_INFO_(PAI_SUB_GPU,
+                  "[M0-G60] c[0..7] = %08x %08x %08x %08x %08x %08x %08x "
+                  "%08x\n",
+                  c60[0], c60[1], c60[2], c60[3], c60[4], c60[5], c60[6],
+                  c60[7]);
+    for (uint32_t i = 0; i < 8 && ok; i++) {
+      if (c60[i] != h60[0]) {
+        ok = 0;
+      }
+    }
+    m0_exp_report("G60", ok);
+  }
+
+  /* G61: v16 direct read but STANDARD RSRC1 (vpick code) - if G60
+   * passes (v8-v15 fine) and G61 fails, the ceiling is between v16
+   * and v24; if G61 passes too, BLOCK32 RSRC1 was the breakage. */
+  if (!host) {
+    pai_gpu_reset(gpu);
+  }
+  {
+    uint32_t *h61 = (uint32_t *)ctx->a.cpu_addr;
+    uint32_t *c61 = (uint32_t *)ctx->c.cpu_addr;
+    uint32_t stream_len = 0;
+    int ok = 1;
+
+    memset(c61, 0xCC, 64 * sizeof(uint32_t));
+    for (uint32_t i = 0; i < 16; i++) {
+      h61[i] = 0x10000000u + i;
+    }
+    memcpy(ctx->code.cpu_addr, pai_vpick_code,
+           PAI_VPICK_CODE_WORDS * sizeof(uint32_t));
+    if (host) {
+      pai_gpu_host_register_shader(gpu, ctx->code.gpu_addr,
+                                   pai_host_kernel_vpick, NULL);
+    }
+    pai_gpu_buffer_flush(ctx->gpu, &ctx->a);
+    pai_gpu_buffer_flush(ctx->gpu, &ctx->code);
+    ud[0] = 0;
+    ud[1] = 0;
+    ud[2] = (uint32_t)(ctx->a.gpu_addr & 0xFFFFFFFFu);
+    ud[3] = (uint32_t)(ctx->a.gpu_addr >> 32);
+    ud[4] = (uint32_t)(ctx->c.gpu_addr & 0xFFFFFFFFu);
+    ud[5] = (uint32_t)(ctx->c.gpu_addr >> 32);
+    m0_build_dispatch_stream(ctx, stream, M0_PM4_CAP, PAI_VPICK_RSRC2,
+                             PAI_EXP_THREADS_X, 1, ud, 6, &stream_len);
+    m0_run_gpu(ctx, stream, stream_len, c61, 64, 0xCC, "G61");
+    PAI_LOG_INFO_(PAI_SUB_GPU,
+                  "[M0-G61] c[0..7] = %08x %08x %08x %08x %08x %08x %08x "
+                  "%08x\n",
+                  c61[0], c61[1], c61[2], c61[3], c61[4], c61[5], c61[6],
+                  c61[7]);
+    for (uint32_t i = 0; i < 8 && ok; i++) {
+      if (c61[i] != h61[0]) {
+        ok = 0;
+      }
+    }
+    m0_exp_report("G61", ok);
+  }
+
+  /* G62: v8..v15 copies + direct v8 read under BLOCK32 (32 VGPR +
+   * 32 SGPR) at 32 threads. G60 used STANDARD (8 VGPR) so v8 was
+   * out of range - confounded. If G62 passes, v8..v15 are fine with
+   * the right allocation and G59's failure is v16+ specific (or a
+   * thread-count effect, discriminated by G63). */
+  if (!host) {
+    pai_gpu_reset(gpu);
+  }
+  {
+    uint32_t *h62 = (uint32_t *)ctx->a.cpu_addr;
+    uint32_t *c62 = (uint32_t *)ctx->c.cpu_addr;
+    uint32_t stream_len = 0;
+    int ok = 1;
+
+    memset(c62, 0xCC, 64 * sizeof(uint32_t));
+    for (uint32_t i = 0; i < 16; i++) {
+      h62[i] = 0x10000000u + i;
+    }
+    memcpy(ctx->code.cpu_addr, pai_vpick2_code,
+           PAI_VPICK2_CODE_WORDS * sizeof(uint32_t));
+    if (host) {
+      pai_gpu_host_register_shader(gpu, ctx->code.gpu_addr,
+                                   pai_host_kernel_vpick2, NULL);
+    }
+    pai_gpu_buffer_flush(ctx->gpu, &ctx->a);
+    pai_gpu_buffer_flush(ctx->gpu, &ctx->code);
+    ud[0] = 0;
+    ud[1] = 0;
+    ud[2] = (uint32_t)(ctx->a.gpu_addr & 0xFFFFFFFFu);
+    ud[3] = (uint32_t)(ctx->a.gpu_addr >> 32);
+    ud[4] = (uint32_t)(ctx->c.gpu_addr & 0xFFFFFFFFu);
+    ud[5] = (uint32_t)(ctx->c.gpu_addr >> 32);
+    m0_build_dispatch_stream_rsrc1(ctx, stream, M0_PM4_CAP,
+                                   PAI_EXP_RSRC1_BLOCK32,
+                                   PAI_VPICK2_RSRC2, PAI_EXP_THREADS_X,
+                                   1, ud, 6, &stream_len);
+    m0_run_gpu(ctx, stream, stream_len, c62, 64, 0xCC, "G62");
+    PAI_LOG_INFO_(PAI_SUB_GPU,
+                  "[M0-G62] c[0..7] = %08x %08x %08x %08x %08x %08x %08x "
+                  "%08x\n",
+                  c62[0], c62[1], c62[2], c62[3], c62[4], c62[5], c62[6],
+                  c62[7]);
+    for (uint32_t i = 0; i < 8 && ok; i++) {
+      if (c62[i] != h62[0]) {
+        ok = 0;
+      }
+    }
+    m0_exp_report("G62", ok);
+  }
+
+  /* G63: v16..v23 copies + direct v16 read under BLOCK32 at 1 thread.
+   * G59 (32T) leaked tid; if v16 works at 1T, the 32-thread dispatch
+   * is what breaks high-VGPR reads (a wave/execution quirk), not the
+   * VGPR number itself. */
+  if (!host) {
+    pai_gpu_reset(gpu);
+  }
+  {
+    uint32_t *h63 = (uint32_t *)ctx->a.cpu_addr;
+    uint32_t *c63 = (uint32_t *)ctx->c.cpu_addr;
+    uint32_t stream_len = 0;
+    int ok = 1;
+
+    memset(c63, 0xCC, 64 * sizeof(uint32_t));
+    for (uint32_t i = 0; i < 16; i++) {
+      h63[i] = 0x10000000u + i;
+    }
+    memcpy(ctx->code.cpu_addr, pai_vpick_code,
+           PAI_VPICK_CODE_WORDS * sizeof(uint32_t));
+    if (host) {
+      pai_gpu_host_register_shader(gpu, ctx->code.gpu_addr,
+                                   pai_host_kernel_vpick, NULL);
+    }
+    pai_gpu_buffer_flush(ctx->gpu, &ctx->a);
+    pai_gpu_buffer_flush(ctx->gpu, &ctx->code);
+    ud[0] = 0;
+    ud[1] = 0;
+    ud[2] = (uint32_t)(ctx->a.gpu_addr & 0xFFFFFFFFu);
+    ud[3] = (uint32_t)(ctx->a.gpu_addr >> 32);
+    ud[4] = (uint32_t)(ctx->c.gpu_addr & 0xFFFFFFFFu);
+    ud[5] = (uint32_t)(ctx->c.gpu_addr >> 32);
+    m0_build_dispatch_stream_rsrc1(ctx, stream, M0_PM4_CAP,
+                                   PAI_EXP_RSRC1_BLOCK32,
+                                   PAI_VPICK_RSRC2, 1, 1, ud, 6,
+                                   &stream_len);
+    m0_run_gpu(ctx, stream, stream_len, c63, 64, 0xCC, "G63");
+    PAI_LOG_INFO_(PAI_SUB_GPU,
+                  "[M0-G63] c[0..7] = %08x %08x %08x %08x %08x %08x %08x "
+                  "%08x\n",
+                  c63[0], c63[1], c63[2], c63[3], c63[4], c63[5], c63[6],
+                  c63[7]);
+    /* 1 thread -> only c[0] written (lanes 1..7 stay 0xCC). */
+    if (c63[0] != h63[0]) {
+      ok = 0;
+    }
+    m0_exp_report("G63", ok);
+  }
+
+  /* G64: v_movrels_b32 with in-ceiling block v7..v14 + m0=7 - the one
+   * untested piece. G57's v16+ copies were dropped by the 16-VGPR HW
+   * ceiling, so movrels read garbage there; G64 copies the block to
+   * v7..v14 (G62 proved v8..v15 readable) and selects v[7+tid].
+   * Expect c[i] = h[7+i] = 0x10000007+i. If PASS: per-lane select
+   * unlocked -> wave-parallel GEMV buildable. */
+  if (!host) {
+    pai_gpu_reset(gpu);
+  }
+  {
+    uint32_t *h64 = (uint32_t *)ctx->a.cpu_addr;
+    uint32_t *c64 = (uint32_t *)ctx->c.cpu_addr;
+    uint32_t stream_len = 0;
+    int ok = 1;
+
+    memset(c64, 0xCC, 64 * sizeof(uint32_t));
+    for (uint32_t i = 0; i < 16; i++) {
+      h64[i] = 0x10000000u + i;
+    }
+    memcpy(ctx->code.cpu_addr, pai_movrels_code,
+           PAI_MOVRELS_CODE_WORDS * sizeof(uint32_t));
+    if (host) {
+      pai_gpu_host_register_shader(gpu, ctx->code.gpu_addr,
+                                   pai_host_kernel_movrels, NULL);
+    }
+    pai_gpu_buffer_flush(ctx->gpu, &ctx->a);
+    pai_gpu_buffer_flush(ctx->gpu, &ctx->code);
+    ud[0] = 0;
+    ud[1] = 0;
+    ud[2] = (uint32_t)(ctx->a.gpu_addr & 0xFFFFFFFFu);
+    ud[3] = (uint32_t)(ctx->a.gpu_addr >> 32);
+    ud[4] = (uint32_t)(ctx->c.gpu_addr & 0xFFFFFFFFu);
+    ud[5] = (uint32_t)(ctx->c.gpu_addr >> 32);
+    m0_build_dispatch_stream_rsrc1(ctx, stream, M0_PM4_CAP,
+                                   PAI_EXP_RSRC1_BLOCK32,
+                                   PAI_MOVRELS_RSRC2, PAI_EXP_THREADS_X,
+                                   1, ud, 6, &stream_len);
+    m0_run_gpu(ctx, stream, stream_len, c64, 64, 0xCC, "G64");
+    PAI_LOG_INFO_(PAI_SUB_GPU,
+                  "[M0-G64] c[0..7] = %08x %08x %08x %08x %08x %08x %08x "
+                  "%08x\n",
+                  c64[0], c64[1], c64[2], c64[3], c64[4], c64[5], c64[6],
+                  c64[7]);
+    for (uint32_t i = 0; i < 8 && ok; i++) {
+      if (c64[i] != h64[7 + i]) {
+        ok = 0;
+      }
+    }
+    m0_exp_report("G64", ok);
   }
 
   /* G17: load from the kernel's own acqrb VA - does ANY load complete,

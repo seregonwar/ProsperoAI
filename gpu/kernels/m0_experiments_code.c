@@ -159,6 +159,26 @@ const uint32_t pai_ramp2_code[PAI_RAMP2_CODE_WORDS] = {
 #include "gfx1013/pai_ramp2.inc"
 };
 
+const uint32_t pai_lanepick_code[PAI_LANEPICK_CODE_WORDS] = {
+#include "gfx1013/pai_lanepick.inc"
+};
+
+const uint32_t pai_blockdump_code[PAI_BLOCKDUMP_CODE_WORDS] = {
+#include "gfx1013/pai_blockdump.inc"
+};
+
+const uint32_t pai_vpick_code[PAI_VPICK_CODE_WORDS] = {
+#include "gfx1013/pai_vpick.inc"
+};
+
+const uint32_t pai_vpick2_code[PAI_VPICK2_CODE_WORDS] = {
+#include "gfx1013/pai_vpick2.inc"
+};
+
+const uint32_t pai_movrels_code[PAI_MOVRELS_CODE_WORDS] = {
+#include "gfx1013/pai_movrels.inc"
+};
+
 const uint32_t pai_hbatch_code[] = {
 #include "gfx1013/pai_hbatch.inc"
 };
