@@ -269,6 +269,88 @@ TEST_MAIN_BEGIN()
 }
 
 {
+  /* multi-head causal attention vs an independent row-by-row oracle.
+   * MHA: h=2, hk=2, seq=2, hd=4 (inv_scale = 1/sqrt(4) = 0.5).
+   * Layout is position-major: buffer row = p*H + hh. */
+  float q[16] = {1, 2, 0, 0,    /* p0h0 */
+                 3, 0, 1, 0,    /* p0h1 */
+                 2, 1, 0, 0,    /* p1h0 */
+                 0, 4, 0, 1};   /* p1h1 */
+  float k[16] = {1, 0, 0, 0,    /* p0h0 */
+                 0, 2, 0, 0,    /* p0h1 */
+                 0, 1, 0, 0,    /* p1h0 */
+                 1, 0, 0, 0};   /* p1h1 */
+  float v[16] = {1, 2, 3, 4,    /* p0h0 */
+                 5, 6, 7, 8,    /* p0h1 */
+                 9, 10, 11, 12, /* p1h0 */
+                 13, 14, 15, 16}; /* p1h1 */
+  float out[16];
+  const float inv = 0.5f;
+  int ok = 1;
+  CHECK(pai_ref_attention_f32(2, 2, 2, 4, q, k, v, out) == PAI_OK);
+  /* p0 attends only to itself (causal): out = v row. */
+  for (int d = 0; d < 4; d++) {
+    CHECK(fabsf(out[0 * 4 + d] - v[d]) < 1e-6f);
+    CHECK(fabsf(out[1 * 4 + d] - v[4 + d]) < 1e-6f);
+  }
+  /* p1h0: scores over p0,p1 = (2, 1) * inv; softmax -> weighted sum. */
+  for (int hh = 0; hh < 2 && ok; hh++) {
+    int p = 1;
+    float s0 = 0, s1 = 0;
+    float w0, w1;
+    int d;
+    for (d = 0; d < 4; d++) {
+      s0 += q[(p * 2 + hh) * 4 + d] * k[(0 * 2 + hh) * 4 + d];
+      s1 += q[(p * 2 + hh) * 4 + d] * k[(1 * 2 + hh) * 4 + d];
+    }
+    w0 = expf(s0 * inv);
+    w1 = expf(s1 * inv);
+    for (d = 0; d < 4; d++) {
+      float expect = (w0 * v[(0 * 2 + hh) * 4 + d] +
+                      w1 * v[(1 * 2 + hh) * 4 + d]) /
+                     (w0 + w1);
+      if (fabsf(out[(p * 2 + hh) * 4 + d] - expect) > 1e-6f) {
+        ok = 0;
+      }
+    }
+  }
+  CHECK(ok);
+  /* GQA: h=4, hk=2, kvh = (hh * hk) / h -> hh 0,1 -> kv 0; 2,3 -> kv 1. */
+  {
+    float q4[32], k2[16], v2[16], out4[32];
+    for (int i = 0; i < 32; i++) {
+      q4[i] = (float)((i % 7) - 3);
+    }
+    for (int i = 0; i < 16; i++) {
+      k2[i] = (float)((i % 5) - 2);
+      v2[i] = (float)((i % 9) - 4);
+    }
+    CHECK(pai_ref_attention_f32(4, 2, 2, 4, q4, k2, v2, out4) == PAI_OK);
+    /* p0 out row (hh) must equal v row (kvh) exactly (single element
+     * softmax = 1). */
+    for (int hh = 0; hh < 4; hh++) {
+      int kvh = (hh * 2) / 4;
+      for (int d = 0; d < 4; d++) {
+        CHECK(fabsf(out4[hh * 4 + d] - v2[kvh * 4 + d]) < 1e-6f);
+      }
+    }
+  }
+  /* invalid args */
+  CHECK(pai_ref_attention_f32(0, 2, 2, 4, q, k, v, out) ==
+        PAI_ERR_INVALID_ARG);
+  CHECK(pai_ref_attention_f32(2, 0, 2, 4, q, k, v, out) ==
+        PAI_ERR_INVALID_ARG);
+  CHECK(pai_ref_attention_f32(2, 2, 0, 4, q, k, v, out) ==
+        PAI_ERR_INVALID_ARG);
+  CHECK(pai_ref_attention_f32(2, 2, 2, 0, q, k, v, out) ==
+        PAI_ERR_INVALID_ARG);
+  CHECK(pai_ref_attention_f32(3, 2, 2, 4, q, k, v, out) ==
+        PAI_ERR_INVALID_ARG); /* h %% hk != 0 */
+  CHECK(pai_ref_attention_f32(2, 2, 2, 4, NULL, k, v, out) ==
+        PAI_ERR_INVALID_ARG);
+}
+
+{
   /* copy, including aliasing */
   float a[4] = {1, 2, 3, 4};
   float c[4];
