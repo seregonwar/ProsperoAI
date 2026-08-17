@@ -1754,12 +1754,24 @@ Open gates before Phase 1 / PAI-M2 work should prioritize:
   uniform scalars, `v_cvt_f32_i32`+`v_mul/v_add_f32_e64`, commit
   `9f84142`); G56 same kernel fed by `s_load_dword` from a GPU-mem
   header — scalar-read data path inside a 32-thread wave proven, the
-  x-side of a wave-parallel GEMV (`adb11b6`). G57 (per-lane select
+  x-side of a wave-parallel GEMV  (`adb11b6`). G57 (per-lane select
   from an `s_load_dwordx16` block via `v_movrels_b32`, the W-side
-  unlock for GEMV) in flight, bisected by probe family G58/G59/G60
-  (blockdump: does `s_load_dwordx16` populate s[16:31]; vpick:
-  direct v16 read without `v_movrels`; vpick2: v8-v15 under the
-  golden RSRC1). Empirical note: RSRC1 `VGPRS` must
+  unlock for GEMV) in flight, bisected by probe family G58-G63.
+  HW esiti (console 9021, run after commit `af22896`): G58
+  (blockdump, BLOCK32, 1T, v0..v7) PASS c=10000000+i →
+  `s_load_dwordx16` DOES populate s[16:31] with 32 SGPR allocated;
+  G59 (vpick, BLOCK32, 32T, v16) FAIL c=0..7 (tid) → direct v16
+  read fails even with 32 VGPR allocated; G60/G61 (STANDARD
+  RSRC1, 32T, v8/v16) FAIL c=4i+3 (value-path) — CONFOUNDED:
+  STANDARD RSRC1 = VGPRS=0 (8 VGPR) and SGPRS=0 (16 SGPR), so
+  both the v8/v16 reads and the `s_load_dwordx16` into s[16:31]
+  are out of range. In flight: G62 (vpick2 v8..v15 + BLOCK32 +
+  32T) and G63 (vpick v16 + BLOCK32 + 1T) discriminate VGPR
+  ceiling vs thread-count: both PASS → v16 ok at 1T and 32T breaks
+  high reads; G62 PASS + G63 FAIL → ceiling between v9 and v16
+  (per-lane select on 8 elements `v8+tid` is still viable for
+  GEMV); both FAIL → ceiling < v8 even with correct allocation.
+  Empirical note: RSRC1 `VGPRS` must
   cover the VGPRs a kernel actually touches (G55/G56 use v1-v6,
   lanepick v16-v31 → `PAI_EXP_RSRC1_VGPR32=0x602C0003`).
 
