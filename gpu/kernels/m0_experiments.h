@@ -393,6 +393,20 @@
 #define PAI_COSSIN_SIN_OFF 16u
 #define PAI_COSSIN_SIN_WORDS 16u
 #define PAI_COSSIN_CODE_WORDS 32u
+
+/* G67/G68: on-GPU RoPE cos/sin table generator (ropegen.s) - serial
+ * per element (T4/G40 model): groups_x = ctx*r2, TGID_X = e = p*r2+i,
+ * all addressing in SGPRs, value = two-SGPR v_mul + v_cos/v_sin
+ * (turns convention). Host precomputes theta_turns[e] = theta/(2pi)
+ * so x2pi cancels: c[e] = cos/sin(theta) exactly, all rows 0..ctx-1.
+ * Header h[0]=r2, h[1]=ctx, h[2+e]=theta_turns; C = cos then sin. */
+#define PAI_ROPEGEN_RSRC2 0x0000008Cu
+#define PAI_ROPEGEN_THREADS 1u
+#define PAI_ROPEGEN_COS_OFF 0u
+#define PAI_ROPEGEN_COS_WORDS 26u
+#define PAI_ROPEGEN_SIN_OFF 26u
+#define PAI_ROPEGEN_SIN_WORDS 34u
+#define PAI_ROPEGEN_CODE_WORDS 60u
 #define PAI_G35_WORDS 15u
 #define PAI_G32_WORDS 16u
 #define PAI_G25_VALUE 0xDEAD0001u
@@ -514,6 +528,7 @@ extern const uint32_t pai_vpick_code[PAI_VPICK_CODE_WORDS];
 extern const uint32_t pai_vpick2_code[PAI_VPICK2_CODE_WORDS];
 extern const uint32_t pai_movrels_code[PAI_MOVRELS_CODE_WORDS];
 extern const uint32_t pai_cossin_code[PAI_COSSIN_CODE_WORDS];
+extern const uint32_t pai_ropegen_code[PAI_ROPEGEN_CODE_WORDS];
 extern const uint32_t pai_hbatch_code[];
 extern const uint32_t pai_hbatch2_code[];
 extern const uint32_t pai_hbatch3_code[PAI_H10_CODE_WORDS];

@@ -765,6 +765,44 @@ pai_host_kernel_cossin_sin(void *ctx, const uint32_t user_data[16],
   return pai_host_kernel_cossin(ctx, user_data, threads_x, group_x, 1);
 }
 
+/* G67/G68 on-GPU RoPE table generator mirror (ropegen.s): header
+ * (r2, ctx, theta_turns[0..ctx*r2-1]) at ud[2:3], C at ud[4:5].
+ * Serial-per-element: one group per element e, cos entry writes
+ * c[e] = cos(2*pi*theta_turns[e]), sin entry the ctx*r2 half. */
+static pai_status_t
+pai_host_kernel_ropegen(void *ctx, const uint32_t user_data[16],
+                        uint32_t threads_x, uint32_t group_x,
+                        uint32_t op) {
+  const uint32_t *h = (const uint32_t *)(uintptr_t)pai_ud64(user_data, 2);
+  uint32_t *c = (uint32_t *)(uintptr_t)pai_ud64(user_data, 4);
+  uint32_t ctxr = h[1];
+
+  (void)ctx;
+  (void)threads_x;
+
+  for (uint32_t e = 0; e < group_x; e++) {
+    float tt;
+    memcpy(&tt, &h[2 + e], 4);
+    float theta = 6.2831853f * tt;
+    float val = (op == 0) ? cosf(theta) : sinf(theta);
+    uint32_t idx = e + (op == 1 ? ctxr * h[0] : 0u);
+    memcpy(&c[idx], &val, 4);
+  }
+  return PAI_OK;
+}
+
+pai_status_t
+pai_host_kernel_ropegen_cos(void *ctx, const uint32_t user_data[16],
+                            uint32_t threads_x, uint32_t group_x) {
+  return pai_host_kernel_ropegen(ctx, user_data, threads_x, group_x, 0);
+}
+
+pai_status_t
+pai_host_kernel_ropegen_sin(void *ctx, const uint32_t user_data[16],
+                            uint32_t threads_x, uint32_t group_x) {
+  return pai_host_kernel_ropegen(ctx, user_data, threads_x, group_x, 1);
+}
+
 pai_status_t
 pai_host_kernel_int_matmul(void *ctx, const uint32_t user_data[16],
                            uint32_t threads_x, uint32_t group_x) {

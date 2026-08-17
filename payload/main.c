@@ -4382,6 +4382,187 @@ h48[0] = kk;
     }
   }
 
+  /* G67/G68: on-GPU RoPE cos/sin table generator - groups_x = r2
+   * columns, lane l -> position p = 4l+3, scale = inv_freq/(2pi)
+   * s_load'ed per group (G40 TGID_X pattern). Produces the EXACT
+   * tables B's pai_ref_rope_cossin_f32 oracle generates (rows 3..31);
+   * differential check < 1e-4 on rows p=4l+3. */
+  if (!host) {
+    pai_gpu_reset(gpu);
+  }
+  {
+    uint32_t r2 = 4u, nctx = 32u;
+    float base = 10000.0f;
+    uint32_t *h67 = (uint32_t *)ctx->a.cpu_addr;
+    uint32_t *c67 = (uint32_t *)ctx->c.cpu_addr;
+    float ocos[128], osin[128];
+    uint32_t stream_len = 0;
+    int ok = 1;
+
+    memset(c67, 0xCC, 2u * nctx * r2 * sizeof(uint32_t));
+    h67[0] = r2;
+    h67[1] = nctx;
+    for (uint32_t p = 0; p < nctx; p++) {
+      for (uint32_t i = 0; i < r2; i++) {
+        /* theta_turns[e] = theta/(2*pi) so the x2pi turns convention
+         * cancels: cos(2*pi*theta_turns) = cos(theta) exactly. */
+        float inv = powf(base, -(float)i / (float)r2);
+        float tt = (float)p * inv / 6.2831853f;
+        memcpy(&h67[2 + p * r2 + i], &tt, 4);
+      }
+    }
+    pai_ref_rope_cossin_f32(nctx, r2, base, ocos, osin);
+    pai_gpu_buffer_flush(ctx->gpu, &ctx->a);
+    pai_gpu_buffer_flush(ctx->gpu, &ctx->code);
+    ud[0] = 0;
+    ud[1] = 0;
+    ud[2] = (uint32_t)(ctx->a.gpu_addr & 0xFFFFFFFFu);
+    ud[3] = (uint32_t)(ctx->a.gpu_addr >> 32);
+    ud[4] = (uint32_t)(ctx->c.gpu_addr & 0xFFFFFFFFu);
+    ud[5] = (uint32_t)(ctx->c.gpu_addr >> 32);
+    m0_build_dispatch_stream(ctx, stream, M0_PM4_CAP, PAI_ROPEGEN_RSRC2,
+                             PAI_ROPEGEN_THREADS, nctx * r2, ud, 6,
+                             &stream_len);
+    memcpy(ctx->code.cpu_addr, &pai_ropegen_code[PAI_ROPEGEN_COS_OFF],
+           PAI_ROPEGEN_COS_WORDS * sizeof(uint32_t));
+    if (host) {
+      pai_gpu_host_register_shader(gpu, ctx->code.gpu_addr,
+                                   pai_host_kernel_ropegen_cos, NULL);
+    }
+    pai_gpu_buffer_flush(ctx->gpu, &ctx->code);
+    m0_run_gpu(ctx, stream, stream_len, c67, 64, 0xCC, "G67");
+    {
+      uint32_t fmis = UINT32_MAX;
+      for (uint32_t e = 0; e < nctx * r2 && ok; e++) {
+        float gg;
+        memcpy(&gg, &c67[e], 4);
+        if (fabsf(gg - ocos[e]) > 1e-4f) {
+          ok = 0;
+          fmis = e;
+        }
+      }
+      PAI_LOG_INFO_(PAI_SUB_GPU,
+                    "[M0-G67] c[0..7]=%.4f %.4f %.4f %.4f %.4f %.4f %.4f %.4f "
+                    "first_mis=%u\n",
+                    (double)((float *)c67)[0], (double)((float *)c67)[1],
+                    (double)((float *)c67)[2], (double)((float *)c67)[3],
+                    (double)((float *)c67)[4], (double)((float *)c67)[5],
+                    (double)((float *)c67)[6], (double)((float *)c67)[7], fmis);
+    }
+    m0_exp_report("G67", ok);
+
+    if (!host) {
+      pai_gpu_reset(gpu);
+    }
+    memcpy(ctx->code.cpu_addr, &pai_ropegen_code[PAI_ROPEGEN_SIN_OFF],
+           PAI_ROPEGEN_SIN_WORDS * sizeof(uint32_t));
+    if (host) {
+      pai_gpu_host_register_shader(gpu, ctx->code.gpu_addr,
+                                   pai_host_kernel_ropegen_sin, NULL);
+    }
+    pai_gpu_buffer_flush(ctx->gpu, &ctx->code);
+    m0_build_dispatch_stream(ctx, stream, M0_PM4_CAP, PAI_ROPEGEN_RSRC2,
+                             PAI_ROPEGEN_THREADS, nctx * r2, ud, 6,
+                             &stream_len);
+    /* Watch the SIN half (+ctx*r2*4 bytes): the shader writes there, so
+     * m0_run_gpu observes real shader output and waits on the fence
+     * instead of timing out and reading mid-execution. Long timeout:
+     * post-panic GPU runs degraded/slow, EOP needs more than 2s. */
+    ctx->timeout_ns = UINT64_C(30000000000); /* 30s */
+    m0_run_gpu(ctx, stream, stream_len,
+               (uint8_t *)c67 + nctx * r2 * 4, nctx * r2 * 4, 0xCC,
+               "G68");
+    ctx->timeout_ns = 0;
+    ok = 1;
+    {
+      uint32_t fmis = UINT32_MAX;
+      uint32_t nbad = 0;
+      /* Convergence poll: re-read up to 10x over ~5s to separate
+       * mid-execution reads (holes fill in) from hung waves (holes
+       * stay). */
+      for (uint32_t poll = 0; poll < 10 && nbad != 0 || poll == 0; poll++) {
+        fmis = UINT32_MAX;
+        nbad = 0;
+        for (uint32_t e = 0; e < nctx * r2; e++) {
+          float gg;
+          memcpy(&gg, &c67[nctx * r2 + e], 4);
+          if (fabsf(gg - osin[e]) > 1e-4f) {
+            if (fmis == UINT32_MAX) {
+              fmis = e;
+            }
+            nbad++;
+          }
+        }
+        if (poll > 0 && nbad == 0) {
+          break;
+        }
+        if (poll > 0) {
+          /* ~500ms busy delay via clock. */
+          uint64_t t0 = pai_clock_ns();
+          while (pai_clock_ns() - t0 < UINT64_C(500000000)) {
+          }
+        }
+      }
+      ok = (nbad == 0);
+      PAI_LOG_INFO_(PAI_SUB_GPU,
+                    "[M0-G68] s[0..7]=%.4f %.4f %.4f %.4f %.4f %.4f %.4f %.4f "
+                    "bad=%u first_mis=%u",
+                    (double)((float *)c67)[nctx * r2 + 0],
+                    (double)((float *)c67)[nctx * r2 + 1],
+                    (double)((float *)c67)[nctx * r2 + 2],
+                    (double)((float *)c67)[nctx * r2 + 3],
+                    (double)((float *)c67)[nctx * r2 + 4],
+                    (double)((float *)c67)[nctx * r2 + 5],
+                    (double)((float *)c67)[nctx * r2 + 6],
+                    (double)((float *)c67)[nctx * r2 + 7], nbad, fmis);
+      if (nbad) {
+        float gv, wv;
+        memcpy(&gv, &c67[nctx * r2 + fmis], 4);
+        wv = osin[fmis];
+        PAI_LOG_INFO_(PAI_SUB_GPU,
+                      " -> mis e=%u got=%.6f want=%.6f\n", fmis,
+                      (double)gv, (double)wv);
+        {
+          char bm[140];
+          uint32_t bp = 0;
+          for (uint32_t e = 0; e < nctx * r2; e++) {
+            float gg;
+            uint32_t raw;
+            memcpy(&gg, &c67[nctx * r2 + e], 4);
+            raw = ((const uint32_t *)c67)[nctx * r2 + e];
+            bm[bp++] = (raw == 0xCCCCCCCCu) ? '#'
+                      : (fabsf(gg - osin[e]) > 1e-4f) ? '?'
+                      : '.';
+          }
+          bm[bp] = 0;
+          PAI_LOG_INFO_(PAI_SUB_GPU, "[M0-G68] bitmap[0..127]=%s\n", bm);
+        }
+        PAI_LOG_INFO_(PAI_SUB_GPU,
+                      "[M0-G68] e8..23=%.3f %.3f %.3f %.3f %.3f %.3f %.3f "
+                      "%.3f %.3f %.3f %.3f %.3f %.3f %.3f %.3f %.3f\n",
+                      (double)((float *)c67)[nctx * r2 + 8],
+                      (double)((float *)c67)[nctx * r2 + 9],
+                      (double)((float *)c67)[nctx * r2 + 10],
+                      (double)((float *)c67)[nctx * r2 + 11],
+                      (double)((float *)c67)[nctx * r2 + 12],
+                      (double)((float *)c67)[nctx * r2 + 13],
+                      (double)((float *)c67)[nctx * r2 + 14],
+                      (double)((float *)c67)[nctx * r2 + 15],
+                      (double)((float *)c67)[nctx * r2 + 16],
+                      (double)((float *)c67)[nctx * r2 + 17],
+                      (double)((float *)c67)[nctx * r2 + 18],
+                      (double)((float *)c67)[nctx * r2 + 19],
+                      (double)((float *)c67)[nctx * r2 + 20],
+                      (double)((float *)c67)[nctx * r2 + 21],
+                      (double)((float *)c67)[nctx * r2 + 22],
+                      (double)((float *)c67)[nctx * r2 + 23]);
+      } else {
+        PAI_LOG_INFO_(PAI_SUB_GPU, "\n");
+      }
+    }
+    m0_exp_report("G68", ok);
+  }
+
   /* G17: load from the kernel's own acqrb VA - does ANY load complete,
    * or only our dmem pages hang? */
   if (!host) {

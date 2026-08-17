@@ -183,6 +183,10 @@ const uint32_t pai_cossin_code[PAI_COSSIN_CODE_WORDS] = {
 #include "gfx1013/pai_cossin.inc"
 };
 
+const uint32_t pai_ropegen_code[PAI_ROPEGEN_CODE_WORDS] = {
+#include "gfx1013/pai_ropegen.inc"
+};
+
 const uint32_t pai_hbatch_code[] = {
 #include "gfx1013/pai_hbatch.inc"
 };

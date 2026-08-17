@@ -212,4 +212,16 @@ pai_status_t pai_host_kernel_cossin_sin(void *ctx,
                                        uint32_t threads_x,
                                        uint32_t group_x);
 
+/* G67/G68 on-GPU RoPE table generator mirror: header (r2, ctx,
+ * scales) at ud[2:3], C at ud[4:5]; cos entry fills cos_t, sin entry
+ * the ctx*r2 half. */
+pai_status_t pai_host_kernel_ropegen_cos(void *ctx,
+                                        const uint32_t user_data[16],
+                                        uint32_t threads_x,
+                                        uint32_t group_x);
+pai_status_t pai_host_kernel_ropegen_sin(void *ctx,
+                                        const uint32_t user_data[16],
+                                        uint32_t threads_x,
+                                        uint32_t group_x);
+
 #endif /* PAI_GPU_HOST_KERNELS_H */

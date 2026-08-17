@@ -477,6 +477,7 @@ TEST_MAIN_BEGIN()
       ud[3] = (uint32_t)((uintptr_t)c66 >> 32);
       CHECK(pai_host_kernel_cossin_sin(NULL, ud, 32, 1) == PAI_OK);
       /* Turns convention: v_cos/v_sin read full turns (x2pi). */
+      /* Turns convention: v_cos/v_sin read full turns (x2pi). */
       for (uint32_t i = 0; i < 8; i++) {
         float theta = 6.2831853f * scale * (float)(4u * i + 3u);
         float wc = cosf(theta);
@@ -484,6 +485,42 @@ TEST_MAIN_BEGIN()
         float gc, gs;
         memcpy(&gc, &c65[i], 4);
         memcpy(&gs, &c66[i], 4);
+        CHECK(fabsf(gc - wc) < 1e-4f);
+        CHECK(fabsf(gs - ws) < 1e-4f);
+      }
+    }
+
+    /* G67/G68: on-GPU RoPE table generator mirror - serial per
+     * element; verifies the exact cos_t/sin_t tables match B's
+     * pai_ref_rope_cossin_f32 oracle on ALL rows. */
+    {
+      uint32_t r2 = 4u, ctx = 32u;
+      float base = 10000.0f;
+      uint32_t h67[2 + 32u * 4u];
+      uint32_t c67[2u * 32u * 4u];
+      float ocos[128], osin[128];
+      h67[0] = r2;
+      h67[1] = ctx;
+      for (uint32_t p = 0; p < ctx; p++) {
+        for (uint32_t i = 0; i < r2; i++) {
+          float inv = powf(base, -(float)i / (float)r2);
+          float tt = (float)p * inv / 6.2831853f;
+          memcpy(&h67[2 + p * r2 + i], &tt, 4);
+        }
+      }
+      CHECK(pai_ref_rope_cossin_f32(ctx, r2, base, ocos, osin) == PAI_OK);
+      ud[2] = (uint32_t)(uintptr_t)h67;
+      ud[3] = (uint32_t)((uintptr_t)h67 >> 32);
+      ud[4] = (uint32_t)(uintptr_t)c67;
+      ud[5] = (uint32_t)((uintptr_t)c67 >> 32);
+      CHECK(pai_host_kernel_ropegen_cos(NULL, ud, 32, ctx * r2) == PAI_OK);
+      CHECK(pai_host_kernel_ropegen_sin(NULL, ud, 32, ctx * r2) == PAI_OK);
+      for (uint32_t e = 0; e < ctx * r2; e++) {
+        float gc, gs, wc, ws;
+        memcpy(&gc, &c67[e], 4);
+        memcpy(&gs, &c67[ctx * r2 + e], 4);
+        wc = ocos[e];
+        ws = osin[e];
         CHECK(fabsf(gc - wc) < 1e-4f);
         CHECK(fabsf(gs - ws) < 1e-4f);
       }
