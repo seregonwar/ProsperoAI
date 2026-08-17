@@ -47,6 +47,16 @@ if(PAI_PLATFORM STREQUAL "host")
   )
   pai_enable_big_stack(ropegen_diff)
 
+  # Phase 2 contract: nonlinear serial decomposition (RMSNorm / SiLU /
+  # softmax / attention row) vs the double oracle — pre-flight for the
+  # serial GPU kernels (v_rsqrt / v_exp probes).
+  add_executable(nonlinear_contract nonlinear_contract.c)
+  target_link_libraries(nonlinear_contract PRIVATE
+    pai_cpu_reference
+    pai_diag
+  )
+  pai_enable_big_stack(nonlinear_contract)
+
   # Phase 2 reference path: small decoder forward pass (embed -> RoPE
   # -> causal GQA attention -> RMSNorm -> SiLU MLP -> logits -> greedy
   # first token) chained through ref_ops vs a double oracle.

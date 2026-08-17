@@ -75,3 +75,9 @@ add_test(NAME decoder_test COMMAND decoder_test)
 # consumability.
 add_test(NAME ropegen_diff COMMAND ropegen_diff)
 
+# Phase 2 contract (target defined in toolchain/CMakeLists.txt):
+# nonlinear serial decomposition (RMSNorm / SiLU / softmax / attention
+# row) vs the double oracle — pre-flight for the serial GPU kernels
+# (v_rsqrt / v_exp probes).
+add_test(NAME nonlinear_contract COMMAND nonlinear_contract)
+
