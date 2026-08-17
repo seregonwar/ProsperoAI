@@ -387,7 +387,9 @@ HW-validated PASS (commit a8d9089).
   (G35/G39/G40/G41); T4 serial kernel family G42-G54 float + integer
   (13/13, run 004416); G65/G66 wave-parallel cos/sin ramp (turns
   convention); G67 serial on-GPU RoPE cos table; G70 cos-shift sin
-  table; G71 v_rsq; G72 v_exp (2^x).
+  table;  G71 v_rsq; G72 v_exp (2^x); G73 decoder GEMM via G40 (per-row,
+  transposed-W repack hdr[4+g*K+k]=B[k*N+g]) 8x16x8 PASS 64/64 vs
+  double oracle - same ABI decoder_test sez.12 drives on host.
 - Open (do not block M1 closeout): MUBUF T# / flat loads, lane 8+
   exec mask, LDS (M1C) pending AGC CS blob @ 0x213.
 

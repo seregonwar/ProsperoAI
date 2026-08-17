@@ -4854,6 +4854,104 @@ h48[0] = kk;
     m0_exp_report("G72", ok_e || ok_2);
   }
 
+  /* G73: decoder GEMM via G40 fgemv - the EXACT dispatch B's
+   * decoder_test sez.12 drives on host (commit cc8f261): for a GEMM
+   * [M][K] x [K][N], one G40 call per input row, W repacked
+   * TRANSPOSED inline in the header (hdr[4+g*K+k] = B[k*N+g]),
+   * groups_x = N. Validates the QKV/out/MLP/logits GEMM pattern on
+   * real 9.40 HW against a double oracle (logits tolerance 1e-4). */
+  if (!host) {
+    pai_gpu_reset(gpu);
+  }
+  {
+    uint32_t m = 8u, kk = 16u, n = 8u;
+    uint32_t *h73 = (uint32_t *)ctx->a.cpu_addr; /* header + inline W */
+    float *a73 = (float *)ctx->b.cpu_addr;       /* [M][K] */
+    float *b73 = a73 + m * kk;                   /* [K][N] */
+    float *c73 = (float *)ctx->c.cpu_addr;       /* [M][N] */
+    uint32_t stream_len = 0;
+    int ok = 1;
+    uint32_t nbad = 0;
+    uint32_t fmis = UINT32_MAX;
+
+    memset(c73, 0xCC, m * n * sizeof(float));
+    memcpy(ctx->code.cpu_addr, pai_fgemv_serial_code,
+           PAI_FGEMV_CODE_WORDS * sizeof(uint32_t));
+    if (host) {
+      pai_gpu_host_register_shader(gpu, ctx->code.gpu_addr,
+                                   pai_host_kernel_fgemv, NULL);
+    }
+    for (uint32_t i = 0; i < m; i++) {
+      for (uint32_t t = 0; t < kk; t++) {
+        float av = 0.5f + 0.1f * (float)i + 0.01f * (float)t;
+        memcpy(&a73[i * kk + t], &av, 4);
+      }
+    }
+    for (uint32_t t = 0; t < kk; t++) {
+      for (uint32_t j = 0; j < n; j++) {
+        float bv = 1.0f - 0.02f * (float)t + 0.1f * (float)j;
+        memcpy(&b73[t * n + j], &bv, 4);
+      }
+    }
+    pai_gpu_buffer_flush(ctx->gpu, &ctx->a);
+    pai_gpu_buffer_flush(ctx->gpu, &ctx->b);
+    pai_gpu_buffer_flush(ctx->gpu, &ctx->code);
+    ud[0] = 0;
+    ud[1] = 0;
+    for (uint32_t i = 0; i < m && ok; i++) {
+      /* One G40 call per row: x = A[i], y = C[i*N + 0..N-1]. */
+      h73[0] = kk;
+      h73[1] = 0;
+      h73[2] = (uint32_t)((ctx->b.gpu_addr + i * kk * 4) & 0xFFFFFFFFu);
+      h73[3] = (uint32_t)((ctx->b.gpu_addr + i * kk * 4) >> 32);
+      for (uint32_t g = 0; g < n; g++) {
+        for (uint32_t t = 0; t < kk; t++) {
+          /* transposed repack: hdr[4+g*K+k] = B[k*N+g] */
+          memcpy(&h73[4 + g * kk + t], &b73[t * n + g], 4);
+        }
+      }
+      pai_gpu_buffer_flush(ctx->gpu, &ctx->a);
+      ud[2] = (uint32_t)(ctx->a.gpu_addr & 0xFFFFFFFFu);
+      ud[3] = (uint32_t)(ctx->a.gpu_addr >> 32);
+      ud[4] = (uint32_t)((ctx->c.gpu_addr + i * n * 4) & 0xFFFFFFFFu);
+      ud[5] = (uint32_t)((ctx->c.gpu_addr + i * n * 4) >> 32);
+      m0_build_dispatch_stream(ctx, stream, M0_PM4_CAP, PAI_FGEMV_RSRC2,
+                               PAI_FGEMV_THREADS, n, ud, 6, &stream_len);
+      m0_run_gpu(ctx, stream, stream_len,
+                 (uint8_t *)c73 + i * n * 4, n * 4, 0xCC, "G73");
+      for (uint32_t j = 0; j < n && ok; j++) {
+        double want = 0.0;
+        for (uint32_t t = 0; t < kk; t++) {
+          want += (double)a73[i * kk + t] * (double)b73[t * n + j];
+        }
+        float got = c73[i * n + j];
+        if (fabsf(got - (float)want) > 1e-4f * (1.0f + fabsf((float)want))) {
+          if (fmis == UINT32_MAX) {
+            fmis = i * n + j;
+          }
+          nbad++;
+          ok = 0;
+        }
+      }
+    }
+    {
+      double want0 = 0.0, want1 = 0.0, want2 = 0.0, want3 = 0.0;
+      for (uint32_t t = 0; t < kk; t++) {
+        want0 += (double)a73[t] * (double)b73[t * n + 0];
+        want1 += (double)a73[t] * (double)b73[t * n + 1];
+        want2 += (double)a73[t] * (double)b73[t * n + 2];
+        want3 += (double)a73[t] * (double)b73[t * n + 3];
+      }
+      PAI_LOG_INFO_(PAI_SUB_GPU,
+                    "[M0-G73] c[0..3]=%.5f %.5f %.5f %.5f "
+                    "want[0..3]=%.5f %.5f %.5f %.5f bad=%u first_mis=%u\n",
+                    (double)c73[0], (double)c73[1], (double)c73[2],
+                    (double)c73[3], want0, want1, want2, want3, nbad,
+                    fmis);
+    }
+    m0_exp_report("G73", ok);
+  }
+
   /* G17: load from the kernel's own acqrb VA - does ANY load complete,
    * or only our dmem pages hang? */
   if (!host) {
