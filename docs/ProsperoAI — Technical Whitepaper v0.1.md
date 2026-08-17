@@ -1765,12 +1765,20 @@ Open gates before Phase 1 / PAI-M2 work should prioritize:
   RSRC1, 32T, v8/v16) FAIL c=4i+3 (value-path) — CONFOUNDED:
   STANDARD RSRC1 = VGPRS=0 (8 VGPR) and SGPRS=0 (16 SGPR), so
   both the v8/v16 reads and the `s_load_dwordx16` into s[16:31]
-  are out of range. In flight: G62 (vpick2 v8..v15 + BLOCK32 +
-  32T) and G63 (vpick v16 + BLOCK32 + 1T) discriminate VGPR
-  ceiling vs thread-count: both PASS → v16 ok at 1T and 32T breaks
-  high reads; G62 PASS + G63 FAIL → ceiling between v9 and v16
-  (per-lane select on 8 elements `v8+tid` is still viable for
-  GEMV); both FAIL → ceiling < v8 even with correct allocation.
+  are out of range. **BISECTION CLOSED (G62/G63):** G62 (vpick2,
+  BLOCK32, 32T, v8..v15) PASS; G63 (vpick, BLOCK32, 1T, v16) FAIL
+  → **hard VGPR ceiling at 16** (v0..v15 usable, v16+ reads tid)
+  independent of thread-count and of RSRC1 VGPRS (allocating 32
+  VGPRs does not unlock v16+; the field is not a real allocation
+  contract on 9.40). Rule for all future kernels: never touch
+  v16+. G57's `v_movrels_b32` is STILL UNTESTED — its v16..v31
+  block copies were dropped by the ceiling, so the movrels read
+  garbage. In flight G64: movrels with the block in-ceiling
+  (v7..v14) + `m0=7` → v1=v[7+tid], expect c[i]=header[7+i].
+  PASS → per-lane select unlocked → wave-parallel GEMV buildable
+  (W-row 8-16 elements per lane, one wave per row like G40, x[k]
+  uniform via the proven G56 s_load path); FAIL → movrels broken
+  on 9.40 → fallback DS roundtrip or arithmetic per-lane path.
   Empirical note: RSRC1 `VGPRS` must
   cover the VGPRs a kernel actually touches (G55/G56 use v1-v6,
   lanepick v16-v31 → `PAI_EXP_RSRC1_VGPR32=0x602C0003`).
