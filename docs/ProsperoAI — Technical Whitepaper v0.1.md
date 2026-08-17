@@ -1848,6 +1848,19 @@ Open gates before Phase 1 / PAI-M2 work should prioritize:
   vs ref; SiLU in 2^x form 2.98e-08. The 9.40 decoder
   transcendental set is now complete: RoPE tables G67/G70,
   rsqrt G71, exp-2^x G72.
+  **G73 VALIDATED (commit `b157e06`, run 134308):** the decoder
+  GEMM contract via G40 is proven end-to-end on 9.40 — 8x16x8 GEMM,
+  one fgemv call per input row (groups_x=N), W repacked TRANSPOSED
+  inline (hdr[4+g·K+k] = B[k·N+g]), per-row C base (c+i·N·4):
+  PASS 64/64 cells vs the double oracle, bad=0. This is exactly the
+  recipe locked host-side in `decoder_test` sez.12/13 (commit
+  `1cfceb5`, full prefill + autoregressive loop through the fgemv
+  ABI vs the full-prefix oracle). The full decoder GEMM set
+  (QKV/out-proj/MLP/logits) is now HW-validated on 9.40; what
+  remains for the on-GPU decoder path is wiring the validated
+  kernels (G40 GEMM + G67/G70 RoPE tables + G71 rsqrt + G72 exp-2^x
+  with the host-side pre-scale) into a first GPU forward, with
+  `decoder_test` as the differential oracle (logits 1e-4, argmax).
   Empirical note: RSRC1 `VGPRS` must
   cover the VGPRs a kernel actually touches (G55/G56 use v1-v6,
   lanepick v16-v31 → `PAI_EXP_RSRC1_VGPR32=0x602C0003`).
