@@ -257,15 +257,51 @@ x-side of a wave-parallel GEMV (x[k] is uniform across rows and
 readable with scalar loads). ABI: s2:s3 = header (k, base), s4:s5 =
 C; commit `adb11b6`.
 
-## G57 probe: per-lane select from s_load_dwordx16 (in flight)
+## G57-G64 bisection: per-lane data select CLOSED (2026-08-17)
 
-`lanepick.s` loads a 16-dword block into s[16:31] with
-`s_load_dwordx16`, copies to v[16:31], and selects per-lane with
-`v_movrels_b32` (m0 base = 64 → VGPR16 in bytes, index = v0 tid).
-Lesson from the first FAIL: **RSRC1 VGPRS field must cover the VGPRs
-the kernel touches** — default `PAI_EXP_RSRC1` (VGPRS=0 → 8 VGPR)
-drops writes to v16-v31; the fix is `PAI_EXP_RSRC1_VGPR32 =
-0x602C0003` (VGPRS=3 → 32 VGPR). Re-deploy pending.
+Goal: per-lane selection out of a uniform `s_load_dwordx16` block
+(the missing piece for wave-parallel GEMV, W-row access per lane).
+Final matrix (run 095951, commit fa81eec):
+
+| exp | kernel | RSRC1 | threads | read | result |
+|-----|--------|-------|---------|------|--------|
+| G58 | blockdump | BLOCK32 0x602C0043 (32VGPR+32SGPR) | 1 | v0..v7 <- s16..s23 | **PASS** c=0x10000000+i |
+| G62 | vpick2 | BLOCK32 | 32 | v8 <- s16 | **PASS** c=h[0] x8 |
+| G59 | vpick | BLOCK32 | 32 | v16 <- s16 | FAIL c=0..7 (tid) |
+| G63 | vpick | BLOCK32 | 1 | v16 <- s16 | FAIL c[0]=0 (tid) |
+| G60 | vpick2 | STANDARD 0x602C0000 (8VGPR+16SGPR) | 32 | v8 | FAIL 4i+3 (confounded) |
+| G61 | vpick | STANDARD | 32 | v16 | FAIL 4i+3 (confounded) |
+| G57 | lanepick | BLOCK32 | 32 | v_movrels m0=64/16 | FAIL tid |
+| G64 | movrels | BLOCK32 | 32 | v_movrels m0=7, blk v7..v14 | FAIL c=h[0] uniform |
+
+Conclusions:
+
+1. **Hard VGPR ceiling at 16**: v0..v15 usable, v16+ READS return tid
+   and WRITES are dropped, regardless of thread count (G59 vs G63)
+   and regardless of the RSRC1 VGPRS field (BLOCK32 declares 32 VGPRs
+   but v16+ still reads tid). VGPRS is not a real contract on 9.40.
+2. **`v_movrels_b32` is uniform-relative**: G64 moved the block to
+   v7..v14 (in-ceiling) with m0=7 and got c=h[0] for ALL lanes — it
+   reads `v[regno+m0]`, i.e. a fixed register per instruction, NOT
+   `v[m0+tid]`. It cannot do per-lane indexed selection. (G57's
+   earlier failures were the v16+ ceiling, but even in-ceiling the
+   instruction cannot select per lane.)
+3. **G60/G61 were confounded** (B review note 1): STANDARD RSRC1 has
+   VGPRS=0 (8 VGPR) AND SGPRS=0 (16 SGPR), so both the v8/v16 reads
+   and the s_load_dwordx16 into s[16:31] were out of range. The 4i+3
+   leak is the value-path formula, not data.
+4. **LDS/DS roundtrip also dead** (G25/G26/G27): ds_write+ds_read
+   returns 0 / leaks, both 1KiB and 8KiB LDS_SIZE. The DS fallback
+   B proposed is already falsified on 9.40.
+
+**Bottom line**: on 9.40 there is NO per-lane data-select mechanism —
+vector loads hang, LDS returns 0, movrels is uniform-relative, VGPRs
+stop at 15. Wave-parallel kernels can only derive values
+ARITHMETICALLY from tid + uniform scalars (G55/G56 ramp). The
+validated serial G40 GEMV (1 thread per group, s_load per element,
+groups_x = M) remains the ONLY data-access GEMV path; per-lane W-row
+access for a wave-parallel GEMV is impossible on 9.40. RoPE position
+tables (G55/G56 ramp) remain the practical wave-parallel payoff.
 
 ## Toolchain
 
