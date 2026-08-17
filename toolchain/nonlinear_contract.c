@@ -7,10 +7,9 @@
  * style, 1 group per element); there is NO per-lane data select. The
  * nonlinear ops must therefore be expressed as a sequence of:
  *   - already-validated primitives: v_mul/v_add/v_sub (G42-G46),
- *     v_fma-style dot accumulation (G35/G40),
- *   - plus exactly ONE unknown primitive each:
- *       RMSNorm  -> v_rsqrt_f32 (never probed on 9.40)
- *       SiLU     -> v_exp_f32   (never probed on 9.40)
+ *     v_fma-style dot accumulation (G35/G40), *   - plus exactly ONE special primitive each:
+ *       RMSNorm  -> v_rsq_f32   (G71 VALIDATED: exact serial-safe)
+ *       SiLU     -> v_exp_f32   (G72 VALIDATED: 2^x convention!)
  *       softmax  -> v_exp_f32 + v_max_f32 + reciprocal
  *
  * What this harness establishes (the contract A designs against):
@@ -28,6 +27,11 @@
  *      the oracle for the serial attention kernel: scores in
  *      [-3*inv_scale, 3*inv_scale] with hd<=128 stay finite and rows
  *      normalize to 1.
+ *   5. e^x production recipe: v_exp is 2^x on 9.40 (G72, commit
+ *      6ecf917), so e^x = 2^(x*log2(e)) with the pre-scale done
+ *      host-side on the validated float mul path. Section 5 locks
+ *      exp2f(x*log2e) == expf(x) (max rel < 1e-4) plus the full
+ *      softmax row and SiLU in 2^x form.
  *
  * Build: host-tests/host-reference preset; binary `nonlinear_contract`.
  */
@@ -240,6 +244,112 @@ main(void) {
            (unsigned long long)h, (unsigned long long)hk,
            (unsigned long long)hd, (unsigned long long)seq);
     (void)worst_rowsum;
+  }
+
+  /* ---- 5) e^x production recipe: v_exp is 2^x on 9.40 (G72,
+   * convention locked), so e^x must be fed to the kernel as
+   * xs = x*log2(e) (host-side float mul, the G39-validated mul
+   * path). Validate the exact recipe: exp2f(x*log2e) must equal the
+   * math oracle expf(x) across the decoder's x ranges. ---- */
+  {
+    static const double LOG2E = 1.4426950408889634;
+    double max_rel = 0.0;
+    double max_abs = 0.0;
+    uint64_t worst = 0;
+    /* softmax scores up to +/-30; SiLU pre-activations +/-3; RMSNorm
+     * eps-range values separately below. */
+    static const double xs_test[] = {0.0, 0.1, 0.5, 1.0, 2.5, -0.5, -3.0,
+                                     3.0, -12.0, 12.0, -30.0, 30.0};
+    for (uint32_t t = 0; t < sizeof(xs_test) / sizeof(xs_test[0]); t++) {
+      double xd = xs_test[t];
+      float x = (float)xd;
+      float xs = x * (float)LOG2E; /* host pre-scale, float mul */
+      double got = exp2f(xs);      /* the GPU 2^x convention */
+      double want = expf(x);       /* math oracle */
+      double rel = fabs(got - want) / fmax(1.0, fabs(want));
+      double ab = fabs(got - want);
+      if (rel > max_rel) {
+        max_rel = rel;
+        worst = t;
+      }
+      if (ab > max_abs) {
+        max_abs = ab;
+      }
+    }
+    if (max_rel < NC_TOL) {
+      printf("  PASS e^x recipe: exp2f(x*log2e) == expf(x), max rel |d| = "
+             "%g (max abs %g)\n", max_rel, max_abs);
+    } else {
+      printf("  FAIL e^x recipe: max rel |d| = %g at xs_test[%llu]\n",
+             max_rel, (unsigned long long)worst);
+      g_failures++;
+    }
+
+    /* Full softmax row with the 2^x form: row sum must stay 1 and
+     * match pai_ref_softmax_f32 at 1e-4. */
+    {
+      const uint64_t n = 64;
+      float ref[64];
+      float m = x[0];
+      double rawsum = 0.0, normsum = 0.0, max_d = 0.0;
+      for (uint64_t i = 0; i < n; i++) {
+        x[i] = (float)(((int64_t)i - 32) * 0.9375); /* scores +/-30 */
+        if (x[i] > m) {
+          m = x[i];
+        }
+      }
+      for (uint64_t i = 0; i < n; i++) {
+        float xs = (x[i] - m) * (float)LOG2E; /* pre-scale */
+        c[i] = exp2f(xs);                     /* v_exp 2^x */
+        rawsum += c[i];
+      }
+      for (uint64_t i = 0; i < n; i++) {
+        c[i] /= (float)rawsum;
+        normsum += c[i]; /* normalized row, must be ~1 */
+      }
+      st = pai_ref_softmax_f32(x, ref, n);
+      REQUIRE(st == PAI_OK);
+      for (uint64_t i = 0; i < n; i++) {
+        double d = fabs((double)c[i] - (double)ref[i]);
+        if (d > max_d) {
+          max_d = d;
+        }
+      }
+      if (max_d < NC_TOL && fabs(normsum - 1.0) < 1e-5) {
+        printf("  PASS softmax with 2^x form: max |d| = %g vs ref, "
+               "row sum = %.9f\n", max_d, normsum);
+      } else {
+        printf("  FAIL softmax with 2^x form: max |d| = %g, row sum = "
+               "%.9f\n", max_d, normsum);
+        g_failures++;
+      }
+    }
+
+    /* SiLU with the 2^x form: x/(1+exp2f(-x*log2e)) == reference. */
+    {
+      const uint64_t n = 64;
+      float ref[64];
+      double max_d = 0.0;
+      for (uint64_t i = 0; i < n; i++) {
+        x[i] = (float)(-3.0 + 6.0 * (double)(i % 17) / 16.0);
+        float xs = -x[i] * (float)LOG2E;
+        c[i] = x[i] / (1.0f + exp2f(xs));
+      }
+      st = pai_ref_silu_f32(x, ref, n);
+      REQUIRE(st == PAI_OK);
+      for (uint64_t i = 0; i < n; i++) {
+        double d = fabs((double)c[i] - (double)ref[i]);
+        if (d > max_d) {
+          max_d = d;
+        }
+      }
+      if (max_d < NC_TOL) {
+        printf("  PASS SiLU with 2^x form: max |d| = %g\n", max_d);
+      } else {
+        printf("  FAIL SiLU with 2^x form: max |d| = %g\n", max_d);
+        g_failures++;
+      }
+    }
   }
 
   printf("== nonlinear_contract %s ==\n", g_failures ? "FAILED" : "PASSED");

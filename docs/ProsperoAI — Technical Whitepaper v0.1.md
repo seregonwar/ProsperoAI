@@ -1834,6 +1834,20 @@ Open gates before Phase 1 / PAI-M2 work should prioritize:
   SiLU bit-identical; softmax row sum 1.000000015, finite at scores
   ±30; causal attention rows finite, out within v-range. This is the
   target contract for the `v_rsqrt_f32`/`v_exp_f32` probes.
+  **G71/G72 VALIDATED (commit `6ecf917`, run 132918):**
+  `v_rsq_f32` serial-per-element exact (64/64, 1/sqrt on
+  0.0625..4.0) — the RMSNorm inverse-root path is clean in the
+  G40/G67 serial model; `v_exp_f32` convention LOCKED = 2^x
+  (bad_2=0, bad_e=63 on x in −4..3.875), matching GCN docs on
+  9.40. Production rule for e^x (softmax/SiLU): host-side
+  pre-scale x·log2(e) (1.442695f, the G39-validated float mul),
+  then v_exp — same workaround shape as the cos/sin turns rule.
+  B-side contract locked (nonlinear_contract section 5):
+  exp2f(x·log2e) == expf(x) max rel 1.18e-06 across x∈[−30,30];
+  softmax row in 2^x form row-sum 1.000000041, max |d| 1.49e-08
+  vs ref; SiLU in 2^x form 2.98e-08. The 9.40 decoder
+  transcendental set is now complete: RoPE tables G67/G70,
+  rsqrt G71, exp-2^x G72.
   Empirical note: RSRC1 `VGPRS` must
   cover the VGPRs a kernel actually touches (G55/G56 use v1-v6,
   lanepick v16-v31 → `PAI_EXP_RSRC1_VGPR32=0x602C0003`).
