@@ -1771,14 +1771,21 @@ Open gates before Phase 1 / PAI-M2 work should prioritize:
   independent of thread-count and of RSRC1 VGPRS (allocating 32
   VGPRs does not unlock v16+; the field is not a real allocation
   contract on 9.40). Rule for all future kernels: never touch
-  v16+. G57's `v_movrels_b32` is STILL UNTESTED — its v16..v31
-  block copies were dropped by the ceiling, so the movrels read
-  garbage. In flight G64: movrels with the block in-ceiling
-  (v7..v14) + `m0=7` → v1=v[7+tid], expect c[i]=header[7+i].
-  PASS → per-lane select unlocked → wave-parallel GEMV buildable
-  (W-row 8-16 elements per lane, one wave per row like G40, x[k]
-  uniform via the proven G56 s_load path); FAIL → movrels broken
-  on 9.40 → fallback DS roundtrip or arithmetic per-lane path.
+  v16+. **G64 DECISIVE (commit `fa81eec`):** `v_movrels_b32` with
+  the block in-ceiling (v7..v14) and `m0=7` read v[0+7]=v7 for
+  ALL lanes — the instruction is **uniform-relative**
+  (`v[regno+m0]`), the per-lane index is ignored. DS roundtrip is
+  already dead (G25-G27: ds_write/ds_read = 0). **BOTTOM LINE
+  9.40 (commits `fa81eec`+`6d1c30c`): no per-lane data-selection
+  mechanism exists** — vector loads hang, LDS/DS return 0,
+  movrels is uniform-only, VGPR ceiling is 16. Wave-parallel
+  kernels can ONLY derive values arithmetically from tid +
+  uniform scalars (G55/G56). GEMV stays on the validated G40
+  serial-per-row path (1 thread/group, `s_load` per element,
+  groups_x=M); the B-side `decoder_test` (commit `65f29f7`) is
+  the differential oracle. Phase 2 plan: RoPE pos tables via the
+  G55/G56 ramp (OK), QKV/out GEMM via G40 serial-per-row (cost:
+  K*N scalar loads per row — known, not a blocker).
   Empirical note: RSRC1 `VGPRS` must
   cover the VGPRs a kernel actually touches (G55/G56 use v1-v6,
   lanepick v16-v31 → `PAI_EXP_RSRC1_VGPR32=0x602C0003`).
