@@ -418,6 +418,16 @@ HW-validated PASS (commit a8d9089).
   hdr[4+d*(p+1)+t]=v[t][d]). PASS vs pai_ref_attention_f32 (H2 HK1
   HD4 seq6, 1e-4, mism=0). The LAST host stage of the decoder
   forward (attention) is now on-GPU on 9.40.
+  G79 (run 150645): RMSNorm ON-GPU (spec §4) - per row: s = sum x^2
+  via G40 dot (W = x, groups = 1), inv = 1/sqrt(s/n+eps) via REAL
+  G71 nlexp_rsq, c = x*(gamma*inv) via G42 t4_mul1d. PASS vs
+  pai_ref_rmsnorm_gamma_f32 (4 rows x 8, 1e-4, mism=0).
+  G80 (run 150645): SiLU ON-GPU (spec §5) - prescale xs = -x*log2e
+  host, e = 2^xs via REAL G72 nlexp_exp, d = 1+e via G42 t4_add1d,
+  rc = 1/d via REAL G75 nlexp_rcp, c = x*rc via G42 t4_mul1d. PASS
+  vs pai_ref_silu_f32 (16 elems, 1e-4, mism=0). All 3 formerly-host
+  decoder stages (attention G78, RMSNorm G79, SiLU G80) now on-GPU:
+  decoder forward is 100% GPU on 9.40.
 - Open (do not block M1 closeout): MUBUF T# / flat loads, lane 8+
   exec mask, LDS (M1C) pending AGC CS blob @ 0x213.
 

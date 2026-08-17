@@ -5873,6 +5873,246 @@ h48[0] = kk;
     m0_exp_report("G78", ok);
   }
 
+  /* G79: RMSNorm ON-GPU (spec §4 / nonlinear_contract §1) - per row of
+   * n elements: 1) s = sum x[i]^2 via G40 dot (W = x, groups = 1);
+   * 2) inv = 1/sqrt(s/n + eps) via REAL G71 nlexp_rsq dispatch;
+   * 3) c[i] = x[i]*gamma[i]*inv via G42 t4_mul1d (packed (x, g*inv)). */
+  if (!host) {
+    pai_gpu_reset(gpu);
+  }
+  {
+    enum {
+      G79_ROWS = 4u, G79_N = 8u, G79_EPS_BITS = 0x3727C5ACu /* 1e-5f */
+    };
+    static float x79[G79_ROWS * G79_N], g79[G79_ROWS * G79_N];
+    static float c79[G79_ROWS * G79_N], ref79[G79_ROWS * G79_N];
+    static float pack79[2 * G79_ROWS * G79_N];
+    uint32_t *h79 = (uint32_t *)ctx->a.cpu_addr;
+    uint32_t stream_len = 0;
+    uint64_t mism = 0;
+    int ok = 1;
+    pai_status_t stp;
+    float eps;
+    memcpy(&eps, &(uint32_t){G79_EPS_BITS}, 4);
+
+    for (uint32_t i = 0; i < G79_ROWS * G79_N; i++) {
+      x79[i] = (float)(sin(0.31 * (double)(i % G79_N) + 0.11 * (double)(i / G79_N)) *
+                       1.5);
+      g79[i] = 1.0f + 0.13f * (float)(i % G79_N);
+    }
+    for (uint32_t r = 0; r < G79_ROWS; r++) {
+      pai_ref_rmsnorm_gamma_f32(x79 + r * G79_N, ref79 + r * G79_N,
+                                G79_N, g79 + r * G79_N, eps);
+    }
+
+    for (uint32_t r = 0; r < G79_ROWS; r++) {
+      const float *xr = x79 + r * G79_N;
+      float s = 0.0f, inv = 0.0f;
+      /* 1) dot via G40: s = sum x[i]^2 (m=1, k=N, n=1) */
+      m0_exp_gemm_g40(ctx, stream, ud, xr, xr, &s, 1, G79_N, 1);
+      /* 2) rsq via REAL G71 dispatch */
+      {
+        memcpy(ctx->code.cpu_addr, &pai_nlexp_code[PAI_NLEXP_RSQ_OFF],
+               PAI_NLEXP_RSQ_WORDS * sizeof(uint32_t));
+        if (host) {
+          pai_gpu_host_register_shader(gpu, ctx->code.gpu_addr,
+                                       pai_host_kernel_nlexp_rsq, NULL);
+        }
+        float arg = s / (float)G79_N + eps;
+        h79[0] = 1;
+        h79[1] = 0;
+        memcpy(&h79[2], &arg, 4);
+        pai_gpu_buffer_flush(ctx->gpu, &ctx->a);
+        pai_gpu_buffer_flush(ctx->gpu, &ctx->code);
+        ud[0] = 0;
+        ud[1] = 0;
+        ud[2] = (uint32_t)(ctx->a.gpu_addr & 0xFFFFFFFFu);
+        ud[3] = (uint32_t)(ctx->a.gpu_addr >> 32);
+        ud[4] = (uint32_t)(ctx->c.gpu_addr & 0xFFFFFFFFu);
+        ud[5] = (uint32_t)(ctx->c.gpu_addr >> 32);
+        m0_build_dispatch_stream(ctx, stream, M0_PM4_CAP, PAI_NLEXP_RSRC2,
+                                 PAI_NLEXP_THREADS, 1, ud, 6, &stream_len);
+        m0_run_gpu(ctx, stream, stream_len, ctx->c.cpu_addr, 4, 0xCC,
+                   "G79");
+        memcpy(&inv, ctx->c.cpu_addr, 4);
+      }
+      /* 3) c = x * (gamma*inv) via G42 t4_mul1d */
+      {
+        memcpy(ctx->code.cpu_addr, &pai_t4_ops_code[PAI_T4_MUL1D_OFF],
+               PAI_T4_MUL1D_WORDS * sizeof(uint32_t));
+        if (host) {
+          pai_gpu_host_register_shader(gpu, ctx->code.gpu_addr,
+                                       pai_host_kernel_t4_mul1d, NULL);
+        }
+        for (uint32_t i = 0; i < G79_N; i++) {
+          float bv = g79[r * G79_N + i] * inv;
+          memcpy(&pack79[2 * i], &xr[i], 4);
+          memcpy(&pack79[2 * i + 1], &bv, 4);
+        }
+        memcpy(ctx->b.cpu_addr, pack79, 2 * G79_N * sizeof(float));
+        pai_gpu_buffer_flush(ctx->gpu, &ctx->b);
+        pai_gpu_buffer_flush(ctx->gpu, &ctx->code);
+        ud[2] = (uint32_t)(ctx->b.gpu_addr & 0xFFFFFFFFu);
+        ud[3] = (uint32_t)(ctx->b.gpu_addr >> 32);
+        ud[4] = (uint32_t)(ctx->c.gpu_addr & 0xFFFFFFFFu);
+        ud[5] = (uint32_t)(ctx->c.gpu_addr >> 32);
+        m0_build_dispatch_stream(ctx, stream, M0_PM4_CAP, PAI_T4_RSRC2,
+                                 PAI_T4_THREADS, G79_N, ud, 6, &stream_len);
+        m0_run_gpu(ctx, stream, stream_len, ctx->c.cpu_addr, G79_N * 4,
+                   0xCC, "G79");
+        memcpy(c79 + r * G79_N, ctx->c.cpu_addr, G79_N * sizeof(float));
+      }
+    }
+    stp = pai_ref_compare_f32(c79, ref79, G79_ROWS * G79_N, 1e-4f,
+                              1e-4f, &mism);
+    ok = ok && (stp == PAI_OK);
+    PAI_LOG_INFO_(PAI_SUB_GPU,
+                  "[M0-G79] c[0..3]=%.5f %.5f %.5f %.5f ref=%.5f %.5f %.5f "
+                  "%.5f mism=%llu\n",
+                  (double)c79[0], (double)c79[1], (double)c79[2],
+                  (double)c79[3], (double)ref79[0], (double)ref79[1],
+                  (double)ref79[2], (double)ref79[3],
+                  (unsigned long long)mism);
+    m0_exp_report("G79", ok);
+  }
+
+  /* G80: SiLU ON-GPU (spec §5 / nonlinear_contract §6) - per element:
+   * 1) host prescale xs = -x*log2e; 2) e = 2^xs via REAL G72
+   * nlexp_exp dispatch; 3) d = 1+e via G42 t4_add1d; 4) rc = 1/d via
+   * REAL G75 nlexp_rcp dispatch; 5) c = x*rc via G42 t4_mul1d. */
+  if (!host) {
+    pai_gpu_reset(gpu);
+  }
+  {
+    enum {
+      G80_N = 16u
+    };
+    static float x80[G80_N], c80[G80_N], ref80[G80_N];
+    static float pack80[2 * G80_N];
+    uint32_t *h80 = (uint32_t *)ctx->a.cpu_addr;
+    uint32_t stream_len = 0;
+    uint64_t mism = 0;
+    int ok = 1;
+    pai_status_t stp;
+
+    for (uint32_t i = 0; i < G80_N; i++) {
+      x80[i] = -4.0f + 0.6f * (float)i;
+    }
+    pai_ref_silu_f32(x80, ref80, G80_N);
+
+    /* 1+2) prescale + exp via REAL G72 dispatch */
+    {
+      memcpy(ctx->code.cpu_addr, &pai_nlexp_code[PAI_NLEXP_EXP_OFF],
+             PAI_NLEXP_EXP_WORDS * sizeof(uint32_t));
+      if (host) {
+        pai_gpu_host_register_shader(gpu, ctx->code.gpu_addr,
+                                     pai_host_kernel_nlexp_exp, NULL);
+      }
+      h80[0] = G80_N;
+      h80[1] = 0;
+      for (uint32_t i = 0; i < G80_N; i++) {
+        float xs = -x80[i] * (float)PAI_G72_LOG2E;
+        memcpy(&h80[2 + i], &xs, 4);
+      }
+      pai_gpu_buffer_flush(ctx->gpu, &ctx->a);
+      pai_gpu_buffer_flush(ctx->gpu, &ctx->code);
+      ud[0] = 0;
+      ud[1] = 0;
+      ud[2] = (uint32_t)(ctx->a.gpu_addr & 0xFFFFFFFFu);
+      ud[3] = (uint32_t)(ctx->a.gpu_addr >> 32);
+      ud[4] = (uint32_t)(ctx->c.gpu_addr & 0xFFFFFFFFu);
+      ud[5] = (uint32_t)(ctx->c.gpu_addr >> 32);
+      m0_build_dispatch_stream(ctx, stream, M0_PM4_CAP, PAI_NLEXP_RSRC2,
+                               PAI_NLEXP_THREADS, G80_N, ud, 6,
+                               &stream_len);
+      m0_run_gpu(ctx, stream, stream_len, ctx->c.cpu_addr, G80_N * 4,
+                 0xCC, "G80");
+    }
+    /* 3) d = 1+e via G42 t4_add1d */
+    {
+      memcpy(ctx->code.cpu_addr, &pai_t4_ops_code[PAI_T4_ADD1D_OFF],
+             PAI_T4_ADD1D_WORDS * sizeof(uint32_t));
+      if (host) {
+        pai_gpu_host_register_shader(gpu, ctx->code.gpu_addr,
+                                     pai_host_kernel_t4_add1d, NULL);
+      }
+      for (uint32_t i = 0; i < G80_N; i++) {
+        float one = 1.0f;
+        memcpy(&pack80[2 * i], &one, 4);
+        memcpy(&pack80[2 * i + 1], &((float *)ctx->c.cpu_addr)[i], 4);
+      }
+      memcpy(ctx->b.cpu_addr, pack80, 2 * G80_N * sizeof(float));
+      pai_gpu_buffer_flush(ctx->gpu, &ctx->b);
+      pai_gpu_buffer_flush(ctx->gpu, &ctx->code);
+      ud[2] = (uint32_t)(ctx->b.gpu_addr & 0xFFFFFFFFu);
+      ud[3] = (uint32_t)(ctx->b.gpu_addr >> 32);
+      ud[4] = (uint32_t)(ctx->c.gpu_addr & 0xFFFFFFFFu);
+      ud[5] = (uint32_t)(ctx->c.gpu_addr >> 32);
+      m0_build_dispatch_stream(ctx, stream, M0_PM4_CAP, PAI_T4_RSRC2,
+                               PAI_T4_THREADS, G80_N, ud, 6, &stream_len);
+      m0_run_gpu(ctx, stream, stream_len, ctx->c.cpu_addr, G80_N * 4,
+                 0xCC, "G80");
+    }
+    /* 4) rc = 1/d via REAL G75 dispatch */
+    {
+      memcpy(ctx->code.cpu_addr, &pai_nlexp_code[PAI_NLEXP_RCP_OFF],
+             PAI_NLEXP_RCP_WORDS * sizeof(uint32_t));
+      if (host) {
+        pai_gpu_host_register_shader(gpu, ctx->code.gpu_addr,
+                                     pai_host_kernel_nlexp_rcp, NULL);
+      }
+      h80[0] = G80_N;
+      h80[1] = 0;
+      memcpy(&h80[2], ctx->c.cpu_addr, G80_N * sizeof(float));
+      pai_gpu_buffer_flush(ctx->gpu, &ctx->a);
+      pai_gpu_buffer_flush(ctx->gpu, &ctx->code);
+      ud[2] = (uint32_t)(ctx->a.gpu_addr & 0xFFFFFFFFu);
+      ud[3] = (uint32_t)(ctx->a.gpu_addr >> 32);
+      ud[4] = (uint32_t)(ctx->c.gpu_addr & 0xFFFFFFFFu);
+      ud[5] = (uint32_t)(ctx->c.gpu_addr >> 32);
+      m0_build_dispatch_stream(ctx, stream, M0_PM4_CAP, PAI_NLEXP_RSRC2,
+                               PAI_NLEXP_THREADS, G80_N, ud, 6,
+                               &stream_len);
+      m0_run_gpu(ctx, stream, stream_len, ctx->c.cpu_addr, G80_N * 4,
+                 0xCC, "G80");
+    }
+    /* 5) c = x*rc via G42 t4_mul1d */
+    {
+      memcpy(ctx->code.cpu_addr, &pai_t4_ops_code[PAI_T4_MUL1D_OFF],
+             PAI_T4_MUL1D_WORDS * sizeof(uint32_t));
+      if (host) {
+        pai_gpu_host_register_shader(gpu, ctx->code.gpu_addr,
+                                     pai_host_kernel_t4_mul1d, NULL);
+      }
+      for (uint32_t i = 0; i < G80_N; i++) {
+        memcpy(&pack80[2 * i], &x80[i], 4);
+        memcpy(&pack80[2 * i + 1], &((float *)ctx->c.cpu_addr)[i], 4);
+      }
+      memcpy(ctx->b.cpu_addr, pack80, 2 * G80_N * sizeof(float));
+      pai_gpu_buffer_flush(ctx->gpu, &ctx->b);
+      pai_gpu_buffer_flush(ctx->gpu, &ctx->code);
+      ud[2] = (uint32_t)(ctx->b.gpu_addr & 0xFFFFFFFFu);
+      ud[3] = (uint32_t)(ctx->b.gpu_addr >> 32);
+      ud[4] = (uint32_t)(ctx->c.gpu_addr & 0xFFFFFFFFu);
+      ud[5] = (uint32_t)(ctx->c.gpu_addr >> 32);
+      m0_build_dispatch_stream(ctx, stream, M0_PM4_CAP, PAI_T4_RSRC2,
+                               PAI_T4_THREADS, G80_N, ud, 6, &stream_len);
+      m0_run_gpu(ctx, stream, stream_len, ctx->c.cpu_addr, G80_N * 4,
+                 0xCC, "G80");
+      memcpy(c80, ctx->c.cpu_addr, G80_N * sizeof(float));
+    }
+    stp = pai_ref_compare_f32(c80, ref80, G80_N, 1e-4f, 1e-4f, &mism);
+    ok = ok && (stp == PAI_OK);
+    PAI_LOG_INFO_(PAI_SUB_GPU,
+                  "[M0-G80] c[0..3]=%.5f %.5f %.5f %.5f ref=%.5f %.5f %.5f "
+                  "%.5f mism=%llu\n",
+                  (double)c80[0], (double)c80[1], (double)c80[2],
+                  (double)c80[3], (double)ref80[0], (double)ref80[1],
+                  (double)ref80[2], (double)ref80[3],
+                  (unsigned long long)mism);
+    m0_exp_report("G80", ok);
+  }
+
   /* G17: load from the kernel's own acqrb VA - does ANY load complete,
    * or only our dmem pages hang? */
   if (!host) {
