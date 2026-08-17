@@ -256,6 +256,28 @@ pai_ref_rope_f32(const float *x, uint64_t rows, uint64_t hd, uint64_t seq,
   return PAI_OK;
 }
 
+pai_status_t
+pai_ref_rope_cossin_f32(uint64_t ctx, uint64_t r2, float base,
+                        float *cos_t, float *sin_t) {
+  if (ctx == 0 || r2 == 0 || !cos_t || !sin_t) {
+    return PAI_ERR_INVALID_ARG;
+  }
+  if (base == 0.0f) {
+    base = 10000.0f;
+  }
+
+  for (uint64_t p = 0; p < ctx; p++) {
+    for (uint64_t i = 0; i < r2; i++) {
+      /* dim = 2*r2; inv_freq[i] = base^(-2i/dim). */
+      double theta = (double)p *
+                     pow((double)base, -(2.0 * (double)i) / (2.0 * (double)r2));
+      cos_t[p * r2 + i] = (float)cos(theta);
+      sin_t[p * r2 + i] = (float)sin(theta);
+    }
+  }
+  return PAI_OK;
+}
+
 /*
  * Causal multi-head self-attention. All buffers position-major:
  * q: seq x H x hd; k/v: seq x HK x hd; out: seq x H x hd. Head h at

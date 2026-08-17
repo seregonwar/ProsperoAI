@@ -99,6 +99,21 @@ pai_status_t pai_ref_rope_f32(const float *x, uint64_t rows, uint64_t hd,
                               uint64_t r2, float *out);
 
 /*
+ * LLaMA-style RoPE cos/sin frequency tables (§9): cos_t/sin_t are
+ * `ctx` x `r2` floats (position-major, one row per position p in
+ * [0, ctx)). For rotary dim dim = 2*r2, pair i in [0, r2):
+ *
+ *   inv_freq[i] = base^(-2i/dim)
+ *   cos_t[p][i] = cos(p * inv_freq[i])
+ *   sin_t[p][i] = sin(p * inv_freq[i])
+ *
+ * base 0 selects the LLaMA default (10000). Output feeds directly
+ * into pai_ref_rope_f32.
+ */
+pai_status_t pai_ref_rope_cossin_f32(uint64_t ctx, uint64_t r2, float base,
+                                     float *cos_t, float *sin_t);
+
+/*
  * Causal multi-head self-attention over a sequence (§9). All four
  * buffers are position-major: q is seq x H x hd, k/v are
  * seq x HK x hd, out is seq x H x hd (position p occupies rows

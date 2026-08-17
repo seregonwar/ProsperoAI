@@ -217,6 +217,58 @@ TEST_MAIN_BEGIN()
 }
 
 {
+  /* rope cos/sin tables (LLaMA): dim=4, base=10000, ctx=2.
+   * theta_i(p) = p * 10000^(-2i/4): i=0 -> p, i=1 -> p*0.01. */
+  float cos_t[4], sin_t[4];
+  float c[16];
+  CHECK(pai_ref_rope_cossin_f32(2, 2, 10000.0f, cos_t, sin_t) == PAI_OK);
+  /* p=0: cos=1, sin=0. */
+  CHECK(fabsf(cos_t[0] - 1.0f) < 1e-6f);
+  CHECK(fabsf(cos_t[1] - 1.0f) < 1e-6f);
+  CHECK(fabsf(sin_t[0]) < 1e-6f);
+  CHECK(fabsf(sin_t[1]) < 1e-6f);
+  /* p=1: theta0=1, theta1=0.01. */
+  CHECK(fabsf(cos_t[2] - cosf(1.0f)) < 1e-6f);
+  CHECK(fabsf(sin_t[2] - sinf(1.0f)) < 1e-6f);
+  CHECK(fabsf(cos_t[3] - cosf(0.01f)) < 1e-6f);
+  CHECK(fabsf(sin_t[3] - sinf(0.01f)) < 1e-6f);
+  /* base 0 -> default 10000 (same tables). */
+  {
+    float ct2[4], st2[4];
+    CHECK(pai_ref_rope_cossin_f32(2, 2, 0.0f, ct2, st2) == PAI_OK);
+    for (int i = 0; i < 4; i++) {
+      CHECK(fabsf(ct2[i] - cos_t[i]) < 1e-6f);
+      CHECK(fabsf(st2[i] - sin_t[i]) < 1e-6f);
+    }
+  }
+  /* invalid args */
+  CHECK(pai_ref_rope_cossin_f32(0, 2, 10000.0f, cos_t, sin_t) ==
+        PAI_ERR_INVALID_ARG);
+  CHECK(pai_ref_rope_cossin_f32(2, 0, 10000.0f, cos_t, sin_t) ==
+        PAI_ERR_INVALID_ARG);
+  CHECK(pai_ref_rope_cossin_f32(2, 2, 10000.0f, NULL, sin_t) ==
+        PAI_ERR_INVALID_ARG);
+
+  /* End-to-end: generator -> rope on the same 2-head/2-pos input as
+   * the hand-built table test above (single head, hd=4, seq=2, r2=2).
+   * p0: c=1,s=0 -> identity; p1: theta=(1, 0.01). */
+  float x2[8] = {1, 3, 2, 4, 10, 30, 20, 40};
+  CHECK(pai_ref_rope_f32(x2, 2, 4, 2, 1, cos_t, sin_t, 2, c) == PAI_OK);
+  /* p0 identity. */
+  CHECK(fabsf(c[0] - 1.0f) < 1e-6f);
+  CHECK(fabsf(c[1] - 3.0f) < 1e-6f);
+  CHECK(fabsf(c[2] - 2.0f) < 1e-6f);
+  CHECK(fabsf(c[3] - 4.0f) < 1e-6f);
+  /* p1: c[4]/c[6] is pair (i=0): x0=x2[4]=10, x1=x2[6]=20, theta=1;
+   * c[5]/c[7] is pair (i=1): x0=x2[5]=30, x1=x2[7]=40, theta=0.01.
+   * Oracle uses the generated float tables (not double re-derivation). */
+  CHECK(fabsf(c[4] - (10.0f * cos_t[2] - 20.0f * sin_t[2])) < 1e-6f);
+  CHECK(fabsf(c[6] - (10.0f * sin_t[2] + 20.0f * cos_t[2])) < 1e-6f);
+  CHECK(fabsf(c[5] - (30.0f * cos_t[3] - 40.0f * sin_t[3])) < 1e-6f);
+  CHECK(fabsf(c[7] - (30.0f * sin_t[3] + 40.0f * cos_t[3])) < 1e-6f);
+}
+
+{
   /* copy, including aliasing */
   float a[4] = {1, 2, 3, 4};
   float c[4];
