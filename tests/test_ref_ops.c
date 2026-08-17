@@ -436,4 +436,21 @@ TEST_MAIN_BEGIN()
   CHECK(pai_ref_biasadd_f32(NULL, bias, c, 2, 3) == PAI_ERR_INVALID_ARG);
 }
 
+{
+  /* scale in-place: a[i] *= alpha, incl. negative and zero entries */
+  float a[5] = {2.0f, -3.0f, 0.5f, 0.0f, 7.0f};
+  CHECK(pai_ref_scale_f32(a, 2.5f, 5) == PAI_OK);
+  CHECK(fabsf(a[0] - 5.0f) < 1e-6f);
+  CHECK(fabsf(a[1] - -7.5f) < 1e-6f);
+  CHECK(fabsf(a[2] - 1.25f) < 1e-6f);
+  CHECK(fabsf(a[3] - 0.0f) < 1e-6f);
+  CHECK(fabsf(a[4] - 17.5f) < 1e-6f);
+  /* alpha = 1 leaves values untouched */
+  CHECK(pai_ref_scale_f32(a, 1.0f, 5) == PAI_OK);
+  CHECK(fabsf(a[0] - 5.0f) < 1e-6f);
+  /* n = 0 with NULL buffer is legal; non-NULL buffer required for n>0 */
+  CHECK(pai_ref_scale_f32(NULL, 1.0f, 0) == PAI_OK);
+  CHECK(pai_ref_scale_f32(NULL, 1.0f, 4) == PAI_ERR_INVALID_ARG);
+}
+
 TEST_MAIN_END()
