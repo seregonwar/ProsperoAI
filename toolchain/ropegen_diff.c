@@ -17,6 +17,10 @@
  *   theta_turns[e] = theta[p][i] / (2*pi), e = p*r2+i
  *   c[e] = cos/sin(2*pi*theta_turns[e]) == cos/sin(theta[p][i])
  *
+ *   sin half (9.40): v_sin_f32 is TOXIC serial-per-element (commit
+ *   ca2819e) — the payload feeds theta_turns-0.25 and the cos kernel
+ *   produces sin(theta) via cos(theta-pi/2). Section 5 locks that.
+ *
  * Build: host-tests/host-reference preset; binary `ropegen_diff`.
  */
 
@@ -151,6 +155,62 @@ main(void) {
       g_failures++;
     } else {
       printf("  PASS rope_f32(ABI tables) == rope_f32(oracle tables)\n");
+    }
+  }
+
+  /* 5) G70 cos-shift contract: on 9.40 v_sin_f32 is TOXIC in
+   * serial-per-element (EOP never fires, commit ca2819e), so the sin
+   * half is produced by feeding theta_turns-0.25 to the cos kernel
+   * (cos(theta-pi/2)=sin(theta)). Validate the exact recipe host-side:
+   * mirror sin with the shifted header must equal the oracle sin, and
+   * the cos+shifted-sin pair keeps cos^2+sin^2==1. */
+  {
+    uint32_t hdr_shift[2 + 32 * 4];
+    float tables2[2 * 32 * 4];
+    uint32_t ud2[16] = {0};
+    double max_d = 0.0, worst_id = 0.0;
+    uint64_t worst_e = 0, worst_id_e = 0;
+
+    hdr_shift[0] = r2;
+    hdr_shift[1] = ctx;
+    for (uint32_t e = 0; e < n; e++) {
+      float tt;
+      memcpy(&tt, &hdr[2 + e], 4);
+      tt -= 0.25f; /* the G70 shift: cos(theta-pi/2) */
+      memcpy(&hdr_shift[2 + e], &tt, 4);
+    }
+    memset(tables2, 0xCC, sizeof(tables2));
+    ud2[2] = (uint32_t)(uintptr_t)hdr_shift;
+    ud2[3] = (uint32_t)((uintptr_t)hdr_shift >> 32);
+    ud2[4] = (uint32_t)(uintptr_t)tables2;
+    ud2[5] = (uint32_t)((uintptr_t)tables2 >> 32);
+    /* The G70 kernel is the COS instruction fed the shifted header
+     * (G69 patched the v_sin word to v_cos in place); the host analog
+     * is the cos mirror with tt-0.25. Values land in the cos half. */
+    st = pai_host_kernel_ropegen_cos(NULL, ud2, 1, n);
+    REQUIRE(st == PAI_OK);
+    for (uint32_t e = 0; e < n; e++) {
+      double d = fabs((double)tables2[e] - (double)sin_o[e]);
+      if (d > max_d) {
+        max_d = d;
+        worst_e = e;
+      }
+      double id = fabs((double)tables[e] * tables[e] +
+                       (double)tables2[e] * tables2[e] - 1.0);
+      if (id > worst_id) {
+        worst_id = id;
+        worst_id_e = e;
+      }
+    }
+    if (max_d < 1e-4 && worst_id < 1e-5) {
+      printf("  PASS G70 cos-shift sin == oracle sin (max |d| = %g), "
+             "cos^2+sin^2 = 1 (max |d| = %g)\n", max_d, worst_id);
+    } else {
+      printf("  FAIL G70 cos-shift: sin max |d| = %g (e=%llu), "
+             "identity max |d| = %g (e=%llu)\n", max_d,
+             (unsigned long long)worst_e, worst_id,
+             (unsigned long long)worst_id_e);
+      g_failures++;
     }
   }
 

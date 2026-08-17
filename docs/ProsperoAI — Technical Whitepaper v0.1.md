@@ -1801,20 +1801,27 @@ Open gates before Phase 1 / PAI-M2 work should prioritize:
   on-GPU RoPE table generator (ropegen.s) — serial-per-element,
   `groups_x=ctx*r2` (128 groups x 1 thread, dispatch 0x8C), header
   (r2, ctx, theta_turns[]) at ud[2:3], C at ud[4:5], cos entry
-  writes c[e], sin entry writes the ctx*r2 half. G67 cos
+  writes c[e], sin entry writes the ctx*r2 half.  G67 cos
   **HW-VALIDATED** (run 124611): 128/128 values exact vs the
-  `pai_ref_rope_cossin_f32` oracle, EOP ok. G68 sin **BLOCKED by
-  post-panic GPU state, not instruction**: EOP never fires (30s x3
-  fence) while the identical cos dispatch retires immediately;
-  where written, every value is exact (resubmit ~112/128 exact,
-  bitmap no '?'); holes e=13..15,22..29,32..36 (head stable, tail
-  varies 16/17). The queue recovers afterwards (G17+26 exp pass,
-  59/60). Verdict: kernel correct (each written value matches the
-  oracle; mirror ABI locked by the B-side `ropegen_diff`, ctest
-  32/32 with the committed mirror), sin dispatch wedged GPU/
-  transcendent-unit state. Retest plan: G68 on a clean console
-  reboot, known-good kernel first; if still failing, control probe
-  cos-store-to-sin-half (isolates write offset from `v_sin_f32`).
+  `pai_ref_rope_cossin_f32` oracle, EOP ok. G68 sin first failed
+  (EOP never fires, holes e=13..15,22..29,32..36, values exact
+  where written). **RESOLVED (commit `ca2819e`, run 131807) — NOT
+  GPU state, the instruction itself:** G69 patched the `v_sin_f32`
+  word (17, 7E026B01) to `v_cos` (7E026D01) in the same kernel →
+  PASS bad=0 in the same run; G70 = sin via cos-shift
+  (`theta_turns−0.25`, cos(θ−π/2)=sin(θ)) → PASS bad=0, 128/128
+  exact. **NEW EMPIRICAL RULE 9.40: `v_sin_f32` is TOXIC in
+  serial-per-element (wave hang, dispatch never retires);
+  `v_cos_f32` works.** G65/G66 had validated v_sin only in
+  wave-parallel (values derived arithmetically, never a serial
+  per-element transcendent); the serial ropegen path hangs.
+  On-GPU RoPE tables COMPLETE: cos = G67 direct, sin = G70
+  cos-shift (same kernel, shifted header). ABI mirror unchanged
+  (header theta_turns, sin half at +ctx*r2) — the difference is
+  only the sin dispatch header value (tt−0.25); B-side
+  `ropegen_diff` section 5 locks the G70 recipe host-side
+  (cos mirror + shifted header == oracle sin, max |d| 1.27e-06,
+  cos²+sin²=1 preserved).
   **Nonlinear ops contract (commit `7d86a24`, B-side harness
   `nonlinear_contract`):** with no per-lane data select, RMSNorm /
   SiLU / softmax must run as serial per-element kernels (G40/G67
