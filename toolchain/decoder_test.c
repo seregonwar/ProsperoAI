@@ -26,6 +26,7 @@
 
 #include <pai/error.h>
 
+#include <hal/host_kernels.h>
 #include <kv_cache.h>
 #include <ref_ops.h>
 #include <sampler.h>
@@ -56,6 +57,46 @@ static int g_failures;
       g_failures++;                                                          \
     }                                                                        \
   } while (0)
+
+/* --- kernel-mirror ABI helpers -------------------------------------------
+ * Drive the host mirrors of the GPU serial kernels with the exact
+ * ud[] interface the payload dispatches on console (G48 matmul / G47
+ * biasadd / G42 add): header pointer at ud[2:3], C at ud[4:5], one
+ * group per cell. */
+
+static pai_status_t
+mirror_matmul(uint32_t ud[16], uint32_t hdr[6], const float *a,
+              const float *b, float *c, uint32_t m, uint32_t n,
+              uint32_t k) {
+  hdr[0] = k;
+  hdr[1] = n;
+  hdr[2] = (uint32_t)(uintptr_t)a;
+  hdr[3] = (uint32_t)((uintptr_t)a >> 32);
+  hdr[4] = (uint32_t)(uintptr_t)b;
+  hdr[5] = (uint32_t)((uintptr_t)b >> 32);
+  ud[2] = (uint32_t)(uintptr_t)hdr;
+  ud[3] = (uint32_t)((uintptr_t)hdr >> 32);
+  ud[4] = (uint32_t)(uintptr_t)c;
+  ud[5] = (uint32_t)((uintptr_t)c >> 32);
+  return pai_host_kernel_t4_matmul(NULL, ud, 1, m * n);
+}
+
+static pai_status_t
+mirror_biasadd(uint32_t ud[16], uint32_t hdr[6], const float *a,
+               const float *bias, float *c, uint32_t rows,
+               uint32_t cols) {
+  hdr[0] = cols;
+  hdr[1] = 0;
+  hdr[2] = (uint32_t)(uintptr_t)a;
+  hdr[3] = (uint32_t)((uintptr_t)a >> 32);
+  hdr[4] = (uint32_t)(uintptr_t)bias;
+  hdr[5] = (uint32_t)((uintptr_t)bias >> 32);
+  ud[2] = (uint32_t)(uintptr_t)hdr;
+  ud[3] = (uint32_t)((uintptr_t)hdr >> 32);
+  ud[4] = (uint32_t)(uintptr_t)c;
+  ud[5] = (uint32_t)((uintptr_t)c >> 32);
+  return pai_host_kernel_t4_biasadd(NULL, ud, 1, rows * cols);
+}
 
 /* Deterministic weights. All projections are [D_MODEL][D_MODEL] without
  * bias except the MLP which carries one (realistic LLaMA shape). */
@@ -744,6 +785,116 @@ main(void) {
     if (ok) {
       printf("  PASS KV-cache manager integration (buddy storage + "
              "prefix reuse)\n");
+    }
+  }
+
+  /* 11) mirror-ABI differential: the linear layers of the SAME prefill
+   * forward now run through the host mirrors of the GPU serial kernels
+   * (G48 matmul / G47 biasadd / G42 add) with the exact ud[] ABI the
+   * payload dispatches on console — the decoder's GPU leg before the
+   * real shaders land. Everything not GPU-mapped (RoPE, attention,
+   * RMSNorm, SiLU) stays on ref_ops; the final logits must still
+   * match the double oracle. This is the differential Seat A's G40
+   * serial-per-row GEMM integration will be validated against. */
+  {
+    uint32_t ud[16] = {0};
+    uint32_t hdr[6] = {0};
+    static float mq[SEQ * D_MODEL], mkv[SEQ * D_MODEL];
+    static float mvv[SEQ * D_MODEL], mo[SEQ * D_MODEL];
+    static float mh1a[SEQ * D_MODEL], mh1[SEQ * D_MODEL];
+    static float mgmlp[SEQ * MLP_HID], mag[SEQ * MLP_HID];
+    static float mh2[SEQ * MLP_HID], mmlp[SEQ * D_MODEL];
+    static float mh3a[SEQ * D_MODEL], mh3[SEQ * D_MODEL];
+    static float mlogits[SEQ * VOCAB];
+    float ab[2 * SEQ * D_MODEL];
+    float mwant[SEQ * VOCAB];
+    uint64_t mism = 0;
+    int all_ok = 1;
+
+    /* QKV: e[SEQ][D_MODEL] x w[ D_MODEL][D_MODEL] -> [SEQ][D_MODEL]. */
+    st = mirror_matmul(ud, hdr, e, wq, mq, SEQ, D_MODEL, D_MODEL);
+    REQUIRE(st == PAI_OK);
+    st = mirror_matmul(ud, hdr, e, wk, mkv, SEQ, D_MODEL, D_MODEL);
+    REQUIRE(st == PAI_OK);
+    st = mirror_matmul(ud, hdr, e, wv, mvv, SEQ, D_MODEL, D_MODEL);
+    REQUIRE(st == PAI_OK);
+
+    /* attention + out proj (G48 matmul) + residual (G42 add) */
+    memset(mo, 0, sizeof(mo));
+    st = pai_ref_attention_f32(H_HEADS, HK_KV, SEQ, HD_DIM, mq, mkv, mvv,
+                               mo);
+    REQUIRE(st == PAI_OK);
+    {
+      static float mop[SEQ * D_MODEL];
+      st = mirror_matmul(ud, hdr, mo, wo, mop, SEQ, D_MODEL, D_MODEL);
+      REQUIRE(st == PAI_OK);
+      for (i = 0; i < SEQ * D_MODEL; i++) {
+        ab[2 * i] = mop[i];
+        ab[2 * i + 1] = e[i];
+      }
+      ud[2] = (uint32_t)(uintptr_t)ab;
+      ud[3] = (uint32_t)((uintptr_t)ab >> 32);
+      ud[4] = (uint32_t)(uintptr_t)mh1a;
+      ud[5] = (uint32_t)((uintptr_t)mh1a >> 32);
+      st = pai_host_kernel_t4_add1d(NULL, ud, 1, SEQ * D_MODEL);
+      REQUIRE(st == PAI_OK);
+    }
+    for (i = 0; i < SEQ; i++) {
+      st = pai_ref_rmsnorm_gamma_f32(mh1a + i * D_MODEL,
+                                     mh1 + i * D_MODEL, D_MODEL, g1, 1e-5f);
+      REQUIRE(st == PAI_OK);
+    }
+
+    /* SiLU MLP: matmul + biasadd + silu + matmul + biasadd + residual */
+    st = mirror_matmul(ud, hdr, mh1, w1, mgmlp, SEQ, MLP_HID, D_MODEL);
+    REQUIRE(st == PAI_OK);
+    st = mirror_biasadd(ud, hdr, mgmlp, b1, mag, SEQ, MLP_HID);
+    REQUIRE(st == PAI_OK);
+    st = pai_ref_silu_f32(mag, mh2, SEQ * MLP_HID);
+    REQUIRE(st == PAI_OK);
+    st = mirror_matmul(ud, hdr, mh2, w2, mmlp, SEQ, D_MODEL, MLP_HID);
+    REQUIRE(st == PAI_OK);
+    st = mirror_biasadd(ud, hdr, mmlp, b2, mh3a, SEQ, D_MODEL);
+    REQUIRE(st == PAI_OK);
+    for (i = 0; i < SEQ * D_MODEL; i++) {
+      ab[2 * i] = mh1[i];
+      ab[2 * i + 1] = mh3a[i];
+    }
+    ud[2] = (uint32_t)(uintptr_t)ab;
+    ud[3] = (uint32_t)((uintptr_t)ab >> 32);
+    ud[4] = (uint32_t)(uintptr_t)mh3;
+    ud[5] = (uint32_t)((uintptr_t)mh3 >> 32);
+    st = pai_host_kernel_t4_add1d(NULL, ud, 1, SEQ * D_MODEL);
+    REQUIRE(st == PAI_OK);
+    for (i = 0; i < SEQ; i++) {
+      st = pai_ref_rmsnorm_gamma_f32(mh3 + i * D_MODEL, mh1 + i * D_MODEL,
+                                     D_MODEL, g2, 1e-5f);
+      REQUIRE(st == PAI_OK);
+    }
+
+    /* logits GEMM */
+    st = mirror_matmul(ud, hdr, mh1, wout, mlogits, SEQ, VOCAB, D_MODEL);
+    REQUIRE(st == PAI_OK);
+
+    /* differential vs the double oracle (same snap as section 7) */
+    for (i = 0; i < SEQ * VOCAB; i++) {
+      mwant[i] = (float)logits_ref[i];
+    }
+    mism = 0;
+    st = pai_ref_compare_f32(mlogits, mwant, SEQ * VOCAB, 1e-4f, 1e-4f,
+                             &mism);
+    if (st == PAI_OK) {
+      printf("  PASS mirror-ABI decoder forward (G48/G47/G42) == double "
+             "oracle\n");
+    } else {
+      printf("  FAIL mirror-ABI forward: logits mismatch at %llu "
+             "(mir=%f oracle=%f)\n",
+             (unsigned long long)mism, (double)mlogits[mism],
+             (double)mwant[mism]);
+      all_ok = 0;
+    }
+    if (!all_ok) {
+      g_failures++;
     }
   }
 

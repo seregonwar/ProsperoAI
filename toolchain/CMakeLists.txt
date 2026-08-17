@@ -53,6 +53,7 @@ if(PAI_PLATFORM STREQUAL "host")
   add_executable(decoder_test decoder_test.c)
   target_link_libraries(decoder_test PRIVATE
     pai_cpu_reference
+    pai_gpu_hal
     pai_models
     pai_tensor
     pai_cache
