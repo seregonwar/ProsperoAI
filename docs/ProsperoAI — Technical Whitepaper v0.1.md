@@ -1859,8 +1859,23 @@ Open gates before Phase 1 / PAI-M2 work should prioritize:
   (QKV/out-proj/MLP/logits) is now HW-validated on 9.40; what
   remains for the on-GPU decoder path is wiring the validated
   kernels (G40 GEMM + G67/G70 RoPE tables + G71 rsqrt + G72 exp-2^x
-  with the host-side pre-scale) into a first GPU forward, with
-  `decoder_test` as the differential oracle (logits 1e-4, argmax).
+  with the host-side pre-scale) into a first GPU forward,  with `decoder_test` as the differential oracle (logits 1e-4, argmax).
+  **G74 MILESTONE (commit `588476a`, run 135700): FIRST on-GPU
+  decoder PREFILL forward HW-validated.** Executes the spec's
+  dispatch sequence on console 9021: QKV/out-proj/MLP/logits GEMMs
+  via the real G40 serial-per-row kernel (per-row dispatches,
+  transposed-W inline repack, payload helper `m0_exp_gemm_g40` =
+  the locked host `G40_GEMV` recipe), RoPE cos/sin tables on-GPU via
+  the G67/G70 path (helper `m0_exp_rope_tables_gpu`, sin via
+  cos-shift θ−0.25), attention/RMSNorm-gamma/SiLU/residual on host
+  ref_ops. Differential vs the same host `pai_ref_gemm_f32` chain
+  (the chain `decoder_test` sez.12/13 validates vs the double
+  oracle): logits 1e-4 mism=0, greedy argmax 2==2, sizes identical
+  (D8 H2 HK1 HD4 R2 2 SEQ3 MLP16 VOCAB16, toks {2,5,9}). The
+  first-token→next-token differential contract is now HW-proven on
+  the prefill; the remaining steps toward a fully on-GPU decoder
+  loop: decode-loop wiring (sez.13 contract), then moving
+  RMSNorm/SiLU/attention to GPU using the serial recipes.
   Empirical note: RSRC1 `VGPRS` must
   cover the VGPRs a kernel actually touches (G55/G56 use v1-v6,
   lanepick v16-v31 → `PAI_EXP_RSRC1_VGPR32=0x602C0003`).
