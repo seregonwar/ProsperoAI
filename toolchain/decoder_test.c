@@ -26,6 +26,7 @@
 
 #include <pai/error.h>
 
+#include <kv_cache.h>
 #include <ref_ops.h>
 #include <sampler.h>
 
@@ -661,6 +662,88 @@ main(void) {
              "full-prefix oracle)\n", NGEN);
     } else {
       g_failures++;
+    }
+  }
+
+  /* 10) KV-cache manager integration (whitepaper §19): the cache the
+   * autoregressive loop above simulated with plain arrays is here
+   * backed by pai_kv_cache - buddy-allocated K/V blocks plus rolling
+   * prefix hashing. Prefill rows are stored into the region through
+   * the manager, then replayed to prove prefix-cache reuse (a second
+   * request sharing the prefix skips recompute: touch returns a hit).
+   * This is the storage layer the Phase-2 decode will run on top of. */
+  {
+    /* Per-position cost: 2 layers (K, V) x D_MODEL floats = 64 B,
+     * which the manager rounds up to one 64 B buddy block, so a 4096
+     * B region holds 64 positions - comfortably above CTX_TOTAL. */
+    uint8_t raw[4096 * 2];
+    uint8_t *base;
+    pai_kv_cache_t kmgr;
+    uint32_t pos;
+    uint64_t h = 0;
+    int ok = 1;
+    int p;
+
+    base = (uint8_t *)((uintptr_t)raw +
+                       (4096 - ((uintptr_t)raw % 4096)) % 4096);
+    st = pai_kv_cache_init(&kmgr, base, 4096, 2, D_MODEL * 4);
+    REQUIRE(st == PAI_OK);
+    REQUIRE(kmgr.capacity_tokens >= CTX_TOTAL);
+
+    /* store the prefill K/V rows (sections 3/4) into manager blocks,
+     * one reserve per position, rolling the input prefix hash */
+    for (p = 0; p < SEQ && ok; p++) {
+      uint8_t *blk;
+      st = pai_kv_cache_reserve(&kmgr, 1, &pos);
+      if (st != PAI_OK || pos != (uint32_t)p) {
+        ok = 0;
+        break;
+      }
+      blk = base + (size_t)kmgr.block_ptrs[pos];
+      memcpy(blk, kv + p * D_MODEL, D_MODEL * sizeof(float));
+      memcpy(blk + D_MODEL * sizeof(float), vv + p * D_MODEL,
+             D_MODEL * sizeof(float));
+      h = pai_kv_prefix_hash(h, (uint32_t)toks[p]);
+      /* first touch of a fresh prefix: miss (0) */
+      if (pai_kv_cache_touch(&kmgr, pos, h) != 0) {
+        ok = 0;
+      }
+    }
+    REQUIRE(ok);
+    REQUIRE(kmgr.positions == (uint32_t)SEQ);
+    REQUIRE(kmgr.stats_prefix_miss == (uint64_t)SEQ);
+
+    /* replay the identical prefix: every touch is now a hit -> the
+     * stored K/V blocks are reusable without recompute */
+    {
+      uint64_t h2 = 0;
+      int all_hit = 1;
+      for (p = 0; p < SEQ; p++) {
+        h2 = pai_kv_prefix_hash(h2, (uint32_t)toks[p]);
+        if (pai_kv_cache_touch(&kmgr, (uint32_t)p, h2) != 1) {
+          all_hit = 0;
+        }
+      }
+      REQUIRE(all_hit);
+      REQUIRE(kmgr.stats_prefix_hits == (uint64_t)SEQ);
+    }
+
+    /* a different prefix at the same positions must miss */
+    {
+      uint64_t h3 = pai_kv_prefix_hash(0, 999);
+      REQUIRE(pai_kv_cache_touch(&kmgr, 0, h3) == 0);
+    }
+
+    /* capacity: reserve above the region must fail cleanly */
+    {
+      uint32_t need = kmgr.capacity_tokens - kmgr.positions + 1;
+      REQUIRE(pai_kv_cache_reserve(&kmgr, need, &pos) == PAI_ERR_NOMEM);
+    }
+
+    pai_kv_cache_destroy(&kmgr);
+    if (ok) {
+      printf("  PASS KV-cache manager integration (buddy storage + "
+             "prefix reuse)\n");
     }
   }
 

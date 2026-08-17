@@ -45,6 +45,7 @@ if(PAI_PLATFORM STREQUAL "host")
     pai_cpu_reference
     pai_models
     pai_tensor
+    pai_cache
     pai_diag
   )
   pai_enable_big_stack(decoder_test)
