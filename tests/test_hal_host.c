@@ -611,6 +611,60 @@ TEST_MAIN_BEGIN()
       }
     }
 
+    /* G73: decoder GEMM via G40 fgemv - one call per input row, W
+     * repacked transposed inline (hdr[4+g*K+k] = B[k*N+g]), groups
+     * = N. Same recipe as decoder_test sez.12. */
+    {
+      uint32_t m = 8u, kk = 16u, n = 8u;
+      uint32_t h73[4 + 8u * 16u];
+      float a73[8u * 16u];
+      float b73[16u * 8u];
+      float c73[8u * 8u];
+      int all_ok = 1;
+      /* y destination: without ud[4:5] = c73 the mirror writes into
+       * whatever buffer ud[4:5] last pointed at (the shared code
+       * buffer), corrupting later GPU dispatches ("opcode 0xff"). */
+      ud[4] = (uint32_t)(uintptr_t)c73;
+      ud[5] = (uint32_t)((uintptr_t)c73 >> 32);
+      for (uint32_t i = 0; i < m; i++) {
+        for (uint32_t t = 0; t < kk; t++) {
+          a73[i * kk + t] = 0.5f + 0.1f * (float)i + 0.01f * (float)t;
+        }
+      }
+      for (uint32_t t = 0; t < kk; t++) {
+        for (uint32_t j = 0; j < n; j++) {
+          b73[t * n + j] = 1.0f - 0.02f * (float)t + 0.1f * (float)j;
+        }
+      }
+      for (uint32_t i = 0; i < m && all_ok; i++) {
+        h73[0] = kk;
+        h73[1] = 0;
+        h73[2] = (uint32_t)(uintptr_t)(a73 + i * kk);
+        h73[3] = (uint32_t)(((uintptr_t)(a73 + i * kk)) >> 32);
+        for (uint32_t g = 0; g < n; g++) {
+          for (uint32_t t = 0; t < kk; t++) {
+            memcpy(&h73[4 + g * kk + t], &b73[t * n + g], 4);
+          }
+        }
+        ud[2] = (uint32_t)(uintptr_t)h73;
+        ud[3] = (uint32_t)((uintptr_t)h73 >> 32);
+        ud[4] = (uint32_t)(uintptr_t)(c73 + i * n);
+        ud[5] = (uint32_t)(((uintptr_t)(c73 + i * n)) >> 32);
+        CHECK(pai_host_kernel_fgemv(NULL, ud, 1, n) == PAI_OK);
+        for (uint32_t j = 0; j < n && all_ok; j++) {
+          double want = 0.0;
+          for (uint32_t t = 0; t < kk; t++) {
+            want += (double)a73[i * kk + t] * (double)b73[t * n + j];
+          }
+          if (fabsf(c73[i * n + j] - (float)want) >
+              1e-4f * (1.0f + fabsf((float)want))) {
+            all_ok = 0;
+          }
+        }
+      }
+      CHECK(all_ok);
+    }
+
     /* G57: per-lane select from 16-dword block (lanepick mirror). */
     {
       uint32_t h57[16];

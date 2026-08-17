@@ -81,6 +81,32 @@ mirror_matmul(uint32_t ud[16], uint32_t hdr[6], const float *a,
   return pai_host_kernel_t4_matmul(NULL, ud, 1, m * n);
 }
 
+/* G40 fgemv-ABI call (commit 0f16d7d): header [K, pad, x_lo, x_hi,
+ * W...inline at hdr+4] at ud[2:3], y at ud[4:5], one group per row.
+ * Computes y[g] = sum_k hdr[4+g*K+k] * x[k]; the W rows are the
+ * transposed columns of a row-major [K][N] weight (hdr[4+g*K+k] =
+ * w[k*N+g]). h40 must hold 4 + nout*kin words. */
+static pai_status_t
+mirror_gemv_g40(uint32_t ud[16], uint32_t h40[], const float *x,
+                const float *w, float *y, uint32_t nout, uint32_t kin) {
+  uint32_t gg, kk;
+  h40[0] = kin;
+  h40[1] = 0;
+  h40[2] = (uint32_t)(uintptr_t)x;
+  h40[3] = (uint32_t)((uintptr_t)x >> 32);
+  for (gg = 0; gg < nout; gg++) {
+    for (kk = 0; kk < kin; kk++) {
+      float wv = w[kk * nout + gg];
+      memcpy(&h40[4 + gg * kin + kk], &wv, 4);
+    }
+  }
+  ud[2] = (uint32_t)(uintptr_t)h40;
+  ud[3] = (uint32_t)((uintptr_t)h40 >> 32);
+  ud[4] = (uint32_t)(uintptr_t)y;
+  ud[5] = (uint32_t)((uintptr_t)y >> 32);
+  return pai_host_kernel_fgemv(NULL, ud, 1, nout);
+}
+
 static pai_status_t
 mirror_biasadd(uint32_t ud[16], uint32_t hdr[6], const float *a,
                const float *bias, float *c, uint32_t rows,
@@ -924,33 +950,17 @@ main(void) {
     int all_ok = 1;
     int r;
 
-    /* per-row G40 call: y[g] = sum_k hdr[4+g*K+k] * x[k] */
-#define G40_GEMV(x, w, nout, kin, y)                                         \
-    do {                                                                     \
-      uint32_t gg_, kk_;                                                     \
-      h40[0] = (kin);                                                        \
-      h40[1] = 0;                                                            \
-      h40[2] = (uint32_t)(uintptr_t)(x);                                     \
-      h40[3] = (uint32_t)((uintptr_t)(x) >> 32);                             \
-      for (gg_ = 0; gg_ < (nout); gg_++) {                                   \
-        for (kk_ = 0; kk_ < (kin); kk_++) {                                  \
-          float wv_ = (w)[kk_ * (nout) + gg_];                               \
-          memcpy(&h40[4 + gg_ * (kin) + kk_], &wv_, 4);                      \
-        }                                                                    \
-      }                                                                      \
-      ud[2] = (uint32_t)(uintptr_t)h40;                                      \
-      ud[3] = (uint32_t)((uintptr_t)h40 >> 32);                              \
-      ud[4] = (uint32_t)(uintptr_t)(y);                                      \
-      ud[5] = (uint32_t)((uintptr_t)(y) >> 32);                              \
-      st = pai_host_kernel_fgemv(NULL, ud, 1, (nout));                       \
-      REQUIRE(st == PAI_OK);                                                 \
-    } while (0)
-
     /* QKV via G40, one call per row */
     for (r = 0; r < SEQ; r++) {
-      G40_GEMV(e + r * D_MODEL, wq, D_MODEL, D_MODEL, mq2 + r * D_MODEL);
-      G40_GEMV(e + r * D_MODEL, wk, D_MODEL, D_MODEL, mkv2 + r * D_MODEL);
-      G40_GEMV(e + r * D_MODEL, wv, D_MODEL, D_MODEL, mvv2 + r * D_MODEL);
+      st = mirror_gemv_g40(ud, h40, e + r * D_MODEL, wq,
+                           mq2 + r * D_MODEL, D_MODEL, D_MODEL);
+      REQUIRE(st == PAI_OK);
+      st = mirror_gemv_g40(ud, h40, e + r * D_MODEL, wk,
+                           mkv2 + r * D_MODEL, D_MODEL, D_MODEL);
+      REQUIRE(st == PAI_OK);
+      st = mirror_gemv_g40(ud, h40, e + r * D_MODEL, wv,
+                           mvv2 + r * D_MODEL, D_MODEL, D_MODEL);
+      REQUIRE(st == PAI_OK);
     }
 
     /* attention + out proj (G40) + residual (G42 add) */
@@ -961,8 +971,9 @@ main(void) {
     {
       static float mop2[SEQ * D_MODEL];
       for (r = 0; r < SEQ; r++) {
-        G40_GEMV(mo2 + r * D_MODEL, wo, D_MODEL, D_MODEL,
-                 mop2 + r * D_MODEL);
+        st = mirror_gemv_g40(ud, h40, mo2 + r * D_MODEL, wo,
+                             mop2 + r * D_MODEL, D_MODEL, D_MODEL);
+        REQUIRE(st == PAI_OK);
       }
       for (i = 0; i < SEQ * D_MODEL; i++) {
         ab[2 * i] = mop2[i];
@@ -984,16 +995,18 @@ main(void) {
 
     /* SiLU MLP via G40 + biasadd + silu + residual */
     for (r = 0; r < SEQ; r++) {
-      G40_GEMV(mh12 + r * D_MODEL, w1, MLP_HID, D_MODEL,
-               mgmlp2 + r * MLP_HID);
+      st = mirror_gemv_g40(ud, h40, mh12 + r * D_MODEL, w1,
+                           mgmlp2 + r * MLP_HID, MLP_HID, D_MODEL);
+      REQUIRE(st == PAI_OK);
     }
     st = mirror_biasadd(ud, hdr12, mgmlp2, b1, mag2, SEQ, MLP_HID);
     REQUIRE(st == PAI_OK);
     st = pai_ref_silu_f32(mag2, mh22, SEQ * MLP_HID);
     REQUIRE(st == PAI_OK);
     for (r = 0; r < SEQ; r++) {
-      G40_GEMV(mh22 + r * MLP_HID, w2, D_MODEL, MLP_HID,
-               mmlp2 + r * D_MODEL);
+      st = mirror_gemv_g40(ud, h40, mh22 + r * MLP_HID, w2,
+                           mmlp2 + r * D_MODEL, D_MODEL, MLP_HID);
+      REQUIRE(st == PAI_OK);
     }
     st = mirror_biasadd(ud, hdr12, mmlp2, b2, mh3a2, SEQ, D_MODEL);
     REQUIRE(st == PAI_OK);
@@ -1016,10 +1029,10 @@ main(void) {
 
     /* logits GEMM via G40 */
     for (r = 0; r < SEQ; r++) {
-      G40_GEMV(mh12 + r * D_MODEL, wout, VOCAB, D_MODEL,
-               mlogits2 + r * VOCAB);
+      st = mirror_gemv_g40(ud, h40, mh12 + r * D_MODEL, wout,
+                           mlogits2 + r * VOCAB, VOCAB, D_MODEL);
+      REQUIRE(st == PAI_OK);
     }
-#undef G40_GEMV
 
     /* differential vs the double oracle (same snap as section 7) */
     for (i = 0; i < SEQ * VOCAB; i++) {
@@ -1038,6 +1051,157 @@ main(void) {
       all_ok = 0;
     }
     if (!all_ok) {
+      g_failures++;
+    }
+  }
+
+  /* 13) G40 decode-loop differential: the FULL autoregressive loop
+   * (prefill + NGEN steps) with every linear layer through the G40
+   * fgemv ABI, mirroring section 9 but on the G40 data path. Each
+   * step's logits + argmax must match the full-prefix oracle — this
+   * is the differential Seat A's on-GPU QKV/out G40 integration will
+   * be validated against end-to-end (first token -> next token). */
+  {
+    uint32_t ud[16] = {0};
+    static uint32_t hdr13[6] = {0};
+    static uint32_t h40[4 + 160];
+    static float kc[CTX_TOTAL * D_MODEL], vc[CTX_TOTAL * D_MODEL];
+    static float cc[CTX_TOTAL * R2], sc[CTX_TOTAL * R2];
+    static float e_p[CTX_TOTAL * D_MODEL], q_p[CTX_TOTAL * D_MODEL];
+    static float o_p[CTX_TOTAL * D_MODEL];
+    float e_l[D_MODEL], q_l[D_MODEL], k_r[D_MODEL], v_r[D_MODEL];
+    float at_r[D_MODEL], op_r[D_MODEL], h1a_r[D_MODEL], h1_r[D_MODEL];
+    float gm_r[MLP_HID], ag_r[MLP_HID], h2_r[MLP_HID];
+    float ml_r[D_MODEL], h3a_r[D_MODEL], h3_r[D_MODEL];
+    float lg_r[VOCAB];
+    double lr[CTX_TOTAL * VOCAB];
+    int toks_x[CTX_TOTAL], seq_in2[CTX_TOTAL];
+    int argmax2 = -1, ok_all = 1;
+    int p, g;
+
+    st = pai_ref_rope_cossin_f32(CTX_TOTAL, R2, 10000.0f, cc, sc);
+    REQUIRE(st == PAI_OK);
+    memcpy(toks_x, toks, SEQ * sizeof(int));
+    memcpy(seq_in2, toks, SEQ * sizeof(int));
+
+    /* prefill K/V via G40 QKV (same as section 12) */
+    for (p = 0; p < SEQ; p++) {
+      for (i = 0; i < D_MODEL; i++) {
+        e_p[p * D_MODEL + i] = emb[toks[p] * D_MODEL + i];
+      }
+    }
+    st = pai_ref_rope_f32(e_p, SEQ * H_HEADS, HD_DIM, SEQ, H_HEADS, cc, sc,
+                          R2, e_p);
+    REQUIRE(st == PAI_OK);
+    for (p = 0; p < SEQ; p++) {
+      st = mirror_gemv_g40(ud, h40, e_p + p * D_MODEL, wq,
+                           q_p + p * D_MODEL, D_MODEL, D_MODEL);
+      REQUIRE(st == PAI_OK);
+      st = mirror_gemv_g40(ud, h40, e_p + p * D_MODEL, wk,
+                           kc + p * D_MODEL, D_MODEL, D_MODEL);
+      REQUIRE(st == PAI_OK);
+      st = mirror_gemv_g40(ud, h40, e_p + p * D_MODEL, wv,
+                           vc + p * D_MODEL, D_MODEL, D_MODEL);
+      REQUIRE(st == PAI_OK);
+    }
+
+    for (g = 0; g < NGEN; g++) {
+      uint64_t mism = 0;
+      pai_sampler_t sampler;
+      uint32_t tok = VOCAB;
+      p = SEQ + g;
+      seq_in2[p] = toks_x[p - 1];
+
+      /* RoPE at position p (zero-padded, last row = new token) */
+      memset(e_p, 0, sizeof(e_p));
+      memcpy(e_p + p * D_MODEL, emb + toks_x[p - 1] * D_MODEL,
+             D_MODEL * sizeof(float));
+      st = pai_ref_rope_f32(e_p, (uint64_t)(p + 1) * H_HEADS, HD_DIM,
+                            (uint64_t)p + 1, H_HEADS, cc, sc, R2, e_p);
+      REQUIRE(st == PAI_OK);
+      memcpy(e_l, e_p + p * D_MODEL, D_MODEL * sizeof(float));
+
+      /* QKV via G40; append K/V to the G40 cache */
+      st = mirror_gemv_g40(ud, h40, e_l, wq, q_l, D_MODEL, D_MODEL);
+      REQUIRE(st == PAI_OK);
+      st = mirror_gemv_g40(ud, h40, e_l, wk, k_r, D_MODEL, D_MODEL);
+      REQUIRE(st == PAI_OK);
+      st = mirror_gemv_g40(ud, h40, e_l, wv, v_r, D_MODEL, D_MODEL);
+      REQUIRE(st == PAI_OK);
+      memcpy(kc + p * D_MODEL, k_r, D_MODEL * sizeof(float));
+      memcpy(vc + p * D_MODEL, v_r, D_MODEL * sizeof(float));
+
+      /* causal attention over the cache, last row only */
+      memset(q_p, 0, sizeof(q_p));
+      memcpy(q_p + p * D_MODEL, q_l, D_MODEL * sizeof(float));
+      memset(o_p, 0, sizeof(o_p));
+      st = pai_ref_attention_f32(H_HEADS, HK_KV, (uint64_t)p + 1, HD_DIM,
+                                 q_p, kc, vc, o_p);
+      REQUIRE(st == PAI_OK);
+      memcpy(at_r, o_p + p * D_MODEL, D_MODEL * sizeof(float));
+
+      /* out proj (G40) + residual + RMSNorm */
+      st = mirror_gemv_g40(ud, h40, at_r, wo, op_r, D_MODEL, D_MODEL);
+      REQUIRE(st == PAI_OK);
+      for (i = 0; i < D_MODEL; i++) {
+        h1a_r[i] = op_r[i] + e_l[i];
+      }
+      st = pai_ref_rmsnorm_gamma_f32(h1a_r, h1_r, D_MODEL, g1, 1e-5f);
+      REQUIRE(st == PAI_OK);
+
+      /* SiLU MLP via G40 + residual + RMSNorm */
+      st = mirror_gemv_g40(ud, h40, h1_r, w1, gm_r, MLP_HID, D_MODEL);
+      REQUIRE(st == PAI_OK);
+      st = mirror_biasadd(ud, hdr13, gm_r, b1, ag_r, 1, MLP_HID);
+      REQUIRE(st == PAI_OK);
+      st = pai_ref_silu_f32(ag_r, h2_r, MLP_HID);
+      REQUIRE(st == PAI_OK);
+      st = mirror_gemv_g40(ud, h40, h2_r, w2, ml_r, D_MODEL, MLP_HID);
+      REQUIRE(st == PAI_OK);
+      st = mirror_biasadd(ud, hdr13, ml_r, b2, h3a_r, 1, D_MODEL);
+      REQUIRE(st == PAI_OK);
+      for (i = 0; i < D_MODEL; i++) {
+        h3_r[i] = h1_r[i] + h3a_r[i];
+      }
+      st = pai_ref_rmsnorm_gamma_f32(h3_r, h1_r, D_MODEL, g2, 1e-5f);
+      REQUIRE(st == PAI_OK);
+
+      /* logits via G40 */
+      st = mirror_gemv_g40(ud, h40, h1_r, wout, lg_r, VOCAB, D_MODEL);
+      REQUIRE(st == PAI_OK);
+
+      /* oracle: full forward over the extended prefix (input sequence) */
+      decoder_oracle(seq_in2, p + 1, emb, wq, wk, wv, wo, g1, w1, b1, w2,
+                     b2, g2, wout, lr, &argmax2);
+      {
+        float want[VOCAB];
+        int ok_step = 1;
+        for (i = 0; i < VOCAB; i++) {
+          want[i] = (float)lr[p * VOCAB + i];
+        }
+        st = pai_ref_compare_f32(lg_r, want, VOCAB, 1e-4f, 1e-4f, &mism);
+        if (st != PAI_OK) {
+          ok_step = 0;
+        }
+        pai_sampler_init(&sampler, 1);
+        st = pai_sampler_sample_logits(&sampler, lg_r, VOCAB, &tok);
+        if (st != PAI_OK || (int)tok != argmax2) {
+          ok_step = 0;
+        }
+        if (!ok_step) {
+          printf("  FAIL G40 decode step %d (pos %d): logits/token mismatch "
+                 "(tok=%u oracle=%d) first@%llu ref=%.7f want=%.7f\n", g,
+                 p, tok, argmax2, (unsigned long long)mism,
+                 (double)lg_r[mism], (double)want[mism]);
+          ok_all = 0;
+        }
+      }
+      toks_x[p] = (int)tok;
+    }
+    if (ok_all) {
+      printf("  PASS G40 decode loop (%d steps, each == full-prefix "
+             "oracle)\n", NGEN);
+    } else {
       g_failures++;
     }
   }
