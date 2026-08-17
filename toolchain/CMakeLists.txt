@@ -36,4 +36,16 @@ if(PAI_PLATFORM STREQUAL "host")
     pai_diag
   )
   pai_enable_big_stack(mlp_test)
+
+  # Phase 2 reference path: small decoder forward pass (embed -> RoPE
+  # -> causal GQA attention -> RMSNorm -> SiLU MLP -> logits -> greedy
+  # first token) chained through ref_ops vs a double oracle.
+  add_executable(decoder_test decoder_test.c)
+  target_link_libraries(decoder_test PRIVATE
+    pai_cpu_reference
+    pai_models
+    pai_tensor
+    pai_diag
+  )
+  pai_enable_big_stack(decoder_test)
 endif()

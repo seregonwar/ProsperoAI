@@ -63,3 +63,9 @@ endforeach()
 # profile. The GPU/host-ref leg lands with T4C.
 add_test(NAME mlp_test COMMAND mlp_test)
 
+# Phase 2 reference path (target defined in toolchain/CMakeLists.txt):
+# decoder forward pass chained through ref_ops (embed -> RoPE -> causal
+# GQA attention -> RMSNorm -> SiLU MLP -> logits -> greedy first token)
+# vs an independent double oracle.
+add_test(NAME decoder_test COMMAND decoder_test)
+
