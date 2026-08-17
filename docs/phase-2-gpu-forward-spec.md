@@ -205,6 +205,14 @@ K/V cache rows are reused — the W repack is shared across heads.
   RoPE'd `e_l` for QKV and the residual (no in-place GEMM), and the
   oracle chain `m0_decoder_ref_chain` adds the RoPE-ROTATED embedding
   (aligned with decoder_test's double oracle).
-- Remaining host stages for a 100% on-GPU decoder: only the RMSNorm
-  mean-square (G71 recipe §4) and the SiLU mul (G72 recipe §5) —
-  both recipes locked; attention is now on-GPU (G78).
+- ~~Remaining host stages for a 100% on-GPU decoder~~ — **CLOSED
+  (G79/G80, commit `ff3400f`, run 150645): the decoder is 100%
+  on-GPU.** G79 RMSNorm (spec §4): G40 dot (s=Σx², groups=1) + REAL
+  G71 nlexp_rsq dispatch (inv=1/sqrt(s/n+eps)) + G42 t4_mul1d
+  (c=x·(γ·inv)) — PASS vs pai_ref_rmsnorm_gamma_f32 (4x8, 1e-4).
+  G80 SiLU (spec §5): host prescale xs=−x·log2e + REAL G72 dispatch
+  (e=2^xs) + G42 t4_add1d (d=1+e) + REAL G75 nlexp_rcp dispatch
+  (rc=1/d) + G42 t4_mul1d (c=x·rc) — PASS vs pai_ref_silu_f32
+  (16 elem, 1e-4). All kernels pre-validated (no s-veto). The spec's
+  dispatch plan is now fully executed on hardware; decoder_test
+  remains the differential oracle for the 100%-GPU forward.

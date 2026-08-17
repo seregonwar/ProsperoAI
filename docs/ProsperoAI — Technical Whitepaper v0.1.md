@@ -1913,6 +1913,20 @@ Open gates before Phase 1 / PAI-M2 work should prioritize:
   (G74/G77) + RoPE G67/G70 + rsqrt G71 + exp-2^x G72 + max/rcp
   G76/G75 + attention G78 — only the RMSNorm mean-square and the
   SiLU mul remain host-side (both recipes locked, spec §4/§5).
+  **G79/G80 VALIDATED (commit `ff3400f`, run 150645): THE DECODER
+  IS 100% ON-GPU — all three formerly-host stages (attention/RMSNorm/
+  SiLU) are now kernels.** G79 RMSNorm (spec §4): s=sum x² via G40
+  dot (W=x, groups=1), inv=1/sqrt(s/n+eps) via the REAL G71
+  nlexp_rsq dispatch, c=x·(γ·inv) via G42 t4_mul1d — PASS vs
+  pai_ref_rmsnorm_gamma_f32 (4x8, 1e-4, mism=0). G80 SiLU (spec §5):
+  host prescale xs=−x·log2e, e=2^xs via the REAL G72 dispatch, d=1+e
+  via G42 t4_add1d, rc=1/d via the REAL G75 nlexp_rcp dispatch,
+  c=x·rc via G42 t4_mul1d — PASS vs pai_ref_silu_f32 (16 elem, 1e-4,
+  mism=0). No s-veto: every kernel used (G40/G42/G71/G72/G75) was
+  already individually HW-validated. The full 9.40 decoder forward
+  (G74 prefill + G77 decode loop + G78 attention + G79 RMSNorm +
+  G80 SiLU) is now kernel-only; the decoder_test (33/33) differential
+  is the oracle for a 100%-GPU forward.
   Empirical note: RSRC1 `VGPRS` must
   cover the VGPRs a kernel actually touches (G55/G56 use v1-v6,
   lanepick v16-v31 → `PAI_EXP_RSRC1_VGPR32=0x602C0003`).
