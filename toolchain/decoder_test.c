@@ -898,6 +898,150 @@ main(void) {
     }
   }
 
+  /* 12) G40 fgemv-ABI differential: the same prefill forward with the
+   * linear layers driven through pai_host_kernel_fgemv (commit
+   * 0f16d7d) — the EXACT G40 serial-per-row ABI the payload
+   * dispatches: header [K, pad, x_lo, x_hi, W...] at ud[2:3] with the
+   * W row data INLINE at hdr+4, y at ud[4:5], one group per row. A
+   * [M][K]x[K][N] GEMM becomes M calls, each producing N output rows
+   * (the header W rows are the transposed columns of b, i.e.
+   * hdr[4+g*K+k] = b[k*N+g]). This is the ABI Seat A's G40 integration
+   * in the decoder path will use; logits must still match the oracle. */
+  {
+    uint32_t ud[16] = {0};
+    static uint32_t hdr12[6] = {0}; /* shared biasadd header */
+    static uint32_t h40[4 + 160]; /* K + pad + x ptr (u32) + W rows */
+    static float mq2[SEQ * D_MODEL], mkv2[SEQ * D_MODEL];
+    static float mvv2[SEQ * D_MODEL], mo2[SEQ * D_MODEL];
+    static float mh1a2[SEQ * D_MODEL], mh12[SEQ * D_MODEL];
+    static float mgmlp2[SEQ * MLP_HID], mag2[SEQ * MLP_HID];
+    static float mh22[SEQ * MLP_HID], mmlp2[SEQ * D_MODEL];
+    static float mh3a2[SEQ * D_MODEL], mh32[SEQ * D_MODEL];
+    static float mlogits2[SEQ * VOCAB];
+    float ab[2 * SEQ * D_MODEL];
+    float mwant2[SEQ * VOCAB];
+    uint64_t mism = 0;
+    int all_ok = 1;
+    int r;
+
+    /* per-row G40 call: y[g] = sum_k hdr[4+g*K+k] * x[k] */
+#define G40_GEMV(x, w, nout, kin, y)                                         \
+    do {                                                                     \
+      uint32_t gg_, kk_;                                                     \
+      h40[0] = (kin);                                                        \
+      h40[1] = 0;                                                            \
+      h40[2] = (uint32_t)(uintptr_t)(x);                                     \
+      h40[3] = (uint32_t)((uintptr_t)(x) >> 32);                             \
+      for (gg_ = 0; gg_ < (nout); gg_++) {                                   \
+        for (kk_ = 0; kk_ < (kin); kk_++) {                                  \
+          float wv_ = (w)[kk_ * (nout) + gg_];                               \
+          memcpy(&h40[4 + gg_ * (kin) + kk_], &wv_, 4);                      \
+        }                                                                    \
+      }                                                                      \
+      ud[2] = (uint32_t)(uintptr_t)h40;                                      \
+      ud[3] = (uint32_t)((uintptr_t)h40 >> 32);                              \
+      ud[4] = (uint32_t)(uintptr_t)(y);                                      \
+      ud[5] = (uint32_t)((uintptr_t)(y) >> 32);                              \
+      st = pai_host_kernel_fgemv(NULL, ud, 1, (nout));                       \
+      REQUIRE(st == PAI_OK);                                                 \
+    } while (0)
+
+    /* QKV via G40, one call per row */
+    for (r = 0; r < SEQ; r++) {
+      G40_GEMV(e + r * D_MODEL, wq, D_MODEL, D_MODEL, mq2 + r * D_MODEL);
+      G40_GEMV(e + r * D_MODEL, wk, D_MODEL, D_MODEL, mkv2 + r * D_MODEL);
+      G40_GEMV(e + r * D_MODEL, wv, D_MODEL, D_MODEL, mvv2 + r * D_MODEL);
+    }
+
+    /* attention + out proj (G40) + residual (G42 add) */
+    memset(mo2, 0, sizeof(mo2));
+    st = pai_ref_attention_f32(H_HEADS, HK_KV, SEQ, HD_DIM, mq2, mkv2,
+                               mvv2, mo2);
+    REQUIRE(st == PAI_OK);
+    {
+      static float mop2[SEQ * D_MODEL];
+      for (r = 0; r < SEQ; r++) {
+        G40_GEMV(mo2 + r * D_MODEL, wo, D_MODEL, D_MODEL,
+                 mop2 + r * D_MODEL);
+      }
+      for (i = 0; i < SEQ * D_MODEL; i++) {
+        ab[2 * i] = mop2[i];
+        ab[2 * i + 1] = e[i];
+      }
+      ud[2] = (uint32_t)(uintptr_t)ab;
+      ud[3] = (uint32_t)((uintptr_t)ab >> 32);
+      ud[4] = (uint32_t)(uintptr_t)mh1a2;
+      ud[5] = (uint32_t)((uintptr_t)mh1a2 >> 32);
+      st = pai_host_kernel_t4_add1d(NULL, ud, 1, SEQ * D_MODEL);
+      REQUIRE(st == PAI_OK);
+    }
+    for (i = 0; i < SEQ; i++) {
+      st = pai_ref_rmsnorm_gamma_f32(mh1a2 + i * D_MODEL,
+                                     mh12 + i * D_MODEL, D_MODEL, g1,
+                                     1e-5f);
+      REQUIRE(st == PAI_OK);
+    }
+
+    /* SiLU MLP via G40 + biasadd + silu + residual */
+    for (r = 0; r < SEQ; r++) {
+      G40_GEMV(mh12 + r * D_MODEL, w1, MLP_HID, D_MODEL,
+               mgmlp2 + r * MLP_HID);
+    }
+    st = mirror_biasadd(ud, hdr12, mgmlp2, b1, mag2, SEQ, MLP_HID);
+    REQUIRE(st == PAI_OK);
+    st = pai_ref_silu_f32(mag2, mh22, SEQ * MLP_HID);
+    REQUIRE(st == PAI_OK);
+    for (r = 0; r < SEQ; r++) {
+      G40_GEMV(mh22 + r * MLP_HID, w2, D_MODEL, MLP_HID,
+               mmlp2 + r * D_MODEL);
+    }
+    st = mirror_biasadd(ud, hdr12, mmlp2, b2, mh3a2, SEQ, D_MODEL);
+    REQUIRE(st == PAI_OK);
+    for (i = 0; i < SEQ * D_MODEL; i++) {
+      ab[2 * i] = mh12[i];
+      ab[2 * i + 1] = mh3a2[i];
+    }
+    ud[2] = (uint32_t)(uintptr_t)ab;
+    ud[3] = (uint32_t)((uintptr_t)ab >> 32);
+    ud[4] = (uint32_t)(uintptr_t)mh32;
+    ud[5] = (uint32_t)((uintptr_t)mh32 >> 32);
+    st = pai_host_kernel_t4_add1d(NULL, ud, 1, SEQ * D_MODEL);
+    REQUIRE(st == PAI_OK);
+    for (i = 0; i < SEQ; i++) {
+      st = pai_ref_rmsnorm_gamma_f32(mh32 + i * D_MODEL,
+                                     mh12 + i * D_MODEL, D_MODEL, g2,
+                                     1e-5f);
+      REQUIRE(st == PAI_OK);
+    }
+
+    /* logits GEMM via G40 */
+    for (r = 0; r < SEQ; r++) {
+      G40_GEMV(mh12 + r * D_MODEL, wout, VOCAB, D_MODEL,
+               mlogits2 + r * VOCAB);
+    }
+#undef G40_GEMV
+
+    /* differential vs the double oracle (same snap as section 7) */
+    for (i = 0; i < SEQ * VOCAB; i++) {
+      mwant2[i] = (float)logits_ref[i];
+    }
+    mism = 0;
+    st = pai_ref_compare_f32(mlogits2, mwant2, SEQ * VOCAB, 1e-4f, 1e-4f,
+                             &mism);
+    if (st == PAI_OK) {
+      printf("  PASS G40 fgemv-ABI decoder forward == double oracle\n");
+    } else {
+      printf("  FAIL G40 forward: logits mismatch at %llu (mir=%f "
+             "oracle=%f)\n",
+             (unsigned long long)mism, (double)mlogits2[mism],
+             (double)mwant2[mism]);
+      all_ok = 0;
+    }
+    if (!all_ok) {
+      g_failures++;
+    }
+  }
+
   printf("== Phase 2 reference path %s ==\n",
          g_failures ? "FAILED" : "PASSED");
   return g_failures ? 1 : 0;
