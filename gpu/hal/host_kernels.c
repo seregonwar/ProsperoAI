@@ -803,6 +803,41 @@ pai_host_kernel_ropegen_sin(void *ctx, const uint32_t user_data[16],
   return pai_host_kernel_ropegen(ctx, user_data, threads_x, group_x, 1);
 }
 
+/* G71/G72 serial v_rsq/v_exp mirrors (nlexp.s): header (n, pad,
+ * x[]) at ud[2:3], C at ud[4:5], one group per element. The mirror
+ * implements the MATH conventions (1/sqrtf, expf); the payload locks
+ * the 9.40 HW convention empirically (v_exp may be 2^x). */
+static pai_status_t
+pai_host_kernel_nlexp(void *ctx, const uint32_t user_data[16],
+                      uint32_t threads_x, uint32_t group_x, uint32_t op) {
+  const uint32_t *h = (const uint32_t *)(uintptr_t)pai_ud64(user_data, 2);
+  uint32_t *c = (uint32_t *)(uintptr_t)pai_ud64(user_data, 4);
+
+  (void)ctx;
+  (void)threads_x;
+
+  for (uint32_t e = 0; e < group_x; e++) {
+    float x;
+    float val;
+    memcpy(&x, &h[2 + e], 4);
+    val = (op == 0) ? (1.0f / sqrtf(x)) : expf(x);
+    memcpy(&c[e], &val, 4);
+  }
+  return PAI_OK;
+}
+
+pai_status_t
+pai_host_kernel_nlexp_rsq(void *ctx, const uint32_t user_data[16],
+                          uint32_t threads_x, uint32_t group_x) {
+  return pai_host_kernel_nlexp(ctx, user_data, threads_x, group_x, 0);
+}
+
+pai_status_t
+pai_host_kernel_nlexp_exp(void *ctx, const uint32_t user_data[16],
+                          uint32_t threads_x, uint32_t group_x) {
+  return pai_host_kernel_nlexp(ctx, user_data, threads_x, group_x, 1);
+}
+
 pai_status_t
 pai_host_kernel_int_matmul(void *ctx, const uint32_t user_data[16],
                            uint32_t threads_x, uint32_t group_x) {

@@ -410,6 +410,18 @@
 #define PAI_ROPEGEN_SIN_VSIN_WORD 17u /* v_sin_f32 in sin entry
                                          (abs word 43, sin off 26;
                                          7E026B01; v_cos=7E026D01) */
+
+/* G71/G72: serial v_rsq_f32 / v_exp_f32 probes (nlexp.s). Header
+ * h[2+e] = x[e] floats, C at s4:s5, TGID_X = e. AMD v_exp_f32 is 2^x
+ * (GCN convention), v_rsq_f32 = 1/sqrt(x) - the payload discovers and
+ * locks the actual 9.40 convention. */
+#define PAI_NLEXP_RSRC2 PAI_ROPEGEN_RSRC2
+#define PAI_NLEXP_THREADS 1u
+#define PAI_NLEXP_RSQ_OFF 0u
+#define PAI_NLEXP_RSQ_WORDS 24u
+#define PAI_NLEXP_EXP_OFF 24u
+#define PAI_NLEXP_EXP_WORDS 24u
+#define PAI_NLEXP_CODE_WORDS 48u
 #define PAI_G35_WORDS 15u
 #define PAI_G32_WORDS 16u
 #define PAI_G25_VALUE 0xDEAD0001u
@@ -532,6 +544,7 @@ extern const uint32_t pai_vpick2_code[PAI_VPICK2_CODE_WORDS];
 extern const uint32_t pai_movrels_code[PAI_MOVRELS_CODE_WORDS];
 extern const uint32_t pai_cossin_code[PAI_COSSIN_CODE_WORDS];
 extern const uint32_t pai_ropegen_code[PAI_ROPEGEN_CODE_WORDS];
+extern const uint32_t pai_nlexp_code[PAI_NLEXP_CODE_WORDS];
 extern const uint32_t pai_hbatch_code[];
 extern const uint32_t pai_hbatch2_code[];
 extern const uint32_t pai_hbatch3_code[PAI_H10_CODE_WORDS];

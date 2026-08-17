@@ -373,12 +373,21 @@ HW-validated PASS (commit a8d9089).
   (G66) but TOXIC serial-per-element. RoPE tables on GPU: cos = G67
   direct, sin = G70 cos-shift.
 
+- G71/G72 (run 132918): serial-per-element v_rsq_f32 / v_exp_f32.
+  v_rsq: PASS, 64/64 exact 1/sqrt(x) (0.0625..4.0) - RMSNorm's
+  inverse-root path is clean serial-per-element. v_exp: PASS as
+  2^x (bad_2=0, bad_e=63, x in -4..3.875) - GCN convention
+  CONFIRMED on 9.40; softmax/SiLU e^x must pre-scale x by
+  log2(e) ~= 1.442695 on the validated mul path (same shape as the
+  cos/sin turns workaround).
+
 - Working: bootstrap, jailbreak, /data logging, lifecycle listener,
   notify, DMA, fence, dispatch, SMEM loads, integer ALU, stores,
   add1d / SAXPY / serial dot / serial GEMV on the G22 path; float ALU
   (G35/G39/G40/G41); T4 serial kernel family G42-G54 float + integer
   (13/13, run 004416); G65/G66 wave-parallel cos/sin ramp (turns
-  convention); G67 serial on-GPU RoPE cos table.
+  convention); G67 serial on-GPU RoPE cos table; G70 cos-shift sin
+  table; G71 v_rsq; G72 v_exp (2^x).
 - Open (do not block M1 closeout): MUBUF T# / flat loads, lane 8+
   exec mask, LDS (M1C) pending AGC CS blob @ 0x213.
 

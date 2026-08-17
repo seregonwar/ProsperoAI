@@ -224,4 +224,17 @@ pai_status_t pai_host_kernel_ropegen_sin(void *ctx,
                                         uint32_t threads_x,
                                         uint32_t group_x);
 
+/* G71/G72 serial v_rsq/v_exp probes (nlexp.s): header (n, pad, x[])
+ * at ud[2:3], C at ud[4:5]; c[e] = 1/sqrtf(x[e]) / expf(x[e]). The
+ * mirror uses the MATH conventions; the payload locks the 9.40 HW
+ * convention empirically (v_exp may be 2^x). */
+pai_status_t pai_host_kernel_nlexp_rsq(void *ctx,
+                                      const uint32_t user_data[16],
+                                      uint32_t threads_x,
+                                      uint32_t group_x);
+pai_status_t pai_host_kernel_nlexp_exp(void *ctx,
+                                      const uint32_t user_data[16],
+                                      uint32_t threads_x,
+                                      uint32_t group_x);
+
 #endif /* PAI_GPU_HOST_KERNELS_H */

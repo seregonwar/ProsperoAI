@@ -4713,6 +4713,147 @@ h48[0] = kk;
     m0_exp_report("G70", ok);
   }
 
+  /* G71: v_rsq_f32 serial-per-element probe. First 9.40 datapoint for
+   * RMSNorm's 1/sqrt path (B's nonlinear_contract). Header at s2:s3:
+   * [n, pad, x[0..n-1]], C at s4:s5: c[e] = v_rsq(x[e]). Discovery-
+   * first: log raw got vs 1/sqrtf to confirm exactness. */
+  if (!host) {
+    pai_gpu_reset(gpu);
+  }
+  {
+    uint32_t n = 64u;
+    uint32_t *h71 = (uint32_t *)ctx->a.cpu_addr;
+    uint32_t *c71 = (uint32_t *)ctx->c.cpu_addr;
+    float want[64];
+    uint32_t stream_len = 0;
+    uint32_t fmis = UINT32_MAX;
+    uint32_t nbad = 0;
+    int ok;
+
+    memset(c71, 0xCC, n * sizeof(uint32_t));
+    memcpy(ctx->code.cpu_addr, &pai_nlexp_code[PAI_NLEXP_RSQ_OFF],
+           PAI_NLEXP_RSQ_WORDS * sizeof(uint32_t));
+    if (host) {
+      pai_gpu_host_register_shader(gpu, ctx->code.gpu_addr,
+                                   pai_host_kernel_nlexp_rsq, NULL);
+    }
+    h71[0] = n;
+    h71[1] = 0;
+    for (uint32_t e = 0; e < n; e++) {
+      float x = 0.0625f * (float)(e + 1u); /* 0.0625..4.0 */
+      memcpy(&h71[2 + e], &x, 4);
+      want[e] = 1.0f / sqrtf(x);
+    }
+    pai_gpu_buffer_flush(ctx->gpu, &ctx->a);
+    pai_gpu_buffer_flush(ctx->gpu, &ctx->code);
+    ud[0] = 0;
+    ud[1] = 0;
+    ud[2] = (uint32_t)(ctx->a.gpu_addr & 0xFFFFFFFFu);
+    ud[3] = (uint32_t)(ctx->a.gpu_addr >> 32);
+    ud[4] = (uint32_t)(ctx->c.gpu_addr & 0xFFFFFFFFu);
+    ud[5] = (uint32_t)(ctx->c.gpu_addr >> 32);
+    m0_build_dispatch_stream(ctx, stream, M0_PM4_CAP, PAI_NLEXP_RSRC2,
+                             PAI_NLEXP_THREADS, n, ud, 6, &stream_len);
+    m0_run_gpu(ctx, stream, stream_len, c71, n * 4, 0xCC, "G71");
+    for (uint32_t e = 0; e < n; e++) {
+      float gg;
+      memcpy(&gg, &c71[e], 4);
+      if (fabsf(gg - want[e]) > (1e-3f * fabsf(want[e]) + 1e-5f)) {
+        if (fmis == UINT32_MAX) {
+          fmis = e;
+        }
+        nbad++;
+      }
+    }
+    ok = (nbad == 0);
+    PAI_LOG_INFO_(PAI_SUB_GPU,
+                  "[M0-G71] c[0..7]=%.5f %.5f %.5f %.5f %.5f %.5f %.5f "
+                  "%.5f want[0..2]=%.5f %.5f %.5f bad=%u first_mis=%u\n",
+                  (double)((float *)c71)[0], (double)((float *)c71)[1],
+                  (double)((float *)c71)[2], (double)((float *)c71)[3],
+                  (double)((float *)c71)[4], (double)((float *)c71)[5],
+                  (double)((float *)c71)[6], (double)((float *)c71)[7],
+                  (double)want[0], (double)want[1], (double)want[2], nbad,
+                  fmis);
+    m0_exp_report("G71", ok);
+  }
+
+  /* G72: v_exp_f32 serial-per-element probe. First 9.40 datapoint for
+   * SiLU/softmax (B's nonlinear_contract). Same ABI as G71. AMD GCN
+   * v_exp_f32 is documented as 2^x (not e^x): log got vs BOTH
+   * conventions to lock the 9.40 truth. */
+  if (!host) {
+    pai_gpu_reset(gpu);
+  }
+  {
+    uint32_t n = 64u;
+    uint32_t *h72 = (uint32_t *)ctx->a.cpu_addr;
+    uint32_t *c72 = (uint32_t *)ctx->c.cpu_addr;
+    float want_e[64], want_2[64];
+    uint32_t stream_len = 0;
+    uint32_t fmis_e = UINT32_MAX, fmis_2 = UINT32_MAX;
+    uint32_t nbad_e = 0, nbad_2 = 0;
+    int ok_e, ok_2;
+
+    memset(c72, 0xCC, n * sizeof(uint32_t));
+    memcpy(ctx->code.cpu_addr, &pai_nlexp_code[PAI_NLEXP_EXP_OFF],
+           PAI_NLEXP_EXP_WORDS * sizeof(uint32_t));
+    if (host) {
+      pai_gpu_host_register_shader(gpu, ctx->code.gpu_addr,
+                                   pai_host_kernel_nlexp_exp, NULL);
+    }
+    h72[0] = n;
+    h72[1] = 0;
+    for (uint32_t e = 0; e < n; e++) {
+      float x = -4.0f + 0.125f * (float)e; /* -4.0..3.875 */
+      memcpy(&h72[2 + e], &x, 4);
+      want_e[e] = expf(x);
+      want_2[e] = powf(2.0f, x);
+    }
+    pai_gpu_buffer_flush(ctx->gpu, &ctx->a);
+    pai_gpu_buffer_flush(ctx->gpu, &ctx->code);
+    ud[0] = 0;
+    ud[1] = 0;
+    ud[2] = (uint32_t)(ctx->a.gpu_addr & 0xFFFFFFFFu);
+    ud[3] = (uint32_t)(ctx->a.gpu_addr >> 32);
+    ud[4] = (uint32_t)(ctx->c.gpu_addr & 0xFFFFFFFFu);
+    ud[5] = (uint32_t)(ctx->c.gpu_addr >> 32);
+    m0_build_dispatch_stream(ctx, stream, M0_PM4_CAP, PAI_NLEXP_RSRC2,
+                             PAI_NLEXP_THREADS, n, ud, 6, &stream_len);
+    m0_run_gpu(ctx, stream, stream_len, c72, n * 4, 0xCC, "G72");
+    for (uint32_t e = 0; e < n; e++) {
+      float gg;
+      memcpy(&gg, &c72[e], 4);
+      if (fabsf(gg - want_e[e]) > (1e-3f * fabsf(want_e[e]) + 1e-5f)) {
+        if (fmis_e == UINT32_MAX) {
+          fmis_e = e;
+        }
+        nbad_e++;
+      }
+      if (fabsf(gg - want_2[e]) > (1e-3f * fabsf(want_2[e]) + 1e-5f)) {
+        if (fmis_2 == UINT32_MAX) {
+          fmis_2 = e;
+        }
+        nbad_2++;
+      }
+    }
+    ok_e = (nbad_e == 0);
+    ok_2 = (nbad_2 == 0);
+    PAI_LOG_INFO_(PAI_SUB_GPU,
+                  "[M0-G72] c[0..5]=%.5f %.5f %.5f %.5f %.5f %.5f "
+                  "e^x[0..2]=%.5f %.5f %.5f 2^x[0..2]=%.5f %.5f %.5f "
+                  "bad_e=%u bad_2=%u first_mis_e=%u first_mis_2=%u "
+                  "CONVENTION=%s\n",
+                  (double)((float *)c72)[0], (double)((float *)c72)[1],
+                  (double)((float *)c72)[2], (double)((float *)c72)[3],
+                  (double)((float *)c72)[4], (double)((float *)c72)[5],
+                  (double)want_e[0], (double)want_e[1], (double)want_e[2],
+                  (double)want_2[0], (double)want_2[1], (double)want_2[2],
+                  nbad_e, nbad_2, fmis_e, fmis_2,
+                  ok_e ? "e^x" : (ok_2 ? "2^x" : "UNKNOWN"));
+    m0_exp_report("G72", ok_e || ok_2);
+  }
+
   /* G17: load from the kernel's own acqrb VA - does ANY load complete,
    * or only our dmem pages hang? */
   if (!host) {

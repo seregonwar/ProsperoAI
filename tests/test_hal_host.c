@@ -526,6 +526,54 @@ TEST_MAIN_BEGIN()
       }
     }
 
+    /* G71/G72: serial v_rsq / v_exp probes - header [n, pad,
+     * x[0..n-1]] at ud[2:3], C at ud[4:5], one group per element.
+     * Mirror uses host 1/sqrtf and expf; the payload discovers the
+     * 9.40 HW convention (v_exp may be 2^x). */
+    {
+      uint32_t n = 64u;
+      uint32_t h71[2 + 64];
+      uint32_t c71[64];
+      uint32_t h72[2 + 64];
+      uint32_t c72[64];
+      ud[2] = (uint32_t)(uintptr_t)h71;
+      ud[3] = (uint32_t)((uintptr_t)h71 >> 32);
+      ud[4] = (uint32_t)(uintptr_t)c71;
+      ud[5] = (uint32_t)((uintptr_t)c71 >> 32);
+      h71[0] = n;
+      h71[1] = 0;
+      for (uint32_t e = 0; e < n; e++) {
+        float x = 0.0625f * (float)(e + 1u);
+        memcpy(&h71[2 + e], &x, 4);
+      }
+      CHECK(pai_host_kernel_nlexp_rsq(NULL, ud, 1, n) == PAI_OK);
+      for (uint32_t e = 0; e < n; e++) {
+        float x, gg, want;
+        memcpy(&x, &h71[2 + e], 4);
+        memcpy(&gg, &c71[e], 4);
+        want = 1.0f / sqrtf(x);
+        CHECK(fabsf(gg - want) < 1e-5f);
+      }
+      ud[2] = (uint32_t)(uintptr_t)h72;
+      ud[3] = (uint32_t)((uintptr_t)h72 >> 32);
+      ud[4] = (uint32_t)(uintptr_t)c72;
+      ud[5] = (uint32_t)((uintptr_t)c72 >> 32);
+      h72[0] = n;
+      h72[1] = 0;
+      for (uint32_t e = 0; e < n; e++) {
+        float x = -4.0f + 0.125f * (float)e;
+        memcpy(&h72[2 + e], &x, 4);
+      }
+      CHECK(pai_host_kernel_nlexp_exp(NULL, ud, 1, n) == PAI_OK);
+      for (uint32_t e = 0; e < n; e++) {
+        float x, gg, want;
+        memcpy(&x, &h72[2 + e], 4);
+        memcpy(&gg, &c72[e], 4);
+        want = expf(x);
+        CHECK(fabsf(gg - want) < 1e-5f * fabsf(want));
+      }
+    }
+
     /* G57: per-lane select from 16-dword block (lanepick mirror). */
     {
       uint32_t h57[16];
