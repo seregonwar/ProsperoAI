@@ -5282,6 +5282,163 @@ h48[0] = kk;
     m0_exp_report("G74", ok);
   }
 
+  /* G75: v_rcp_f32 serial-per-element probe. Closes the spec risk
+   * "v_rcp untested" (docs/phase-2-gpu-forward-spec.md sez.10):
+   * softmax division (1/denom) and SiLU 1/(1+e) need reciprocal.
+   * Same ABI as G71/G72: header [n, pad, x[0..n-1]] at s2:s3, C at
+   * s4:s5, TGID_X = e. Discovery-first: log got vs 1/x over a range
+   * that spans softmax/SiLU denominators (0.5..16). */
+  if (!host) {
+    pai_gpu_reset(gpu);
+  }
+  {
+    uint32_t n = 64u;
+    uint32_t *h75 = (uint32_t *)ctx->a.cpu_addr;
+    uint32_t *c75 = (uint32_t *)ctx->c.cpu_addr;
+    float want[64];
+    uint32_t stream_len = 0;
+    uint32_t fmis = UINT32_MAX;
+    uint32_t nbad = 0;
+    int ok;
+
+    memset(c75, 0xCC, n * sizeof(uint32_t));
+    memcpy(ctx->code.cpu_addr, &pai_nlexp_code[PAI_NLEXP_RCP_OFF],
+           PAI_NLEXP_RCP_WORDS * sizeof(uint32_t));
+    if (host) {
+      pai_gpu_host_register_shader(gpu, ctx->code.gpu_addr,
+                                   pai_host_kernel_nlexp_rcp, NULL);
+    }
+    h75[0] = n;
+    h75[1] = 0;
+    for (uint32_t e = 0; e < n; e++) {
+      float x = 0.5f + 0.25f * (float)e; /* 0.5..16.25 */
+      memcpy(&h75[2 + e], &x, 4);
+      want[e] = 1.0f / x;
+    }
+    pai_gpu_buffer_flush(ctx->gpu, &ctx->a);
+    pai_gpu_buffer_flush(ctx->gpu, &ctx->code);
+    ud[0] = 0;
+    ud[1] = 0;
+    ud[2] = (uint32_t)(ctx->a.gpu_addr & 0xFFFFFFFFu);
+    ud[3] = (uint32_t)(ctx->a.gpu_addr >> 32);
+    ud[4] = (uint32_t)(ctx->c.gpu_addr & 0xFFFFFFFFu);
+    ud[5] = (uint32_t)(ctx->c.gpu_addr >> 32);
+    m0_build_dispatch_stream(ctx, stream, M0_PM4_CAP, PAI_NLEXP_RSRC2,
+                             PAI_NLEXP_THREADS, n, ud, 6, &stream_len);
+    m0_run_gpu(ctx, stream, stream_len, c75, n * 4, 0xCC, "G75");
+    for (uint32_t e = 0; e < n; e++) {
+      float gg;
+      memcpy(&gg, &c75[e], 4);
+      if (fabsf(gg - want[e]) > (1e-3f * fabsf(want[e]) + 1e-5f)) {
+        if (fmis == UINT32_MAX) {
+          fmis = e;
+        }
+        nbad++;
+      }
+    }
+    ok = (nbad == 0);
+    PAI_LOG_INFO_(PAI_SUB_GPU,
+                  "[M0-G75] c[0..5]=%.6f %.6f %.6f %.6f %.6f %.6f "
+                  "want[0..2]=%.6f %.6f %.6f bad=%u first_mis=%u\n",
+                  (double)((float *)c75)[0], (double)((float *)c75)[1],
+                  (double)((float *)c75)[2], (double)((float *)c75)[3],
+                  (double)((float *)c75)[4], (double)((float *)c75)[5],
+                  (double)want[0], (double)want[1], (double)want[2], nbad,
+                  fmis);
+    m0_exp_report("G75", ok);
+  }
+
+  /* G76: v_max_f32 / v_min_f32 serial-per-element probe. Closes the
+   * spec risk "v_max untested" (softmax max pass). Header
+   * [n, pad, x[0..n-1], y[0..n-1]], c[e] = max(x[e], y[e]) and min. */
+  if (!host) {
+    pai_gpu_reset(gpu);
+  }
+  {
+    uint32_t n = 64u;
+    uint32_t *h76 = (uint32_t *)ctx->a.cpu_addr;
+    uint32_t *c76 = (uint32_t *)ctx->c.cpu_addr;
+    uint32_t stream_len = 0;
+    uint32_t fmis_mx = UINT32_MAX, fmis_mn = UINT32_MAX;
+    uint32_t nbad_mx = 0, nbad_mn = 0;
+    int ok_mx, ok_mn;
+
+    memset(c76, 0xCC, n * sizeof(uint32_t));
+    h76[0] = n;
+    h76[1] = 0;
+    for (uint32_t e = 0; e < n; e++) {
+      float x = 0.5f + 0.25f * (float)e;
+      float y = 6.0f - 0.1f * (float)e;
+      memcpy(&h76[2 + e], &x, 4);
+      memcpy(&h76[2 + n + e], &y, 4);
+    }
+    pai_gpu_buffer_flush(ctx->gpu, &ctx->a);
+    ud[0] = 0;
+    ud[1] = 0;
+    ud[2] = (uint32_t)(ctx->a.gpu_addr & 0xFFFFFFFFu);
+    ud[3] = (uint32_t)(ctx->a.gpu_addr >> 32);
+    ud[4] = (uint32_t)(ctx->c.gpu_addr & 0xFFFFFFFFu);
+    ud[5] = (uint32_t)(ctx->c.gpu_addr >> 32);
+
+    memcpy(ctx->code.cpu_addr, &pai_nlexp_code[PAI_NLEXP_MAX_OFF],
+           PAI_NLEXP_MAX_WORDS * sizeof(uint32_t));
+    if (host) {
+      pai_gpu_host_register_shader(gpu, ctx->code.gpu_addr,
+                                   pai_host_kernel_nlexp_max, NULL);
+    }
+    pai_gpu_buffer_flush(ctx->gpu, &ctx->code);
+    m0_build_dispatch_stream(ctx, stream, M0_PM4_CAP, PAI_NLEXP_RSRC2,
+                             PAI_NLEXP_THREADS, n, ud, 6, &stream_len);
+    m0_run_gpu(ctx, stream, stream_len, c76, n * 4, 0xCC, "G76");
+    for (uint32_t e = 0; e < n; e++) {
+      float x, y, gg;
+      memcpy(&x, &h76[2 + e], 4);
+      memcpy(&y, &h76[2 + n + e], 4);
+      memcpy(&gg, &c76[e], 4);
+      if (gg != (x > y ? x : y)) {
+        if (fmis_mx == UINT32_MAX) {
+          fmis_mx = e;
+        }
+        nbad_mx++;
+      }
+    }
+    ok_mx = (nbad_mx == 0);
+
+    memcpy(ctx->code.cpu_addr, &pai_nlexp_code[PAI_NLEXP_MIN_OFF],
+           PAI_NLEXP_MIN_WORDS * sizeof(uint32_t));
+    if (host) {
+      pai_gpu_host_register_shader(gpu, ctx->code.gpu_addr,
+                                   pai_host_kernel_nlexp_min, NULL);
+    }
+    pai_gpu_buffer_flush(ctx->gpu, &ctx->code);
+    m0_build_dispatch_stream(ctx, stream, M0_PM4_CAP, PAI_NLEXP_RSRC2,
+                             PAI_NLEXP_THREADS, n, ud, 6, &stream_len);
+    m0_run_gpu(ctx, stream, stream_len, c76, n * 4, 0xCC, "G76");
+    for (uint32_t e = 0; e < n; e++) {
+      float x, y, gg;
+      memcpy(&x, &h76[2 + e], 4);
+      memcpy(&y, &h76[2 + n + e], 4);
+      memcpy(&gg, &c76[e], 4);
+      if (gg != (x < y ? x : y)) {
+        if (fmis_mn == UINT32_MAX) {
+          fmis_mn = e;
+        }
+        nbad_mn++;
+      }
+    }
+    ok_mn = (nbad_mn == 0);
+    PAI_LOG_INFO_(PAI_SUB_GPU,
+                  "[M0-G76] max[0..3]=%.4f %.4f %.4f %.4f "
+                  "min[0..3]=%.4f %.4f %.4f %.4f bad_mx=%u bad_mn=%u "
+                  "fmis_mx=%u fmis_mn=%u\n",
+                  (double)((float *)c76)[0], (double)((float *)c76)[1],
+                  (double)((float *)c76)[2], (double)((float *)c76)[3],
+                  (double)((float *)c76)[4], (double)((float *)c76)[5],
+                  (double)((float *)c76)[6], (double)((float *)c76)[7],
+                  nbad_mx, nbad_mn, fmis_mx, fmis_mn);
+    m0_exp_report("G76", ok_mx && ok_mn);
+  }
+
   /* G17: load from the kernel's own acqrb VA - does ANY load complete,
    * or only our dmem pages hang? */
   if (!host) {

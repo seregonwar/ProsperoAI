@@ -838,6 +838,64 @@ pai_host_kernel_nlexp_exp(void *ctx, const uint32_t user_data[16],
   return pai_host_kernel_nlexp(ctx, user_data, threads_x, group_x, 1);
 }
 
+/* G75: v_rcp_f32 serial probe (nlexp.s nlexp_rcp) - same ABI as
+ * rsq/exp: c[e] = 1/x[e]. */
+pai_status_t
+pai_host_kernel_nlexp_rcp(void *ctx, const uint32_t user_data[16],
+                          uint32_t threads_x, uint32_t group_x) {
+  const uint32_t *h = (const uint32_t *)(uintptr_t)pai_ud64(user_data, 2);
+  uint32_t *c = (uint32_t *)(uintptr_t)pai_ud64(user_data, 4);
+
+  (void)ctx;
+  (void)threads_x;
+
+  for (uint32_t e = 0; e < group_x; e++) {
+    float x;
+    float val;
+    memcpy(&x, &h[2 + e], 4);
+    val = 1.0f / x;
+    memcpy(&c[e], &val, 4);
+  }
+  return PAI_OK;
+}
+
+/* G76: v_max/v_min serial probe (nlexp.s nlexp_max/min) - header
+ * [n, pad, x[0..n-1], y[0..n-1]], c[e] = max(x[e], y[e]) or min. */
+static pai_status_t
+pai_host_kernel_nlexp_minmax(void *ctx, const uint32_t user_data[16],
+                             uint32_t threads_x, uint32_t group_x,
+                             uint32_t op) {
+  const uint32_t *h = (const uint32_t *)(uintptr_t)pai_ud64(user_data, 2);
+  uint32_t *c = (uint32_t *)(uintptr_t)pai_ud64(user_data, 4);
+  uint32_t n = h[0];
+
+  (void)ctx;
+  (void)threads_x;
+
+  for (uint32_t e = 0; e < group_x; e++) {
+    float x, y, val;
+    memcpy(&x, &h[2 + e], 4);
+    memcpy(&y, &h[2 + n + e], 4);
+    val = (op == 0) ? (x > y ? x : y) : (x < y ? x : y);
+    memcpy(&c[e], &val, 4);
+  }
+  return PAI_OK;
+}
+
+pai_status_t
+pai_host_kernel_nlexp_max(void *ctx, const uint32_t user_data[16],
+                          uint32_t threads_x, uint32_t group_x) {
+  return pai_host_kernel_nlexp_minmax(ctx, user_data, threads_x, group_x,
+                                      0);
+}
+
+pai_status_t
+pai_host_kernel_nlexp_min(void *ctx, const uint32_t user_data[16],
+                          uint32_t threads_x, uint32_t group_x) {
+  return pai_host_kernel_nlexp_minmax(ctx, user_data, threads_x, group_x,
+                                      1);
+}
+
 /* G40: VALU float GEMV serial-per-row (fgemv_serial.s). W header at
  * ud[2:3]: [K, pad, x_lo, x_hi, W[g*K+k]...]; C at ud[4:5]; TGID_X
  * = row g, one group per row: y[g] = sum_k W[g,k] * x[k]. Same float

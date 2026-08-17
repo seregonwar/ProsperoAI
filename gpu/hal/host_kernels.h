@@ -235,6 +235,21 @@ pai_status_t pai_host_kernel_ropegen_sin(void *ctx,
  * group per row. */
 pai_status_t pai_host_kernel_fgemv(void *ctx, const uint32_t user_data[16],
                                    uint32_t threads_x, uint32_t group_x);
+
+/* G75/G76: v_rcp / v_max / v_min serial probes (nlexp.s). rcp same
+ * ABI as rsq/exp; max/min header [n, pad, x[0..n-1], y[0..n-1]]. */
+pai_status_t pai_host_kernel_nlexp_rcp(void *ctx,
+                                       const uint32_t user_data[16],
+                                       uint32_t threads_x,
+                                       uint32_t group_x);
+pai_status_t pai_host_kernel_nlexp_max(void *ctx,
+                                       const uint32_t user_data[16],
+                                       uint32_t threads_x,
+                                       uint32_t group_x);
+pai_status_t pai_host_kernel_nlexp_min(void *ctx,
+                                       const uint32_t user_data[16],
+                                       uint32_t threads_x,
+                                       uint32_t group_x);
 pai_status_t pai_host_kernel_nlexp_exp(void *ctx,
                                       const uint32_t user_data[16],
                                       uint32_t threads_x,

@@ -665,6 +665,66 @@ TEST_MAIN_BEGIN()
       CHECK(all_ok);
     }
 
+    /* G75: v_rcp serial - c[e] = 1/x[e] (same ABI as rsq/exp). */
+    {
+      uint32_t n = 64u;
+      uint32_t h75[2 + 64];
+      uint32_t c75[64];
+      ud[2] = (uint32_t)(uintptr_t)h75;
+      ud[3] = (uint32_t)((uintptr_t)h75 >> 32);
+      ud[4] = (uint32_t)(uintptr_t)c75;
+      ud[5] = (uint32_t)((uintptr_t)c75 >> 32);
+      h75[0] = n;
+      h75[1] = 0;
+      for (uint32_t e = 0; e < n; e++) {
+        float x = 0.5f + 0.25f * (float)e;
+        memcpy(&h75[2 + e], &x, 4);
+      }
+      CHECK(pai_host_kernel_nlexp_rcp(NULL, ud, 1, n) == PAI_OK);
+      for (uint32_t e = 0; e < n; e++) {
+        float x, gg, want;
+        memcpy(&x, &h75[2 + e], 4);
+        memcpy(&gg, &c75[e], 4);
+        want = 1.0f / x;
+        CHECK(fabsf(gg - want) < 1e-5f * fabsf(want));
+      }
+    }
+
+    /* G76: v_max/v_min serial - header [n, pad, x[0..n-1], y[0..n-1]]. */
+    {
+      uint32_t n = 64u;
+      uint32_t h76[2 + 2 * 64];
+      uint32_t c76[64];
+      ud[2] = (uint32_t)(uintptr_t)h76;
+      ud[3] = (uint32_t)((uintptr_t)h76 >> 32);
+      ud[4] = (uint32_t)(uintptr_t)c76;
+      ud[5] = (uint32_t)((uintptr_t)c76 >> 32);
+      h76[0] = n;
+      h76[1] = 0;
+      for (uint32_t e = 0; e < n; e++) {
+        float x = 0.5f + 0.25f * (float)e;
+        float y = 6.0f - 0.1f * (float)e;
+        memcpy(&h76[2 + e], &x, 4);
+        memcpy(&h76[2 + n + e], &y, 4);
+      }
+      CHECK(pai_host_kernel_nlexp_max(NULL, ud, 1, n) == PAI_OK);
+      for (uint32_t e = 0; e < n; e++) {
+        float x, y, gg;
+        memcpy(&x, &h76[2 + e], 4);
+        memcpy(&y, &h76[2 + n + e], 4);
+        memcpy(&gg, &c76[e], 4);
+        CHECK(gg == (x > y ? x : y));
+      }
+      CHECK(pai_host_kernel_nlexp_min(NULL, ud, 1, n) == PAI_OK);
+      for (uint32_t e = 0; e < n; e++) {
+        float x, y, gg;
+        memcpy(&x, &h76[2 + e], 4);
+        memcpy(&y, &h76[2 + n + e], 4);
+        memcpy(&gg, &c76[e], 4);
+        CHECK(gg == (x < y ? x : y));
+      }
+    }
+
     /* G57: per-lane select from 16-dword block (lanepick mirror). */
     {
       uint32_t h57[16];

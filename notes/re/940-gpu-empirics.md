@@ -393,8 +393,13 @@ HW-validated PASS (commit a8d9089).
   G74 (run 135700): FIRST on-GPU decoder prefill forward - QKV/out/
   MLP/logits via G40 per-row + RoPE cos/sin tables via G67/G70 path,
   attention/RMSNorm/SiLU/residual host ref_ops; logits == host ref
-  chain (1e-4, mism 0), argmax 2 == 2 (PASS). The decoder_test
+  chain (  1e-4, mism 0), argmax 2 == 2 (PASS). The decoder_test
   sez.12/13 differential contract now HW-proven on 9.40.
+  G75/G76 (run 141157): v_rcp_f32 serial PASS 64/64 exact 1/x
+  (0.5..16.25 - softmax/SiLU denominator range); v_max_f32/v_min_f32
+  serial PASS bad=0. Closes spec sez.10 risks (v_rcp/v_max) - all
+  softmax/SiLU primitives now HW-proven: division via v_rcp,
+  max pass via v_max, exp via 2^x prescale, rsqrt via v_rsq.
 - Open (do not block M1 closeout): MUBUF T# / flat loads, lane 8+
   exec mask, LDS (M1C) pending AGC CS blob @ 0x213.
 

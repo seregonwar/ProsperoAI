@@ -60,3 +60,93 @@ nlexp_exp:
     v_mov_b32 v0, v1
     flat_store_dword v[2:3], v0
     s_endpgm
+
+nlexp_rcp:
+    s_lshl_b32 s16, s6, 2
+    s_add_u32 s20, s2, 8
+    s_addc_u32 s21, s3, 0
+    s_add_u32 s20, s20, s16
+    s_addc_u32 s21, s21, 0
+    s_load_dword s16, s[20:21], 0
+    s_waitcnt lgkmcnt(0)
+    v_mov_b32 v1, s16
+    v_rcp_f32 v1, v1
+    s_lshl_b32 s18, s6, 2
+    s_add_u32 s18, s4, s18
+    s_addc_u32 s19, s5, 0
+    v_mov_b32 v2, s18
+    v_mov_b32 v3, s19
+    v_lshlrev_b32 v5, 2, v0
+    v_add_co_u32 v2, vcc_lo, v2, v5
+    v_add_co_ci_u32 v3, vcc_lo, v3, 0, vcc_lo
+    v_mov_b32 v0, v1
+    flat_store_dword v[2:3], v0
+    s_endpgm
+
+nlexp_max:
+    s_lshl_b32 s16, s6, 2
+    s_add_u32 s20, s2, 8
+    s_addc_u32 s21, s3, 0
+    s_add_u32 s20, s20, s16
+    s_addc_u32 s21, s21, 0
+    s_load_dword s16, s[20:21], 0
+    s_load_dword s17, s[2:3], 0
+    s_waitcnt lgkmcnt(0)
+    s_mul_i32 s17, s17, 4
+    s_lshl_b32 s22, s6, 2
+    s_add_u32 s22, s22, s17
+    s_addc_u32 s23, s3, 0
+    s_add_u32 s22, s2, s22
+    s_addc_u32 s23, s23, 0
+    s_add_u32 s22, s22, 8
+    s_addc_u32 s23, s23, 0
+    s_load_dword s24, s[22:23], 0
+    s_waitcnt lgkmcnt(0)
+    v_mov_b32 v1, s16
+    v_mov_b32 v2, s24
+    v_max_f32 v1, v1, v2
+    s_lshl_b32 s18, s6, 2
+    s_add_u32 s18, s4, s18
+    s_addc_u32 s19, s5, 0
+    v_mov_b32 v2, s18
+    v_mov_b32 v3, s19
+    v_lshlrev_b32 v5, 2, v0
+    v_add_co_u32 v2, vcc_lo, v2, v5
+    v_add_co_ci_u32 v3, vcc_lo, v3, 0, vcc_lo
+    v_mov_b32 v0, v1
+    flat_store_dword v[2:3], v0
+    s_endpgm
+
+nlexp_min:
+    s_lshl_b32 s16, s6, 2
+    s_add_u32 s20, s2, 8
+    s_addc_u32 s21, s3, 0
+    s_add_u32 s20, s20, s16
+    s_addc_u32 s21, s21, 0
+    s_load_dword s16, s[20:21], 0
+    s_load_dword s17, s[2:3], 0
+    s_waitcnt lgkmcnt(0)
+    s_mul_i32 s17, s17, 4
+    s_lshl_b32 s22, s6, 2
+    s_add_u32 s22, s22, s17
+    s_addc_u32 s23, s3, 0
+    s_add_u32 s22, s2, s22
+    s_addc_u32 s23, s23, 0
+    s_add_u32 s22, s22, 8
+    s_addc_u32 s23, s23, 0
+    s_load_dword s24, s[22:23], 0
+    s_waitcnt lgkmcnt(0)
+    v_mov_b32 v1, s16
+    v_mov_b32 v2, s24
+    v_min_f32 v1, v1, v2
+    s_lshl_b32 s18, s6, 2
+    s_add_u32 s18, s4, s18
+    s_addc_u32 s19, s5, 0
+    v_mov_b32 v2, s18
+    v_mov_b32 v3, s19
+    v_lshlrev_b32 v5, 2, v0
+    v_add_co_u32 v2, vcc_lo, v2, v5
+    v_add_co_ci_u32 v3, vcc_lo, v3, 0, vcc_lo
+    v_mov_b32 v0, v1
+    flat_store_dword v[2:3], v0
+    s_endpgm
