@@ -32,10 +32,14 @@
  *      host-side on the validated float mul path. Section 5 locks
  *      exp2f(x*log2e) == expf(x) (max rel < 1e-4) plus the full
  *      softmax row and SiLU in 2^x form.
+ *   6. Final forms with v_rcp/v_max (G75/G76, commit 78a8595):
+ *      softmax = e*rcp(sum), SiLU = x*rcp(1+e) — no division, both
+ *      through the exact nlexp mirror ABI; v_max(x,0) == relu.
  *
  * Build: host-tests/host-reference preset; binary `nonlinear_contract`.
  */
 
+#include <hal/host_kernels.h>
 #include <ref_ops.h>
 
 #include <math.h>
@@ -350,6 +354,133 @@ main(void) {
         g_failures++;
       }
     }
+  }
+
+  /* ---- 6) Final production forms through the G75/G76 mirrors +
+   * the locked 2^x model (sez.5): with v_rcp and v_max HW-validated
+   * (G75/G76, commit 78a8595) the softmax/SiLU kernels are fully
+   * serial-buildable. This section locks the exact forms the payload
+   * dispatches: softmax = row-max (serial reduce over v_max) +
+   * e = 2^((x-m)*log2e) (G72 prescale) + float sum + rcp(sum) via
+   * v_rcp + mul; SiLU = x * rcp(1+e). rcp and max go through the
+   * exact nlexp mirror ABI (header [n,pad,x[..],y[..]] at ud[2:3],
+   * C at ud[4:5], 1 group/elem). ---- */
+  {
+    static const double LOG2E6 = 1.4426950408889634;
+    const uint64_t n = 64;
+    uint32_t ud6[16] = {0};
+    static uint32_t h6[2 + 2 * 64];
+    static float e6[64], den6[64], out6[64], row6[64];
+    float ref6[64];
+    double max_d = 0.0, rowsum = 0.0;
+    float m6 = 0.0f, sum6 = 0.0f, r6 = 0.0f;
+    uint64_t k;
+
+    /* --- softmax via rcp: e*rcp(sum), row-max serial reduce --- */
+    for (uint64_t i = 0; i < n; i++) {
+      x[i] = (float)(((int64_t)i - 32) * 0.9375); /* scores +/-30 */
+    }
+    m6 = x[0];
+    for (uint64_t i = 1; i < n; i++) {
+      if (x[i] > m6) {
+        m6 = x[i]; /* v_max building block in a serial reduce */
+      }
+    }
+    for (uint64_t i = 0; i < n; i++) {
+      e6[i] = exp2f((x[i] - m6) * (float)LOG2E6); /* G72 2^x + prescale */
+      sum6 += e6[i];
+    }
+    h6[0] = 1;
+    h6[1] = 0;
+    memcpy(&h6[2], &sum6, 4);
+    ud6[2] = (uint32_t)(uintptr_t)h6;
+    ud6[3] = (uint32_t)((uintptr_t)h6 >> 32);
+    ud6[4] = (uint32_t)(uintptr_t)out6;
+    ud6[5] = (uint32_t)((uintptr_t)out6 >> 32);
+    st = pai_host_kernel_nlexp_rcp(NULL, ud6, 1, 1);
+    REQUIRE(st == PAI_OK);
+    memcpy(&r6, out6, 4);
+    for (uint64_t i = 0; i < n; i++) {
+      row6[i] = e6[i] * r6; /* mul-by-reciprocal, no division */
+      rowsum += row6[i];
+    }
+    st = pai_ref_softmax_f32(x, ref6, n);
+    REQUIRE(st == PAI_OK);
+    max_d = 0.0;
+    for (uint64_t i = 0; i < n; i++) {
+      double d = fabs((double)row6[i] - (double)ref6[i]);
+      if (d > max_d) {
+        max_d = d;
+      }
+    }
+    if (max_d < NC_TOL && fabs(rowsum - 1.0) < 1e-5) {
+      printf("  PASS softmax via rcp(sum): max |d| = %g, row sum = "
+             "%.9f\n", max_d, rowsum);
+    } else {
+      printf("  FAIL softmax via rcp(sum): max |d| = %g, row sum = "
+             "%.9f\n", max_d, rowsum);
+      g_failures++;
+    }
+
+    /* --- SiLU via rcp: x*rcp(1+2^(-x*log2e)) --- */
+    for (uint64_t i = 0; i < n; i++) {
+      x[i] = (float)(-3.0 + 6.0 * (double)(i % 17) / 16.0);
+      e6[i] = exp2f(-x[i] * (float)LOG2E6);
+      den6[i] = 1.0f + e6[i];
+      memcpy(&h6[2 + i], &den6[i], 4);
+    }
+    h6[0] = (uint32_t)n;
+    h6[1] = 0;
+    st = pai_host_kernel_nlexp_rcp(NULL, ud6, 1, n);
+    REQUIRE(st == PAI_OK);
+    max_d = 0.0;
+    for (uint64_t i = 0; i < n; i++) {
+      float rr;
+      memcpy(&rr, &out6[i], 4);
+      row6[i] = x[i] * rr;
+    }
+    st = pai_ref_silu_f32(x, ref6, n);
+    REQUIRE(st == PAI_OK);
+    for (uint64_t i = 0; i < n; i++) {
+      double d = fabs((double)row6[i] - (double)ref6[i]);
+      if (d > max_d) {
+        max_d = d;
+      }
+    }
+    if (max_d < NC_TOL) {
+      printf("  PASS SiLU via rcp(1+e): max |d| = %g\n", max_d);
+    } else {
+      printf("  FAIL SiLU via rcp(1+e): max |d| = %g\n", max_d);
+      g_failures++;
+    }
+
+    /* --- v_max elementwise via mirror: max(x,0) == relu --- */
+    h6[0] = (uint32_t)n;
+    h6[1] = 0;
+    for (uint64_t i = 0; i < n; i++) {
+      memcpy(&h6[2 + i], &x[i], 4);
+      h6[2 + n + i] = 0; /* y = 0 */
+    }
+    st = pai_host_kernel_nlexp_max(NULL, ud6, 1, n);
+    REQUIRE(st == PAI_OK);
+    st = pai_ref_relu_f32(x, ref6, n);
+    REQUIRE(st == PAI_OK);
+    max_d = 0.0;
+    for (uint64_t i = 0; i < n; i++) {
+      float vv;
+      memcpy(&vv, &out6[i], 4);
+      double d = fabs((double)vv - (double)ref6[i]);
+      if (d > max_d) {
+        max_d = d;
+      }
+    }
+    if (max_d == 0.0) {
+      printf("  PASS v_max(x,0) == relu via mirror ABI\n");
+    } else {
+      printf("  FAIL v_max(x,0): max |d| = %g\n", max_d);
+      g_failures++;
+    }
+    (void)k;
   }
 
   printf("== nonlinear_contract %s ==\n", g_failures ? "FAILED" : "PASSED");

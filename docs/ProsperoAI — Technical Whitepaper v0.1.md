@@ -1876,6 +1876,19 @@ Open gates before Phase 1 / PAI-M2 work should prioritize:
   the prefill; the remaining steps toward a fully on-GPU decoder
   loop: decode-loop wiring (sez.13 contract), then moving
   RMSNorm/SiLU/attention to GPU using the serial recipes.
+  **G75/G76 VALIDATED (commit `78a8595`, run 141157): spec sez.10
+  open risks CLOSED — `v_rcp_f32` serial-per-element exact (64/64,
+  1/x on 0.5..16.25, the softmax/SiLU denominator range: division
+  directly buildable, no G71 workaround) and `v_max_f32`/`v_min_f32`
+  PASS (softmax max pass; note v_max is ELEMENTWISE — the row-max is
+  a serial reduce over it). With this, ALL softmax/SiLU primitives
+  are HW-proven on 9.40: max (G76), rcp (G75), exp-2^x prescale
+  (G72), plus the forward set (GEMM G40, RoPE G67/G70, rsqrt G71).
+  B-side locked the final production forms (nonlinear_contract sez.6,
+  through the exact nlexp mirror ABI): softmax e·rcp(sum) max |d|
+  5.96e-08 / row sum 0.999999954, SiLU x·rcp(1+e) 2.38e-07,
+  v_max(x,0)==relu exact. Only the attention row-reduction and the
+  RMSNorm mean-square remain host-side in the first GPU forward.
   Empirical note: RSRC1 `VGPRS` must
   cover the VGPRs a kernel actually touches (G55/G56 use v1-v6,
   lanepick v16-v31 → `PAI_EXP_RSRC1_VGPR32=0x602C0003`).

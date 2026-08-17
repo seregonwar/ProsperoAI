@@ -148,12 +148,20 @@ leg is a follow-up once `v_rcp`/division is probed.
 
 ## 10. Risks / open probes
 
-- `v_rcp`/division untested → softmax division and the `1/(1+e)` in
-  SiLU need a probe (serial `v_rcp_f32`) or a mul-by-reciprocal
-  workaround via G71 (reciprocal of √x = x^(-1/2); 1/x needs a
-  dedicated probe).
-- `v_max_f32` untested (softmax max pass) — trivial ALU, low risk.
+- ~~`v_rcp`/division untested~~ — **CLOSED (G75, commit `78a8595`):**
+  `v_rcp_f32` serial-per-element PASS 64/64 exact (1/x on
+  0.5..16.25, the softmax/SiLU denominator range). Softmax division
+  and `1/(1+e)` are directly buildable — no G71 workaround. Locked
+  host-side in `nonlinear_contract` sez.6: softmax e·rcp(sum)
+  (max |d| 5.96e-08, row sum 0.999999954), SiLU x·rcp(1+e)
+  (2.38e-07), both through the exact nlexp mirror ABI.
+- ~~`v_max_f32` untested~~ — **CLOSED (G76, commit `78a8595`):**
+  `v_max/v_min_f32` PASS bad=0 (softmax max pass ok);
+  `v_max(x,0) == relu` locked host-side (exact). Note: v_max is
+  ELEMENTWISE (header [n,pad,x,y]); the softmax row-max is a serial
+  reduce pass over it, same shape as the dot-sum.
 - Per-row G40 means 21+ dispatches per prefill — dispatch overhead is
   the known serial-model cost (apparent ~2–4 GB/s signal only).
 - Attention on host for the first GPU forward is the agreed scope;
-  full on-GPU attention is a follow-up with the §6 serial plan.
+  full on-GPU attention is a follow-up with the §6 serial plan — all
+  its primitives (max/rcp/exp-2^x/mul-add) are now HW-validated.

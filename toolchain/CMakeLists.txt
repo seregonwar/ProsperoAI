@@ -53,6 +53,7 @@ if(PAI_PLATFORM STREQUAL "host")
   add_executable(nonlinear_contract nonlinear_contract.c)
   target_link_libraries(nonlinear_contract PRIVATE
     pai_cpu_reference
+    pai_gpu_hal
     pai_diag
   )
   pai_enable_big_stack(nonlinear_contract)
