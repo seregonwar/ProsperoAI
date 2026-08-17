@@ -273,6 +273,17 @@ TEST_MAIN_BEGIN()
         CHECK(fabsf((float)sin(gpu) - st[p * r2 + i]) < 1e-6f);
         CHECK(fabsf((float)cos(gpu) - (float)cos((double)p * invf)) <
               1e-6f);
+
+        /* ropegen ABI (G67 mirror, host_kernels.c): the kernel reads
+         * theta_turns[e] from the header and computes
+         * cos/sin(2*pi*theta_turns[e]) for e = p*r2+i. So the
+         * theta_turns value for the written rows must be
+         * (p*invf)/(2*pi), i.e. gpu/2pi. Verify the exact ABI. */
+        CHECK(fabsf((float)(gpu / (2.0 * pi)) -
+                    (float)((double)p * invf / (2.0 * pi))) < 1e-7f);
+        CHECK(fabsf(cosf((float)(2.0 * pi * (double)p * invf /
+                                 (2.0 * pi))) -
+                    ct[p * r2 + i]) < 1e-6f);
       }
     }
   }
