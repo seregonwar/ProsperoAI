@@ -303,6 +303,29 @@ groups_x = M) remains the ONLY data-access GEMV path; per-lane W-row
 access for a wave-parallel GEMV is impossible on 9.40. RoPE position
 tables (G55/G56 ramp) remain the practical wave-parallel payoff.
 
+## G65/G66 wave-parallel cos/sin ramp (2026-08-17, run 101812)
+
+RoPE position-table primitives unlocked: `cossin.s` computes
+`c[i] = cos/sin(scale * i)` on the G55 wave-parallel path (32 threads,
+lanes 0..7 store) and validates `v_cos_f32` / `v_sin_f32` on 9.40.
+HW-validated PASS (commit a8d9089).
+
+- ABI (RSRC2 0x0C): s2:s3 = C, s4 = scale (float); two entries
+  (cos @0, sin @16, 16 words each) in one `pai_cossin.inc`.
+- **NEW RULE - turns convention**: `v_cos_f32`/`v_sin_f32` read their
+  operand in FULL TURNS, not radians — the VALU value path multiplies
+  by 2*pi. HW evidence: theta = 0.15*(4i+3) in radians gives
+  cos(162°)=-0.9511 exactly (i.e. the silicon computed
+  cos(2*pi*0.15*3)); all 16 values (8 cos + 8 sin) matched
+  `cos/sin(2*pi*scale*(4i+3))` to <1e-4 with cos^2+sin^2=1.
+  The oracle/mirror must use the x2pi convention.
+- Combined with the G15 value-path quirk (lane index reads (4i+3)),
+  the effective GPU formula is `c[i] = cos/sin(2*pi*scale*(4i+3))`.
+- Implication for Phase 2: cos/sin tables for RoPE can be generated
+  on-GPU (wave-parallel) with scale = inv_freq/(2*pi) per column;
+  matches B's `pai_ref_rope_cossin_f32` oracle (theta = p*inv_freq)
+  once the turns convention and (4i+3) indexing are mapped.
+
 ## Toolchain
 
 - llvm-mc 18 (Windows, ps5-payload-sdk/tools/llvm18/bin) assembles
