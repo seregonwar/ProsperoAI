@@ -1804,7 +1804,19 @@ Open gates before Phase 1 / PAI-M2 work should prioritize:
   group via `s_load_dword`; differential vs `pai_ref_rope_cossin_f32`
   on rows 3,7,…,31 (B-side review: compare only written rows,
   ctx≥32, explicit base 10000, cos²+sin²=1 check, host mirror must
-  reproduce the GPU turns formula — not radians).
+  reproduce  the GPU turns formula — not radians).
+  **Nonlinear ops contract (commit `7d86a24`, B-side harness
+  `nonlinear_contract`):** with no per-lane data select, RMSNorm /
+  SiLU / softmax must run as serial per-element kernels (G40/G67
+  style), each needing exactly one unprobed primitive: RMSNorm →
+  `v_rsqrt_f32` (sum x² via `v_add_f32` + 1/sqrt + mul·gamma),
+  SiLU → `v_exp_f32` + reciprocal, softmax → max pass + `v_exp_f32`
+  + float sum + division. Float-only margins vs the double oracle:
+  RMSNorm max |d| ≤ 2.4e-07 at decoder sizes (5.3e-06 worst-case
+  |x|~100, n=2048) — tolerance 1e-4 safe with float accumulation;
+  SiLU bit-identical; softmax row sum 1.000000015, finite at scores
+  ±30; causal attention rows finite, out within v-range. This is the
+  target contract for the `v_rsqrt_f32`/`v_exp_f32` probes.
   Empirical note: RSRC1 `VGPRS` must
   cover the VGPRs a kernel actually touches (G55/G56 use v1-v6,
   lanepick v16-v31 → `PAI_EXP_RSRC1_VGPR32=0x602C0003`).
