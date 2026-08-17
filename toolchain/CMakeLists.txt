@@ -58,6 +58,18 @@ if(PAI_PLATFORM STREQUAL "host")
   )
   pai_enable_big_stack(nonlinear_contract)
 
+  # Phase 2 differential (spec §6): serial causal attention pipeline
+  # (scores G40 -> softmax max/exp/rcp -> out G40) vs the
+  # pai_ref_attention_f32 oracle — pre-flight for the on-GPU attention
+  # kernel.
+  add_executable(attention_serial attention_serial.c)
+  target_link_libraries(attention_serial PRIVATE
+    pai_cpu_reference
+    pai_gpu_hal
+    pai_diag
+  )
+  pai_enable_big_stack(attention_serial)
+
   # Phase 2 reference path: small decoder forward pass (embed -> RoPE
   # -> causal GQA attention -> RMSNorm -> SiLU MLP -> logits -> greedy
   # first token) chained through ref_ops vs a double oracle.

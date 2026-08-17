@@ -81,3 +81,7 @@ add_test(NAME ropegen_diff COMMAND ropegen_diff)
 # (v_rsqrt / v_exp probes).
 add_test(NAME nonlinear_contract COMMAND nonlinear_contract)
 
+# Phase 2 differential (target defined in toolchain/CMakeLists.txt):
+# serial causal attention pipeline (spec §6) vs the reference oracle.
+add_test(NAME attention_serial COMMAND attention_serial)
+
