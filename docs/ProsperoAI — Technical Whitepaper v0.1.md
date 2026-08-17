@@ -1797,14 +1797,24 @@ Open gates before Phase 1 / PAI-M2 work should prioritize:
   implication: pos tables ARE generatable on-GPU wave-parallel
   with per-column `scale = inv_freq/(2π)` and the `(4i+3)` lane
   mapping — oracle stays `pai_ref_rope_cossin_f32` (θ=p·inv_freq,
-  commit `e157131`). G67 in flight: on-GPU RoPE table generator
-  (ropegen.s) — `groups_x=r2` (one column per group, G40 TGID_X
-  pattern), NUM_THREAD_X=32, lane l computes p=4l+3,
-  `c[p·r2+i] = cos/sin(2π·scale·(4l+3))` with scale loaded per
-  group via `s_load_dword`; differential vs `pai_ref_rope_cossin_f32`
-  on rows 3,7,…,31 (B-side review: compare only written rows,
-  ctx≥32, explicit base 10000, cos²+sin²=1 check, host mirror must
-  reproduce  the GPU turns formula — not radians).
+  commit `e157131`). **G67/G68 (commits `d502b10`+`1c45639`):**
+  on-GPU RoPE table generator (ropegen.s) — serial-per-element,
+  `groups_x=ctx*r2` (128 groups x 1 thread, dispatch 0x8C), header
+  (r2, ctx, theta_turns[]) at ud[2:3], C at ud[4:5], cos entry
+  writes c[e], sin entry writes the ctx*r2 half. G67 cos
+  **HW-VALIDATED** (run 124611): 128/128 values exact vs the
+  `pai_ref_rope_cossin_f32` oracle, EOP ok. G68 sin **BLOCKED by
+  post-panic GPU state, not instruction**: EOP never fires (30s x3
+  fence) while the identical cos dispatch retires immediately;
+  where written, every value is exact (resubmit ~112/128 exact,
+  bitmap no '?'); holes e=13..15,22..29,32..36 (head stable, tail
+  varies 16/17). The queue recovers afterwards (G17+26 exp pass,
+  59/60). Verdict: kernel correct (each written value matches the
+  oracle; mirror ABI locked by the B-side `ropegen_diff`, ctest
+  32/32 with the committed mirror), sin dispatch wedged GPU/
+  transcendent-unit state. Retest plan: G68 on a clean console
+  reboot, known-good kernel first; if still failing, control probe
+  cos-store-to-sin-half (isolates write offset from `v_sin_f32`).
   **Nonlinear ops contract (commit `7d86a24`, B-side harness
   `nonlinear_contract`):** with no per-lane data select, RMSNorm /
   SiLU / softmax must run as serial per-element kernels (G40/G67
