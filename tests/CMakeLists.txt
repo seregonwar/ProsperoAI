@@ -69,3 +69,9 @@ add_test(NAME mlp_test COMMAND mlp_test)
 # vs an independent double oracle.
 add_test(NAME decoder_test COMMAND decoder_test)
 
+# Phase 2 differential (target defined in toolchain/CMakeLists.txt):
+# on-GPU RoPE table generator ABI (G67/G68 ropegen mirror) vs the
+# pai_ref_rope_cossin_f32 oracle + cos^2+sin^2=1 identity + rope_f32
+# consumability.
+add_test(NAME ropegen_diff COMMAND ropegen_diff)
+

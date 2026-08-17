@@ -37,6 +37,16 @@ if(PAI_PLATFORM STREQUAL "host")
   )
   pai_enable_big_stack(mlp_test)
 
+  # Phase 2 differential: on-GPU RoPE table generator ABI (G67/G68
+  # ropegen mirror) vs the pai_ref_rope_cossin_f32 oracle.
+  add_executable(ropegen_diff ropegen_diff.c)
+  target_link_libraries(ropegen_diff PRIVATE
+    pai_cpu_reference
+    pai_gpu_hal
+    pai_diag
+  )
+  pai_enable_big_stack(ropegen_diff)
+
   # Phase 2 reference path: small decoder forward pass (embed -> RoPE
   # -> causal GQA attention -> RMSNorm -> SiLU MLP -> logits -> greedy
   # first token) chained through ref_ops vs a double oracle.
