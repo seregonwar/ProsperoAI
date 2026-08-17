@@ -409,6 +409,15 @@ HW-validated PASS (commit a8d9089).
   First-token -> next-token loop closed on 9.40 (decoder_test sez.13
   contract). Convention locked: residual adds the RoPE-ROTATED
   embedding (oracle applies rope_f32 in-place), not the raw embed.
+  G78 (run 145847): serial causal attention ON-GPU (spec §6 / B's
+  attention_serial contract 32a3eca) - per (row, head): scores via
+  G40 gemv (groups=p+1, W transposed hdr[4+t*hd+d]=k[t][d]), scale
+  1/sqrt(hd) + row-max reduce host, e=2^((s-m)*log2e) via REAL G72
+  nlexp_exp dispatch (prescale host), sum host + rcp via REAL G75
+  nlexp_rcp dispatch, soft=e*rcp, out via G40 (W row-major
+  hdr[4+d*(p+1)+t]=v[t][d]). PASS vs pai_ref_attention_f32 (H2 HK1
+  HD4 seq6, 1e-4, mism=0). The LAST host stage of the decoder
+  forward (attention) is now on-GPU on 9.40.
 - Open (do not block M1 closeout): MUBUF T# / flat loads, lane 8+
   exec mask, LDS (M1C) pending AGC CS blob @ 0x213.
 

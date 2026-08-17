@@ -5720,6 +5720,159 @@ h48[0] = kk;
     m0_exp_report("G77", ok_all);
   }
 
+  /* G78: serial causal attention ON-GPU (spec §6, B's attention_serial
+   * contract 32a3eca) - per (row p, head hh), KV head kh=(hh*HK)/H:
+   *   1. scores[t] via G40 gemv: groups = p+1, x = q[p,hh], W transposed
+   *      hdr[4+t*hd+d] = k[t,kh][d]  (wbuf_k[d*(p+1)+t] = k[t][d])
+   *   2. scale 1/sqrt(hd) host
+   *   3. row max serial reduce host
+   *   4. e[t] = 2^((s-t-m)*log2e) via REAL G72 nlexp_exp dispatch
+   *      (prescale host, header [n,0,x...] at ud[2:3], C at ud[4:5])
+   *   5. sum host + rcp via REAL G75 nlexp_rcp dispatch
+   *   6. soft[t] = e[t]*rcp host
+   *   7. out[d] = sum_t soft[t]*v[t,kh][d] via G40: x = soft, W row-major
+   *      hdr[4+d*(p+1)+t] = v[t][d]  (wbuf_v[t*hd+d] = v[t][d])
+   * Differential vs pai_ref_attention_f32 (1e-4), same sizes as B's
+   * harness (H2 HK1 HD4 seq6). */
+  if (!host) {
+    pai_gpu_reset(gpu);
+  }
+  {
+    enum {
+      G78_H = 2u, G78_HK = 1u, G78_HD = 4u, G78_D = 8u, G78_SEQ = 6u
+    };
+    static float q78[G78_SEQ * G78_D], k78[G78_SEQ * G78_D];
+    static float v78[G78_SEQ * G78_D], out78[G78_SEQ * G78_D];
+    static float ref78[G78_SEQ * G78_D];
+    static float wbuf_k[G78_HD * G78_SEQ], wbuf_v[G78_SEQ * G78_HD];
+    static float scores[G78_SEQ], soft[G78_SEQ];
+    uint32_t *h78 = (uint32_t *)ctx->a.cpu_addr;
+    uint32_t stream_len = 0;
+    uint64_t mism = 0;
+    int ok = 1;
+    const float inv = 1.0f / sqrtf((float)G78_HD);
+    pai_status_t stp;
+
+    for (uint32_t i = 0; i < G78_SEQ * G78_D; i++) {
+      q78[i] = (float)(sin(0.13 * (double)i) * 0.7);
+      k78[i] = (float)(cos(0.09 * (double)i) * 0.7);
+      v78[i] = (float)(0.2 * (double)(i % 9) - 0.8);
+    }
+    stp = pai_ref_attention_f32(G78_H, G78_HK, G78_SEQ, G78_HD, q78, k78,
+                                v78, ref78);
+    ok = ok && (stp == PAI_OK);
+
+    memset(out78, 0, sizeof(out78));
+    for (uint32_t p = 0; p < G78_SEQ; p++) {
+      for (uint32_t hh = 0; hh < G78_H; hh++) {
+        uint32_t kh = (hh * G78_HK) / G78_H;
+        const float *qp = q78 + (p * G78_H + hh) * G78_HD;
+        float m = 0.0f, sum = 0.0f, rc = 0.0f;
+
+        /* 1) scores via G40 (one dispatch, groups = p+1) */
+        for (uint32_t t = 0; t <= p; t++) {
+          for (uint32_t d = 0; d < G78_HD; d++) {
+            wbuf_k[d * (p + 1) + t] = k78[(t * G78_HK + kh) * G78_HD + d];
+          }
+        }
+        m0_exp_gemm_g40(ctx, stream, ud, qp, wbuf_k, scores, 1, G78_HD,
+                        p + 1);
+        /* 2) scale */
+        for (uint32_t t = 0; t <= p; t++) {
+          scores[t] *= inv;
+        }
+        /* 3) row max (serial reduce over the v_max primitive) */
+        m = scores[0];
+        for (uint32_t t = 1; t <= p; t++) {
+          if (scores[t] > m) {
+            m = scores[t];
+          }
+        }
+        /* 4) e = 2^((s-m)*log2e) via REAL G72 dispatch */
+        {
+          memcpy(ctx->code.cpu_addr, &pai_nlexp_code[PAI_NLEXP_EXP_OFF],
+                 PAI_NLEXP_EXP_WORDS * sizeof(uint32_t));
+          if (host) {
+            pai_gpu_host_register_shader(gpu, ctx->code.gpu_addr,
+                                         pai_host_kernel_nlexp_exp, NULL);
+          }
+          h78[0] = p + 1;
+          h78[1] = 0;
+          for (uint32_t t = 0; t <= p; t++) {
+            float x = (scores[t] - m) * (float)PAI_G72_LOG2E;
+            memcpy(&h78[2 + t], &x, 4);
+            sum += exp2f((scores[t] - m) * (float)PAI_G72_LOG2E);
+          }
+          pai_gpu_buffer_flush(ctx->gpu, &ctx->a);
+          pai_gpu_buffer_flush(ctx->gpu, &ctx->code);
+          ud[0] = 0;
+          ud[1] = 0;
+          ud[2] = (uint32_t)(ctx->a.gpu_addr & 0xFFFFFFFFu);
+          ud[3] = (uint32_t)(ctx->a.gpu_addr >> 32);
+          ud[4] = (uint32_t)(ctx->c.gpu_addr & 0xFFFFFFFFu);
+          ud[5] = (uint32_t)(ctx->c.gpu_addr >> 32);
+          m0_build_dispatch_stream(ctx, stream, M0_PM4_CAP, PAI_NLEXP_RSRC2,
+                                   PAI_NLEXP_THREADS, p + 1, ud, 6,
+                                   &stream_len);
+          m0_run_gpu(ctx, stream, stream_len, ctx->c.cpu_addr,
+                     (p + 1) * 4, 0xCC, "G78");
+          for (uint32_t t = 0; t <= p; t++) {
+            memcpy(&soft[t], &((float *)ctx->c.cpu_addr)[t], 4);
+          }
+        }
+        /* 5) rcp via REAL G75 dispatch */
+        {
+          memcpy(ctx->code.cpu_addr, &pai_nlexp_code[PAI_NLEXP_RCP_OFF],
+                 PAI_NLEXP_RCP_WORDS * sizeof(uint32_t));
+          if (host) {
+            pai_gpu_host_register_shader(gpu, ctx->code.gpu_addr,
+                                         pai_host_kernel_nlexp_rcp, NULL);
+          }
+          h78[0] = 1;
+          h78[1] = 0;
+          memcpy(&h78[2], &sum, 4);
+          pai_gpu_buffer_flush(ctx->gpu, &ctx->a);
+          pai_gpu_buffer_flush(ctx->gpu, &ctx->code);
+          m0_build_dispatch_stream(ctx, stream, M0_PM4_CAP, PAI_NLEXP_RSRC2,
+                                   PAI_NLEXP_THREADS, 1, ud, 6,
+                                   &stream_len);
+          m0_run_gpu(ctx, stream, stream_len, ctx->c.cpu_addr, 4, 0xCC,
+                     "G78");
+          memcpy(&rc, ctx->c.cpu_addr, 4);
+        }
+        /* 6) soft = e * rcp */
+        for (uint32_t t = 0; t <= p; t++) {
+          soft[t] *= rc;
+        }
+        /* 7) out via G40: y[d] = sum_t soft[t]*v[t,kh][d] */
+        for (uint32_t t = 0; t <= p; t++) {
+          for (uint32_t d = 0; d < G78_HD; d++) {
+            wbuf_v[t * G78_HD + d] =
+                v78[(t * G78_HK + kh) * G78_HD + d];
+          }
+        }
+        m0_exp_gemm_g40(ctx, stream, ud, soft, wbuf_v,
+                        out78 + (p * G78_H + hh) * G78_HD, 1, p + 1,
+                        G78_HD);
+      }
+    }
+
+    stp = pai_ref_compare_f32(out78, ref78, G78_SEQ * G78_D, 1e-4f,
+                              1e-4f, &mism);
+    ok = ok && (stp == PAI_OK);
+    PAI_LOG_INFO_(PAI_SUB_GPU,
+                  "[M0-G78] out[0..7]=%.5f %.5f %.5f %.5f %.5f %.5f %.5f "
+                  "%.5f ref[0..7]=%.5f %.5f %.5f %.5f %.5f %.5f %.5f "
+                  "%.5f mism=%llu\n",
+                  (double)out78[0], (double)out78[1], (double)out78[2],
+                  (double)out78[3], (double)out78[4], (double)out78[5],
+                  (double)out78[6], (double)out78[7], (double)ref78[0],
+                  (double)ref78[1], (double)ref78[2], (double)ref78[3],
+                  (double)ref78[4], (double)ref78[5], (double)ref78[6],
+                  (double)ref78[7], (unsigned long long)mism);
+    m0_exp_report("G78", ok);
+  }
+
   /* G17: load from the kernel's own acqrb VA - does ANY load complete,
    * or only our dmem pages hang? */
   if (!host) {
