@@ -347,11 +347,37 @@ HW-validated PASS (commit a8d9089).
 
 ## Status
 
+## G67/G68: on-GPU RoPE table generator (serial-per-element)
+
+- G67 (cos, commit d502b10): HW-VALIDATED — groups_x = ctx*r2 (128),
+  1 thread/group, TGID_X = e = p*r2+i, theta_turns[e] host-computed
+  (= theta/2pi so the turns convention cancels), s_load per element
+  (G40 pattern), v_cos/v_sin, flat store at C[0..ctx*r2). All 128
+  values exact vs pai_ref_rope_cossin_f32 oracle. The on-GPU RoPE
+  cos table generator is DONE.
+- G68 (sin): NOT HW-validated yet — blocked by post-panic GPU state.
+  Symptoms on PS5 after a kernel panic + reboot: EOP label NEVER fires
+  for the G68 dispatch (30s x 3 fences) even though G67 with the SAME
+  dispatch shape retires instantly; first submission produces zero
+  writes in 30s; re-submit writes ~112/128 values, all EXACT (no '?'
+  entries in the bitmap); holes at e=13..15, 22..29, 32..36 with the
+  occasional extra (e=8, e=99) — i.e. head stable, tail varies. The
+  queue recovers afterwards (G17+26 experiments run, 59/60 PASS).
+  M0-B (golden memset) also fails in every run since the panic.
+- Interpretation: kernel logic correct (every landed value matches the
+  oracle; mirror ABI locked by B's ropegen_diff harness, ctest 32/32).
+  The sin dispatch failing to retire while the identical cos dispatch
+  succeeds points to a wedged GPU/transcendental-unit state after the
+  9.40 kernel panic, not an instruction bug. Retry G68 on a healthy
+  console; if it still fails there, probe v_sin serial-per-element
+  with a cos-store control kernel.
+
 - Working: bootstrap, jailbreak, /data logging, lifecycle listener,
   notify, DMA, fence, dispatch, SMEM loads, integer ALU, stores,
   add1d / SAXPY / serial dot / serial GEMV on the G22 path; float ALU
   (G35/G39/G40/G41); T4 serial kernel family G42-G54 float + integer
-  (13/13, run 004416).
+  (13/13, run 004416); G65/G66 wave-parallel cos/sin ramp (turns
+  convention); G67 serial on-GPU RoPE cos table.
 - Open (do not block M1 closeout): MUBUF T# / flat loads, lane 8+
   exec mask, LDS (M1C) pending AGC CS blob @ 0x213.
 
