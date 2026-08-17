@@ -190,11 +190,14 @@ K/V cache rows are reused — the W repack is shared across heads.
   reduce pass over it, same shape as the dot-sum.
 - Per-row G40 means 21+ dispatches per prefill — dispatch overhead is
   the known serial-model cost (apparent ~2–4 GB/s signal only).
-- ~~Attention on host~~ — the §6 serial plan is now fully buildable:
-  every primitive (max G76, rcp G75, exp-2^x G72, G40 gemv, mul/add
-  G42) is HW-validated. Cost: ~8 dispatches per (row, head); the
-  first GPU forward keeps attention host-side (G74 did), the serial
-  attention kernel is the follow-up to remove the last host stage.
+- ~~Attention on host~~ — **CLOSED (G78, commit `ef343c1`, run
+  145847):** the §6 serial causal attention pipeline is now ON-GPU
+  and HW-validated vs pai_ref_attention_f32 (H2 HK1 HD4 seq6, 1e-4,
+  mism=0) — scores via G40 (transposed K), e=2^((s−m)·log2e) via
+  the REAL G72 dispatch (host prescale), rcp via the REAL G75
+  dispatch, out via G40 (row-major V). Exact execution of the
+  `attention_serial` contract (commit `32a3eca`); the ~8-dispatch
+  per (row, head) cost stands as estimated.
 - ~~G77 decode loop~~ — **CLOSED (commit `ff29c17`, run 144815):**
   the full autoregressive loop HW-validated on 9.40 (prefill + 4
   tokens, every step logits mism=0, tok==ref_argmax, bad_steps=0;
@@ -202,6 +205,6 @@ K/V cache rows are reused — the W repack is shared across heads.
   RoPE'd `e_l` for QKV and the residual (no in-place GEMM), and the
   oracle chain `m0_decoder_ref_chain` adds the RoPE-ROTATED embedding
   (aligned with decoder_test's double oracle).
-- Remaining host stages for a 100% on-GPU decoder: attention
-  (pipeline locked in `attention_serial`, commit `32a3eca`), RMSNorm
-  mean-square (G71 recipe §4), SiLU (G72 recipe §5).
+- Remaining host stages for a 100% on-GPU decoder: only the RMSNorm
+  mean-square (G71 recipe §4) and the SiLU mul (G72 recipe §5) —
+  both recipes locked; attention is now on-GPU (G78).

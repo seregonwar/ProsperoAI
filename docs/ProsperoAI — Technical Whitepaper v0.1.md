@@ -1900,9 +1900,19 @@ Open gates before Phase 1 / PAI-M2 work should prioritize:
   closed end-to-end on console 9021 (G74 prefill re-validated with
   the residual fix: residual = RoPE-ROTATED embedding, oracle
   rope_f32 in-place — aligned with decoder_test's double oracle).
-  Remaining to a 100% on-GPU decoder: moving attention/RMSNorm/SiLU
-  to kernels (serial recipes + the §6 attention pipeline locked
-  host-side in `attention_serial`, commit `32a3eca`).
+  **G78 VALIDATED (commit `ef343c1`, run 145847): SERIAL CAUSAL
+  ATTENTION ON-GPU — the LAST host decoder stage is now on-kernel.**
+  Executes the §6 attention pipeline exactly as locked host-side in
+  `attention_serial` (commit `32a3eca`): per (row p, head hh) scores
+  via G40 (groups=p+1, transposed K rows hdr[4+t*hd+d]=k[t][d]),
+  scale 1/sqrt(hd) + host max reduce, e=2^((s−m)·log2e) via the REAL
+  G72 nlexp_exp dispatch (host prescale), host sum + rcp via the REAL
+  G75 nlexp_rcp dispatch, soft=e·rcp, out via G40 (V row-major
+  hdr[4+d*(p+1)+t]=v[t][d]). PASS vs pai_ref_attention_f32 (H2 HK1
+  HD4 seq6, 1e-4, mism=0). Decoder now fully on-GPU: GEMM G40
+  (G74/G77) + RoPE G67/G70 + rsqrt G71 + exp-2^x G72 + max/rcp
+  G76/G75 + attention G78 — only the RMSNorm mean-square and the
+  SiLU mul remain host-side (both recipes locked, spec §4/§5).
   Empirical note: RSRC1 `VGPRS` must
   cover the VGPRs a kernel actually touches (G55/G56 use v1-v6,
   lanepick v16-v31 → `PAI_EXP_RSRC1_VGPR32=0x602C0003`).
