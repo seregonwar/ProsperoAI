@@ -382,6 +382,17 @@
  * c[i] = h[7+i] = 0x10000007+i for lanes 0..7. */
 #define PAI_MOVRELS_RSRC2 PAI_RAMP_RSRC2
 #define PAI_MOVRELS_CODE_WORDS 25u
+
+/* G65/G66: wave-parallel cos/sin ramp (cossin.s) - RoPE position-table
+ * primitives. theta = scale*i read through the value-path quirk as
+ * (4i+3): c[i] = cosf(scale*(4i+3)) / sinf(scale*(4i+3)). Same ABI as
+ * G55 (s2:s3 = C, s4 = scale float); cos entry @0, sin entry @16. */
+#define PAI_COSSIN_RSRC2 PAI_RAMP_RSRC2
+#define PAI_COSSIN_COS_OFF 0u
+#define PAI_COSSIN_COS_WORDS 16u
+#define PAI_COSSIN_SIN_OFF 16u
+#define PAI_COSSIN_SIN_WORDS 16u
+#define PAI_COSSIN_CODE_WORDS 32u
 #define PAI_G35_WORDS 15u
 #define PAI_G32_WORDS 16u
 #define PAI_G25_VALUE 0xDEAD0001u
@@ -502,6 +513,7 @@ extern const uint32_t pai_blockdump_code[PAI_BLOCKDUMP_CODE_WORDS];
 extern const uint32_t pai_vpick_code[PAI_VPICK_CODE_WORDS];
 extern const uint32_t pai_vpick2_code[PAI_VPICK2_CODE_WORDS];
 extern const uint32_t pai_movrels_code[PAI_MOVRELS_CODE_WORDS];
+extern const uint32_t pai_cossin_code[PAI_COSSIN_CODE_WORDS];
 extern const uint32_t pai_hbatch_code[];
 extern const uint32_t pai_hbatch2_code[];
 extern const uint32_t pai_hbatch3_code[PAI_H10_CODE_WORDS];

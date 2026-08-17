@@ -200,4 +200,16 @@ pai_status_t pai_host_kernel_vpick2(void *ctx, const uint32_t user_data[16],
 pai_status_t pai_host_kernel_movrels(void *ctx, const uint32_t user_data[16],
                                      uint32_t threads_x, uint32_t group_x);
 
+/* G65/G66 wave-parallel cos/sin ramp (RoPE table primitive): scale at
+ * ud[4], C at ud[2:3], c[i] = cos/sin(2*pi*scale*(4i+3)) - turns
+ * convention (HW-verified) + value-path (4i+3) quirk. */
+pai_status_t pai_host_kernel_cossin_cos(void *ctx,
+                                       const uint32_t user_data[16],
+                                       uint32_t threads_x,
+                                       uint32_t group_x);
+pai_status_t pai_host_kernel_cossin_sin(void *ctx,
+                                       const uint32_t user_data[16],
+                                       uint32_t threads_x,
+                                       uint32_t group_x);
+
 #endif /* PAI_GPU_HOST_KERNELS_H */

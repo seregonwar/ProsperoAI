@@ -10,6 +10,8 @@
  * Exit code: bit 0 = A failed, bit 1 = B failed.
  */
 
+#include <math.h>
+
 #include <pai/api.h>
 #include <pai/log.h>
 
@@ -4305,6 +4307,79 @@ h48[0] = kk;
       }
     }
     m0_exp_report("G64", ok);
+  }
+
+  /* G65/G66: wave-parallel cos/sin ramp - RoPE position-table
+   * primitives (Phase 2). theta = scale*i via the G55 value path; the
+   * lane index reads as (4i+3) so want[i] = cosf/sinf(scale*(4i+3)).
+   * This validates v_cos_f32/v_sin_f32 (never exercised on 9.40). */
+  {
+    static const uint32_t k_off[2] = {PAI_COSSIN_COS_OFF, PAI_COSSIN_SIN_OFF};
+    static const uint32_t k_len[2] = {PAI_COSSIN_COS_WORDS, PAI_COSSIN_SIN_WORDS};
+    static const char *const k_name[2] = {"G65", "G66"};
+    static pai_host_kernel_fn const k_host[2] = {
+        pai_host_kernel_cossin_cos, pai_host_kernel_cossin_sin};
+    float scale = 0.15f;
+    uint32_t *c66 = (uint32_t *)ctx->c.cpu_addr;
+    uint32_t stream_len = 0;
+    float want[8];
+
+    for (uint32_t variant = 0; variant < 2; variant++) {
+      int ok = 1;
+      uint64_t cpu_phys = 0;
+      uint32_t pde[4];
+      if (!host) {
+        pai_gpu_reset(gpu);
+      }
+      memset(c66, 0xCC, 64 * sizeof(uint32_t));
+      memcpy(ctx->code.cpu_addr, &pai_cossin_code[k_off[variant]],
+             k_len[variant] * sizeof(uint32_t));
+      pai_cpu_phys_of_va((uint64_t)(uintptr_t)ctx->code.cpu_addr, &cpu_phys);
+      pai_gvmspace_dump_pde_page(ctx->code.gpu_addr, pde);
+      PAI_LOG_INFO_(PAI_SUB_GPU,
+                    "[M0-%s] code cpu_phys=0x%llx first=%08x words=%u\n",
+                    k_name[variant], (unsigned long long)cpu_phys,
+                    ((uint32_t *)ctx->code.cpu_addr)[0], k_len[variant]);
+      if (host) {
+        pai_gpu_host_register_shader(gpu, ctx->code.gpu_addr, k_host[variant],
+                                     NULL);
+      }
+      /* Turns convention (HW-verified): v_cos/v_sin read their operand
+       * in full turns, i.e. the value path multiplies by 2*pi. The
+       * oracle must use want = cos/sin(2*pi*scale*(4i+3)). */
+      for (uint32_t g = 0; g < 8; g++) {
+        float theta = 6.2831853f * scale * (float)(4u * g + 3u);
+        want[g] = (variant == 0) ? cosf(theta) : sinf(theta);
+      }
+      pai_gpu_buffer_flush(ctx->gpu, &ctx->code);
+      ud[0] = 0;
+      ud[1] = 0;
+      ud[2] = (uint32_t)(ctx->c.gpu_addr & 0xFFFFFFFFu);
+      ud[3] = (uint32_t)(ctx->c.gpu_addr >> 32);
+      ud[4] = 0;
+      memcpy(&ud[4], &scale, 4);
+      ud[5] = 0;
+      ud[6] = 0;
+      m0_build_dispatch_stream(ctx, stream, M0_PM4_CAP, PAI_COSSIN_RSRC2,
+                               PAI_EXP_THREADS_X, 1, ud, 6, &stream_len);
+      m0_run_gpu(ctx, stream, stream_len, c66, 64, 0xCC, k_name[variant]);
+      for (uint32_t g = 0; g < 8 && ok; g++) {
+        float gg;
+        memcpy(&gg, &c66[g], 4);
+        if (fabsf(gg - want[g]) > 1e-4f) {
+          ok = 0;
+        }
+      }
+      PAI_LOG_INFO_(PAI_SUB_GPU,
+                    "[M0-%s] c[0..7] = %.4f %.4f %.4f %.4f %.4f %.4f %.4f "
+                    "%.4f\n",
+                    k_name[variant], (double)((float *)c66)[0],
+                    (double)((float *)c66)[1], (double)((float *)c66)[2],
+                    (double)((float *)c66)[3], (double)((float *)c66)[4],
+                    (double)((float *)c66)[5], (double)((float *)c66)[6],
+                    (double)((float *)c66)[7]);
+      m0_exp_report(k_name[variant], ok);
+    }
   }
 
   /* G17: load from the kernel's own acqrb VA - does ANY load complete,

@@ -179,6 +179,10 @@ const uint32_t pai_movrels_code[PAI_MOVRELS_CODE_WORDS] = {
 #include "gfx1013/pai_movrels.inc"
 };
 
+const uint32_t pai_cossin_code[PAI_COSSIN_CODE_WORDS] = {
+#include "gfx1013/pai_cossin.inc"
+};
+
 const uint32_t pai_hbatch_code[] = {
 #include "gfx1013/pai_hbatch.inc"
 };

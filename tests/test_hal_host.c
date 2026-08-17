@@ -7,6 +7,7 @@
 #include <ref_ops.h>
 #include <vecadd.h>
 
+#include <math.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -459,6 +460,32 @@ TEST_MAIN_BEGIN()
       CHECK(pai_host_kernel_movrels(NULL, ud, 32, 1) == PAI_OK);
       for (uint32_t i = 0; i < 8; i++) {
         CHECK_EQ_UINT(c64[i], h64[7 + i]);
+      }
+    }
+
+    /* G65/G66: wave-parallel cos/sin ramp - scale at ud[4], C at
+     * ud[2:3]; want[i] = cos/sin(scale*(4i+3)) (value-path quirk). */
+    {
+      float scale = 0.15f;
+      uint32_t c65[8];
+      uint32_t c66[8];
+      ud[2] = (uint32_t)(uintptr_t)c65;
+      ud[3] = (uint32_t)((uintptr_t)c65 >> 32);
+      memcpy(&ud[4], &scale, 4);
+      CHECK(pai_host_kernel_cossin_cos(NULL, ud, 32, 1) == PAI_OK);
+      ud[2] = (uint32_t)(uintptr_t)c66;
+      ud[3] = (uint32_t)((uintptr_t)c66 >> 32);
+      CHECK(pai_host_kernel_cossin_sin(NULL, ud, 32, 1) == PAI_OK);
+      /* Turns convention: v_cos/v_sin read full turns (x2pi). */
+      for (uint32_t i = 0; i < 8; i++) {
+        float theta = 6.2831853f * scale * (float)(4u * i + 3u);
+        float wc = cosf(theta);
+        float ws = sinf(theta);
+        float gc, gs;
+        memcpy(&gc, &c65[i], 4);
+        memcpy(&gs, &c66[i], 4);
+        CHECK(fabsf(gc - wc) < 1e-4f);
+        CHECK(fabsf(gs - ws) < 1e-4f);
       }
     }
 

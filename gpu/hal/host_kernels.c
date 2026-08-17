@@ -1,5 +1,6 @@
 #include "host_kernels.h"
 
+#include <math.h>
 #include <string.h>
 
 static uint64_t
@@ -723,6 +724,45 @@ pai_host_kernel_movrels(void *ctx, const uint32_t user_data[16],
     c[i] = h[7 + i];
   }
   return PAI_OK;
+}
+
+/* G65/G66 wave-parallel cos/sin ramp: scale at ud[4] as float bits,
+ * C at ud[2:3]. Value-path quirk (G35/G55): lane index reads as
+ * (4i+3), so c[i] = cosf(scale*(4i+3)) / sinf(scale*(4i+3)).
+ * op 0 = cos, 1 = sin. */
+static pai_status_t
+pai_host_kernel_cossin(void *ctx, const uint32_t user_data[16],
+                       uint32_t threads_x, uint32_t group_x,
+                       uint32_t op) {
+  uint32_t *c = (uint32_t *)(uintptr_t)pai_ud64(user_data, 2);
+  float scale;
+
+  (void)ctx;
+  (void)threads_x;
+  (void)group_x;
+
+  /* Turns convention (HW-verified on 9.40): v_cos/v_sin read their
+   * operand in full turns, i.e. the value path multiplies by 2*pi.
+   * The mirror must produce cos/sin(2*pi*scale*(4i+3)). */
+  memcpy(&scale, &user_data[4], 4);
+  for (uint32_t i = 0; i < 8; i++) {
+    float theta = 6.2831853f * scale * (float)(4u * i + 3u);
+    float val = (op == 0) ? cosf(theta) : sinf(theta);
+    memcpy(&c[i], &val, 4);
+  }
+  return PAI_OK;
+}
+
+pai_status_t
+pai_host_kernel_cossin_cos(void *ctx, const uint32_t user_data[16],
+                           uint32_t threads_x, uint32_t group_x) {
+  return pai_host_kernel_cossin(ctx, user_data, threads_x, group_x, 0);
+}
+
+pai_status_t
+pai_host_kernel_cossin_sin(void *ctx, const uint32_t user_data[16],
+                           uint32_t threads_x, uint32_t group_x) {
+  return pai_host_kernel_cossin(ctx, user_data, threads_x, group_x, 1);
 }
 
 pai_status_t
