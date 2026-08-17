@@ -1782,10 +1782,22 @@ Open gates before Phase 1 / PAI-M2 work should prioritize:
   kernels can ONLY derive values arithmetically from tid +
   uniform scalars (G55/G56). GEMV stays on the validated G40
   serial-per-row path (1 thread/group, `s_load` per element,
-  groups_x=M); the B-side `decoder_test` (commit `65f29f7`) is
+  groups_x=M); the  B-side `decoder_test` (commit `65f29f7`) is
   the differential oracle. Phase 2 plan: RoPE pos tables via the
   G55/G56 ramp (OK), QKV/out GEMM via G40 serial-per-row (cost:
   K*N scalar loads per row — known, not a blocker).
+  **G65/G66 UNLOCKED (commit `a8d9089`, run 101812):**
+  wave-parallel cos/sin ramp validated. New 9.40 empirical rule:
+  `v_cos_f32`/`v_sin_f32` take their operand in TURNS (x2π), not
+  radians — the value path multiplies by 2π. Effective GPU
+  formula: `c[i] = cos/sin(2π·scale·(4i+3))` (the G15 `(4i+3)`
+  lane quirk). HW evidence: `cos(0.15·(4i+3))` expected in
+  radians, got cos(162°)=−0.9511 = cos(2π·0.15·3) exact; all 16
+  values (8 cos + 8 sin) match <1e-4 with cos²+sin²=1. RoPE
+  implication: pos tables ARE generatable on-GPU wave-parallel
+  with per-column `scale = inv_freq/(2π)` and the `(4i+3)` lane
+  mapping — oracle stays `pai_ref_rope_cossin_f32` (θ=p·inv_freq,
+  commit `e157131`).
   Empirical note: RSRC1 `VGPRS` must
   cover the VGPRs a kernel actually touches (G55/G56 use v1-v6,
   lanepick v16-v31 → `PAI_EXP_RSRC1_VGPR32=0x602C0003`).

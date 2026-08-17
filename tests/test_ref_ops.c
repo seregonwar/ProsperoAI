@@ -249,6 +249,34 @@ TEST_MAIN_BEGIN()
   CHECK(pai_ref_rope_cossin_f32(2, 2, 10000.0f, NULL, sin_t) ==
         PAI_ERR_INVALID_ARG);
 
+  /* GPU equivalence contract (G65/G66, commit a8d9089): on 9.40
+   * v_cos/v_sin take the operand in TURNS (x2pi), so the effective
+   * GPU table is c[l] = cos/sin(2*pi*scale*(4l+3)) with the G15 lane
+   * quirk (4l+3). With per-column scale = inv_freq/(2*pi), that is
+   * exactly the oracle row p = 4l+3: cos(inv_freq*p). Verify the
+   * mapping analytically against the float oracle tables. */
+  {
+    const uint32_t rows = 32, r2 = 4; /* ctx 32 covers p=3,7,11,... */
+    const double pi = 3.14159265358979323846;
+    float ct[rows * r2], st[rows * r2];
+    const float base = 10000.0f;
+    CHECK(pai_ref_rope_cossin_f32(rows, r2, base, ct, st) == PAI_OK);
+    for (uint32_t l = 0; l < 8; l++) {
+      uint32_t p = 4 * l + 3; /* G15 lane quirk */
+      for (uint32_t i = 0; i < r2; i++) {
+        double invf =
+            pow((double)base, -2.0 * (double)i / (2.0 * (double)r2));
+        double scale = invf / (2.0 * pi); /* turns per unit */
+        double gpu = 2.0 * pi * scale * (double)p; /* turns x2pi */
+        /* GPU turns formula == oracle row p. */
+        CHECK(fabsf((float)cos(gpu) - ct[p * r2 + i]) < 1e-6f);
+        CHECK(fabsf((float)sin(gpu) - st[p * r2 + i]) < 1e-6f);
+        CHECK(fabsf((float)cos(gpu) - (float)cos((double)p * invf)) <
+              1e-6f);
+      }
+    }
+  }
+
   /* End-to-end: generator -> rope on the same 2-head/2-pos input as
    * the hand-built table test above (single head, hd=4, seq=2, r2=2).
    * p0: c=1,s=0 -> identity; p1: theta=(1, 0.01). */
