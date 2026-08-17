@@ -195,11 +195,13 @@ K/V cache rows are reused — the W repack is shared across heads.
   G42) is HW-validated. Cost: ~8 dispatches per (row, head); the
   first GPU forward keeps attention host-side (G74 did), the serial
   attention kernel is the follow-up to remove the last host stage.
-- **G77 decode loop (in flight, Seat A):** the autoregressive loop on
-  GPU — per-step QKV/out/MLP/logits via G40, RoPE tables generated
-  once (G67/G70) and reused, K/V cache host-grown. Pre-commit review
-  (B): must use a separate RoPE'd `e_l` buffer for QKV (no in-place
-  GEMM — row g+1 re-reads overwritten x[g]) and for the attention
-  residual (not the Q projection), and the host oracle chain must add
-  the RoPE'd embedding in the residual (aligned with decoder_test's
-  double oracle).
+- ~~G77 decode loop~~ — **CLOSED (commit `ff29c17`, run 144815):**
+  the full autoregressive loop HW-validated on 9.40 (prefill + 4
+  tokens, every step logits mism=0, tok==ref_argmax, bad_steps=0;
+  G74 re-validated with the residual fix). The loop uses a separate
+  RoPE'd `e_l` for QKV and the residual (no in-place GEMM), and the
+  oracle chain `m0_decoder_ref_chain` adds the RoPE-ROTATED embedding
+  (aligned with decoder_test's double oracle).
+- Remaining host stages for a 100% on-GPU decoder: attention
+  (pipeline locked in `attention_serial`, commit `32a3eca`), RMSNorm
+  mean-square (G71 recipe §4), SiLU (G72 recipe §5).

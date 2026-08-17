@@ -1888,7 +1888,21 @@ Open gates before Phase 1 / PAI-M2 work should prioritize:
   through the exact nlexp mirror ABI): softmax e·rcp(sum) max |d|
   5.96e-08 / row sum 0.999999954, SiLU x·rcp(1+e) 2.38e-07,
   v_max(x,0)==relu exact. Only the attention row-reduction and the
-  RMSNorm mean-square remain host-side in the first GPU forward.
+  RMSNorm mean-square  remain host-side in the first GPU forward.
+  **G77 MILESTONE (commit `ff29c17`, run 144815): the FULL
+  autoregressive decode loop is HW-validated on 9.40** — prefill
+  (SEQ=3) + 4 generated tokens, every linear layer (QKV/out-proj/
+  MLP/logits) via the real G40 on-GPU, RoPE cos/sin tables via
+  G67/G70 loaded once and reused across steps, K/V cache grown
+  per-step, attention/RMSNorm/SiLU/residual on host. Every step:
+  logits mism=0 vs the full-prefix oracle chain, tok==ref_argmax,
+  bad_steps=0. The Phase-2 target "first token -> next token" is
+  closed end-to-end on console 9021 (G74 prefill re-validated with
+  the residual fix: residual = RoPE-ROTATED embedding, oracle
+  rope_f32 in-place — aligned with decoder_test's double oracle).
+  Remaining to a 100% on-GPU decoder: moving attention/RMSNorm/SiLU
+  to kernels (serial recipes + the §6 attention pipeline locked
+  host-side in `attention_serial`, commit `32a3eca`).
   Empirical note: RSRC1 `VGPRS` must
   cover the VGPRs a kernel actually touches (G55/G56 use v1-v6,
   lanepick v16-v31 → `PAI_EXP_RSRC1_VGPR32=0x602C0003`).
