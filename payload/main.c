@@ -1716,6 +1716,123 @@ out:
   return ok;
 }
 
+/* G74: decoder GEMM via G40 fgemv - the EXACT ABI decoder_test
+ * sez.12/13 drives (header [K, pad, x_lo, x_hi, W-transposed-inline]
+ * at ud[2:3], y at ud[4:5], 1 group per row). A [M][K]x[K][N] GEMM
+ * becomes M calls, each producing N outputs; the header W rows are
+ * the transposed columns of b (hdr[4+g*K+k] = b[k*N+g]). x rows and
+ * the transposed W are staged into ctx->a/b (GPU-visible), C is read
+ * back into `c`. Returns 0. */
+static int
+m0_exp_gemm_g40(m0_ctx_t *ctx, uint32_t *stream, uint32_t *ud,
+                const float *a, const float *b, float *c, uint32_t m,
+                uint32_t k, uint32_t n) {
+  uint32_t *h = (uint32_t *)ctx->a.cpu_addr;
+  uint32_t *xbuf = (uint32_t *)ctx->b.cpu_addr;
+  uint32_t stream_len = 0;
+
+  memcpy(xbuf, a, (size_t)m * k * sizeof(float));
+  memcpy(ctx->code.cpu_addr, pai_fgemv_serial_code,
+         PAI_FGEMV_CODE_WORDS * sizeof(uint32_t));
+  if (pai_gpu_device_backend(ctx->gpu) == PAI_GPU_BACKEND_HOST_REF) {
+    pai_gpu_host_register_shader(ctx->gpu, ctx->code.gpu_addr,
+                                 pai_host_kernel_fgemv, NULL);
+  }
+  pai_gpu_buffer_flush(ctx->gpu, &ctx->code);
+  h[0] = k;
+  h[1] = 0;
+  for (uint32_t g = 0; g < n; g++) {
+    for (uint32_t t = 0; t < k; t++) {
+      memcpy(&h[4 + g * k + t], &b[t * n + g], 4);
+    }
+  }
+  pai_gpu_buffer_flush(ctx->gpu, &ctx->a);
+  pai_gpu_buffer_flush(ctx->gpu, &ctx->b);
+  ud[0] = 0;
+  ud[1] = 0;
+  ud[2] = (uint32_t)(ctx->a.gpu_addr & 0xFFFFFFFFu);
+  ud[3] = (uint32_t)(ctx->a.gpu_addr >> 32);
+  for (uint32_t i = 0; i < m; i++) {
+    uint64_t xoff = (uint64_t)i * k * 4;
+    uint64_t coff = (uint64_t)i * n * 4;
+    h[2] = (uint32_t)((ctx->b.gpu_addr + xoff) & 0xFFFFFFFFu);
+    h[3] = (uint32_t)((ctx->b.gpu_addr + xoff) >> 32);
+    pai_gpu_buffer_flush(ctx->gpu, &ctx->a);
+    ud[4] = (uint32_t)((ctx->c.gpu_addr + coff) & 0xFFFFFFFFu);
+    ud[5] = (uint32_t)((ctx->c.gpu_addr + coff) >> 32);
+    m0_build_dispatch_stream(ctx, stream, M0_PM4_CAP, PAI_FGEMV_RSRC2,
+                             PAI_FGEMV_THREADS, n, ud, 6, &stream_len);
+    m0_run_gpu(ctx, stream, stream_len,
+               (uint8_t *)ctx->c.cpu_addr + (size_t)coff, n * 4, 0xCC,
+               "G74");
+  }
+  memcpy(c, ctx->c.cpu_addr, (size_t)m * n * sizeof(float));
+  return 0;
+}
+
+/* G74: on-GPU RoPE cos/sin tables via the validated G67/G70 path
+ * (ropegen cos kernel; sin via cos-shift theta-0.25, never v_sin).
+ * ctx positions 0..nctx-1, r2 pairs; writes ct/st as ctx x r2. */
+static int
+m0_exp_rope_tables_gpu(m0_ctx_t *ctx, uint32_t *stream, uint32_t *ud,
+                       uint32_t nctx, uint32_t r2, float base, float *ct,
+                       float *st) {
+  uint32_t *h = (uint32_t *)ctx->a.cpu_addr;
+  uint32_t stream_len = 0;
+  const uint64_t cos_off = 4096u;
+  const uint64_t sin_off = 4096u + (uint64_t)nctx * r2 * 4;
+
+  h[0] = r2;
+  h[1] = nctx;
+  for (uint32_t p = 0; p < nctx; p++) {
+    for (uint32_t i = 0; i < r2; i++) {
+      float inv = powf(base, -(float)i / (float)r2);
+      float tt = (float)p * inv / 6.2831853f;
+      memcpy(&h[2 + p * r2 + i], &tt, 4);
+    }
+  }
+  pai_gpu_buffer_flush(ctx->gpu, &ctx->a);
+  memcpy(ctx->code.cpu_addr, &pai_ropegen_code[PAI_ROPEGEN_COS_OFF],
+         PAI_ROPEGEN_COS_WORDS * sizeof(uint32_t));
+  if (pai_gpu_device_backend(ctx->gpu) == PAI_GPU_BACKEND_HOST_REF) {
+    pai_gpu_host_register_shader(ctx->gpu, ctx->code.gpu_addr,
+                                 pai_host_kernel_ropegen_cos, NULL);
+  }
+  pai_gpu_buffer_flush(ctx->gpu, &ctx->code);
+  ud[0] = 0;
+  ud[1] = 0;
+  ud[2] = (uint32_t)(ctx->a.gpu_addr & 0xFFFFFFFFu);
+  ud[3] = (uint32_t)(ctx->a.gpu_addr >> 32);
+  ud[4] = (uint32_t)((ctx->c.gpu_addr + cos_off) & 0xFFFFFFFFu);
+  ud[5] = (uint32_t)((ctx->c.gpu_addr + cos_off) >> 32);
+  m0_build_dispatch_stream(ctx, stream, M0_PM4_CAP, PAI_ROPEGEN_RSRC2,
+                           PAI_ROPEGEN_THREADS, nctx * r2, ud, 6,
+                           &stream_len);
+  m0_run_gpu(ctx, stream, stream_len,
+             (uint8_t *)ctx->c.cpu_addr + cos_off, nctx * r2 * 4, 0xCC,
+             "G74");
+  memcpy(ct, (uint8_t *)ctx->c.cpu_addr + cos_off, nctx * r2 * 4);
+  /* sin via cos-shift: same kernel, theta-0.25 (G70). */
+  for (uint32_t p = 0; p < nctx; p++) {
+    for (uint32_t i = 0; i < r2; i++) {
+      float inv = powf(base, -(float)i / (float)r2);
+      float tt = (float)p * inv / 6.2831853f - 0.25f;
+      memcpy(&h[2 + p * r2 + i], &tt, 4);
+    }
+  }
+  pai_gpu_buffer_flush(ctx->gpu, &ctx->a);
+  ud[4] = (uint32_t)((ctx->c.gpu_addr + sin_off) & 0xFFFFFFFFu);
+  ud[5] = (uint32_t)((ctx->c.gpu_addr + sin_off) >> 32);
+  m0_build_dispatch_stream(ctx, stream, M0_PM4_CAP, PAI_ROPEGEN_RSRC2,
+                           PAI_ROPEGEN_THREADS, nctx * r2, ud, 6,
+                           &stream_len);
+  m0_run_gpu(ctx, stream, stream_len,
+             (uint8_t *)ctx->c.cpu_addr + sin_off, nctx * r2 * 4, 0xCC,
+             "G74");
+  memcpy(st, (uint8_t *)ctx->c.cpu_addr + sin_off, nctx * r2 * 4);
+  return 0;
+}
+
 /* E34-E37: the flat v0-broadcast model — loads and the real vecadd. */
 static int
 m0_exp_v0model(m0_ctx_t *ctx) {
@@ -4950,6 +5067,219 @@ h48[0] = kk;
                     fmis);
     }
     m0_exp_report("G73", ok);
+  }
+
+  /* G74: decoder PREFILL forward on-GPU - the first real decoder
+   * forward through the validated kernels: QKV/out/MLP/logits GEMMs
+   * via G40 (per-row, transposed-W repack), RoPE cos/sin tables via
+   * the G67/G70 on-GPU path, everything else host ref_ops
+   * (attention, RMSNorm gamma, SiLU, residual adds). Differential vs
+   * the SAME forward computed with host pai_ref_gemm_f32 (the chain
+   * decoder_test sez.12/13 validates against the double oracle):
+   * logits 1e-4 rel + argmax. Sizes = decoder_test: D_MODEL 8,
+   * H 2, HK 1, HD 4, R2 2, SEQ 3, MLP_HID 16, VOCAB 16, toks
+   * {2,5,9}. */
+  if (!host) {
+    pai_gpu_reset(gpu);
+  }
+  {
+    enum {
+      G74_D = 8, G74_H = 2, G74_HD = 4, G74_R2 = 2, G74_SEQ = 3,
+      G74_MLP = 16, G74_VOCAB = 16
+    };
+    static float wemb[G74_VOCAB * G74_D];
+    static float wq[G74_D * G74_D], wk[G74_D * G74_D], wv[G74_D * G74_D];
+    static float wo[G74_D * G74_D], wout[G74_D * G74_VOCAB];
+    static float g1[G74_D], g2[G74_D];
+    static float w1[G74_D * G74_MLP], b1[G74_MLP];
+    static float w2[G74_MLP * G74_D], b2[G74_D];
+    static float ct[G74_SEQ * G74_R2], sint[G74_SEQ * G74_R2];
+    static float oct[G74_SEQ * G74_R2], ost[G74_SEQ * G74_R2];
+    static float e[G74_SEQ * G74_D], er[G74_SEQ * G74_D];
+    static float q[G74_SEQ * G74_D], kk[G74_SEQ * G74_D], vv[G74_SEQ * G74_D];
+    static float attn[G74_SEQ * G74_D], o[G74_SEQ * G74_D];
+    static float h1a[G74_SEQ * G74_D], h1[G74_SEQ * G74_D];
+    static float gmlp[G74_SEQ * G74_MLP], ag[G74_SEQ * G74_MLP];
+    static float h2[G74_SEQ * G74_MLP];
+    static float mlp[G74_SEQ * G74_D], h3a[G74_SEQ * G74_D];
+    static float h3[G74_SEQ * G74_D];
+    static float logits_g[G74_SEQ * G74_VOCAB];
+    static float logits_r[G74_SEQ * G74_VOCAB];
+    int toks[G74_SEQ] = {2, 5, 9};
+    int argmax_g = -1, argmax_r = -1;
+    uint64_t mism = 0;
+    pai_status_t pst;
+    int ok = 1;
+
+    /* deterministic weights (decoder_test fill_weights formulas) */
+    for (uint32_t i = 0; i < G74_VOCAB * G74_D; i++) {
+      wemb[i] = (float)((int)(i % 11) - 5) * 0.1f;
+    }
+    for (uint32_t i = 0; i < G74_D; i++) {
+      for (uint32_t j = 0; j < G74_D; j++) {
+        float v = (float)(((int)((i * 3 + j * 5) % 7)) - 3) * 0.1f;
+        wq[i * G74_D + j] = v;
+        wk[i * G74_D + j] = v * 0.9f;
+        wv[i * G74_D + j] = v * 1.1f;
+        wo[i * G74_D + j] = v * 0.8f;
+        wout[i * G74_D + j] =
+            (float)(((int)((i * 5 + j * 7) % 9)) - 4) * 0.05f;
+      }
+    }
+    for (uint32_t i = 0; i < G74_D; i++) {
+      g1[i] = 1.0f + 0.1f * (float)i;
+      g2[i] = 1.0f - 0.05f * (float)i;
+    }
+    for (uint32_t i = 0; i < G74_D; i++) {
+      for (uint32_t j = 0; j < G74_MLP; j++) {
+        w1[i * G74_MLP + j] =
+            (float)(((int)((i * 3 + j * 5) % 7)) - 3) * 0.1f;
+      }
+    }
+    for (uint32_t j = 0; j < G74_MLP; j++) {
+      b1[j] = (float)(j % 5) * 0.05f;
+    }
+    for (uint32_t i = 0; i < G74_MLP; i++) {
+      for (uint32_t j = 0; j < G74_D; j++) {
+        w2[i * G74_D + j] =
+            (float)(((int)((i * 7 + j * 2) % 9)) - 4) * 0.05f;
+      }
+    }
+    for (uint32_t j = 0; j < G74_D; j++) {
+      b2[j] = (float)((j * 3) % 4) * 0.1f;
+    }
+
+    /* embed */
+    for (uint32_t p = 0; p < G74_SEQ; p++) {
+      memcpy(&e[p * G74_D], &wemb[toks[p] * G74_D],
+             G74_D * sizeof(float));
+    }
+
+    /* RoPE tables on-GPU (G67/G70 path) vs host oracle tables */
+    m0_exp_rope_tables_gpu(ctx, stream, ud, G74_SEQ, G74_R2, 10000.0f,
+                           ct, sint);
+    pai_ref_rope_cossin_f32(G74_SEQ, G74_R2, 10000.0f, oct, ost);
+    for (uint32_t i = 0; i < G74_SEQ * G74_R2; i++) {
+      if (fabsf(ct[i] - oct[i]) > 1e-4f ||
+          fabsf(sint[i] - ost[i]) > 1e-4f) {
+        ok = 0;
+      }
+    }
+    /* RoPE apply host (per-head block rows = SEQ*H, hd = HD_DIM) */
+    pst = pai_ref_rope_f32(e, G74_SEQ * G74_H, G74_HD, G74_SEQ, G74_H, ct,
+                           sint, G74_R2, er);
+    ok = ok && (pst == PAI_OK);
+
+    /* QKV via G40 */
+    m0_exp_gemm_g40(ctx, stream, ud, er, wq, q, G74_SEQ, G74_D, G74_D);
+    m0_exp_gemm_g40(ctx, stream, ud, er, wk, kk, G74_SEQ, G74_D, G74_D);
+    m0_exp_gemm_g40(ctx, stream, ud, er, wv, vv, G74_SEQ, G74_D, G74_D);
+
+    /* causal GQA attention host */
+    pst = pai_ref_attention_f32(G74_H, G74_H / 2u, G74_SEQ, G74_HD, q, kk,
+                                vv, attn);
+    ok = ok && (pst == PAI_OK);
+
+    /* out-proj G40 + residual */
+    m0_exp_gemm_g40(ctx, stream, ud, attn, wo, o, G74_SEQ, G74_D, G74_D);
+    for (uint32_t i = 0; i < G74_SEQ * G74_D; i++) {
+      h1a[i] = o[i] + e[i];
+    }
+    for (uint32_t p = 0; p < G74_SEQ; p++) {
+      pai_ref_rmsnorm_gamma_f32(h1a + p * G74_D, h1 + p * G74_D, G74_D, g1,
+                                1e-5f);
+    }
+
+    /* MLP via G40 + biasadd + silu + residual */
+    m0_exp_gemm_g40(ctx, stream, ud, h1, w1, gmlp, G74_SEQ, G74_D,
+                    G74_MLP);
+    pai_ref_biasadd_f32(gmlp, b1, ag, G74_SEQ, G74_MLP);
+    pai_ref_silu_f32(ag, h2, G74_SEQ * G74_MLP);
+    m0_exp_gemm_g40(ctx, stream, ud, h2, w2, mlp, G74_SEQ, G74_MLP,
+                    G74_D);
+    pai_ref_biasadd_f32(mlp, b2, h3a, G74_SEQ, G74_D);
+    for (uint32_t i = 0; i < G74_SEQ * G74_D; i++) {
+      h3[i] = h1[i] + h3a[i];
+    }
+    for (uint32_t p = 0; p < G74_SEQ; p++) {
+      pai_ref_rmsnorm_gamma_f32(h3 + p * G74_D, h1 + p * G74_D, G74_D, g2,
+                                1e-5f);
+    }
+
+    /* logits via G40 */
+    m0_exp_gemm_g40(ctx, stream, ud, h1, wout, logits_g, G74_SEQ, G74_D,
+                    G74_VOCAB);
+
+    /* host ref chain with pai_ref_gemm_f32 (== double oracle per
+     * decoder_test sez.12/13) for the differential */
+    {
+      static float re[G74_SEQ * G74_D], rq[G74_SEQ * G74_D];
+      static float rkv[G74_SEQ * G74_D], rvv[G74_SEQ * G74_D];
+      static float rat[G74_SEQ * G74_D], ro[G74_SEQ * G74_D];
+      static float rh1[G74_SEQ * G74_D], rgm[G74_SEQ * G74_MLP];
+      static float rh2[G74_SEQ * G74_MLP], rmlp[G74_SEQ * G74_D];
+      static float rh3[G74_SEQ * G74_D];
+      pai_ref_rope_f32(e, G74_SEQ * G74_H, G74_HD, G74_SEQ, G74_H, oct,
+                       ost, G74_R2, re);
+      pai_ref_gemm_f32(G74_SEQ, G74_D, G74_D, re, wq, rq);
+      pai_ref_gemm_f32(G74_SEQ, G74_D, G74_D, re, wk, rkv);
+      pai_ref_gemm_f32(G74_SEQ, G74_D, G74_D, re, wv, rvv);
+      pai_ref_attention_f32(G74_H, G74_H / 2u, G74_SEQ, G74_HD, rq, rkv,
+                            rvv, rat);
+      pai_ref_gemm_f32(G74_SEQ, G74_D, G74_D, rat, wo, ro);
+      for (uint32_t i = 0; i < G74_SEQ * G74_D; i++) {
+        rh1[i] = ro[i] + e[i];
+      }
+      for (uint32_t p = 0; p < G74_SEQ; p++) {
+        pai_ref_rmsnorm_gamma_f32(rh1 + p * G74_D, rh1 + p * G74_D, G74_D,
+                                  g1, 1e-5f);
+      }
+      pai_ref_gemm_f32(G74_SEQ, G74_MLP, G74_D, rh1, w1, rgm);
+      pai_ref_biasadd_f32(rgm, b1, rh2, G74_SEQ, G74_MLP);
+      pai_ref_silu_f32(rh2, rh2, G74_SEQ * G74_MLP);
+      pai_ref_gemm_f32(G74_SEQ, G74_D, G74_MLP, rh2, w2, rmlp);
+      pai_ref_biasadd_f32(rmlp, b2, rh3, G74_SEQ, G74_D);
+      for (uint32_t i = 0; i < G74_SEQ * G74_D; i++) {
+        rh3[i] = rh1[i] + rh3[i];
+      }
+      for (uint32_t p = 0; p < G74_SEQ; p++) {
+        pai_ref_rmsnorm_gamma_f32(rh3 + p * G74_D, rh3 + p * G74_D, G74_D,
+                                  g2, 1e-5f);
+      }
+      pai_ref_gemm_f32(G74_SEQ, G74_VOCAB, G74_D, rh3, wout, logits_r);
+    }
+
+    mism = 0;
+    pst = pai_ref_compare_f32(logits_g, logits_r, G74_SEQ * G74_VOCAB,
+                              1e-4f, 1e-4f, &mism);
+    for (uint32_t i = 0; i < G74_VOCAB; i++) {
+      if (argmax_g < 0 ||
+          logits_g[(G74_SEQ - 1) * G74_VOCAB + i] >
+              logits_g[(G74_SEQ - 1) * G74_VOCAB + argmax_g]) {
+        argmax_g = (int)i;
+      }
+      if (argmax_r < 0 ||
+          logits_r[(G74_SEQ - 1) * G74_VOCAB + i] >
+              logits_r[(G74_SEQ - 1) * G74_VOCAB + argmax_r]) {
+        argmax_r = (int)i;
+      }
+    }
+    if (pst != PAI_OK) {
+      ok = 0;
+    }
+    if (argmax_g != argmax_r) {
+      ok = 0;
+    }
+    PAI_LOG_INFO_(PAI_SUB_GPU,
+                  "[M0-G74] logits[0..3]=%.4f %.4f %.4f %.4f "
+                  "ref[0..3]=%.4f %.4f %.4f %.4f argmax_g=%d argmax_r=%d "
+                  "mism=%llu\n",
+                  (double)logits_g[0], (double)logits_g[1],
+                  (double)logits_g[2], (double)logits_g[3],
+                  (double)logits_r[0], (double)logits_r[1],
+                  (double)logits_r[2], (double)logits_r[3], argmax_g,
+                  argmax_r, (unsigned long long)mism);
+    m0_exp_report("G74", ok);
   }
 
   /* G17: load from the kernel's own acqrb VA - does ANY load complete,

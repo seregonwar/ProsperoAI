@@ -388,8 +388,13 @@ HW-validated PASS (commit a8d9089).
   (13/13, run 004416); G65/G66 wave-parallel cos/sin ramp (turns
   convention); G67 serial on-GPU RoPE cos table; G70 cos-shift sin
   table;  G71 v_rsq; G72 v_exp (2^x); G73 decoder GEMM via G40 (per-row,
-  transposed-W repack hdr[4+g*K+k]=B[k*N+g]) 8x16x8 PASS 64/64 vs
+  transposed-W repack hdr[4+g*K+k]=B[k*N+g])  8x16x8 PASS 64/64 vs
   double oracle - same ABI decoder_test sez.12 drives on host.
+  G74 (run 135700): FIRST on-GPU decoder prefill forward - QKV/out/
+  MLP/logits via G40 per-row + RoPE cos/sin tables via G67/G70 path,
+  attention/RMSNorm/SiLU/residual host ref_ops; logits == host ref
+  chain (1e-4, mism 0), argmax 2 == 2 (PASS). The decoder_test
+  sez.12/13 differential contract now HW-proven on 9.40.
 - Open (do not block M1 closeout): MUBUF T# / flat loads, lane 8+
   exec mask, LDS (M1C) pending AGC CS blob @ 0x213.
 
