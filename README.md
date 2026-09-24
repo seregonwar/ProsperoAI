@@ -7,11 +7,12 @@
 [![Platforms: PS5 / Host](https://img.shields.io/badge/Platforms-PS5%20%2F%20Host-2f6feb?style=flat-square)](#platform-support)
 [![Firmware: 9.40 validated](https://img.shields.io/badge/Firmware-9.40%20validated-0ea5e9?style=flat-square)](#ps5-live-validation)
 
-</div>
+
 
 ### Native AI runtime for the jailbroken PlayStation 5.
 
----
+</div>
+
 
 **ProsperoAI** is a from-scratch AI runtime that executes neural networks directly
 on the PlayStation 5 GPU, with a full reference implementation for desktop
