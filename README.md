@@ -1,6 +1,6 @@
 <div align="center">
 
-<img src="assets/logo_prosperoai.png" width="520" alt="ProsperoAI" />
+<img src="assets/logo_prosperoai.png" width="720" alt="ProsperoAI" />
 
 [![Status: active development](https://img.shields.io/badge/Status-active%20development-f59e0b?style=flat-square)](#project-status)
 [![Milestone: PAI-M0/M1](https://img.shields.io/badge/Milestone-PAI--M0%2FM1%20serial-16a34a?style=flat-square)](#project-status)
