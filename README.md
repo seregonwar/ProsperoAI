@@ -1,9 +1,13 @@
-# ProsperoAI
+<div align="center">
+
+<img src="assets/logo_prosperoai.png" width="520" alt="ProsperoAI" />
 
 [![Status: active development](https://img.shields.io/badge/Status-active%20development-f59e0b?style=flat-square)](#project-status)
 [![Milestone: PAI-M0/M1](https://img.shields.io/badge/Milestone-PAI--M0%2FM1%20serial-16a34a?style=flat-square)](#project-status)
 [![Platforms: PS5 / Host](https://img.shields.io/badge/Platforms-PS5%20%2F%20Host-2f6feb?style=flat-square)](#platform-support)
 [![Firmware: 9.40 validated](https://img.shields.io/badge/Firmware-9.40%20validated-0ea5e9?style=flat-square)](#ps5-live-validation)
+
+</div>
 
 ### Native AI runtime for the jailbroken PlayStation 5.
 
